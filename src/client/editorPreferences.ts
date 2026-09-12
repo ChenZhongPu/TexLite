@@ -7,6 +7,8 @@ export interface EditorPreferences {
   fontSize: number;
   lineHeight: number;
   lineWrapping: boolean;
+  /** Show ordinary workspace control hover hints. */
+  showTooltips: boolean;
   spellCheck: boolean;
   mathPreviewOnHover: boolean;
   vimMode: boolean;
@@ -36,6 +38,7 @@ export const defaultEditorPreferences: EditorPreferences = {
   fontSize: 14,
   lineHeight: 1.65,
   lineWrapping: true,
+  showTooltips: false,
   spellCheck: true,
   mathPreviewOnHover: false,
   vimMode: false,
@@ -74,6 +77,7 @@ export function loadEditorPreferences(userId: string, projectId: string): Editor
       fontSize: [12, 13, 14, 15, 16, 18, 20].includes(Number(stored.fontSize)) ? Number(stored.fontSize) : defaultEditorPreferences.fontSize,
       lineHeight: [1.45, 1.65, 1.85].includes(Number(stored.lineHeight)) ? Number(stored.lineHeight) : defaultEditorPreferences.lineHeight,
       lineWrapping: typeof stored.lineWrapping === "boolean" ? stored.lineWrapping : defaultEditorPreferences.lineWrapping,
+      showTooltips: typeof stored.showTooltips === "boolean" ? stored.showTooltips : defaultEditorPreferences.showTooltips,
       spellCheck: typeof stored.spellCheck === "boolean" ? stored.spellCheck : defaultEditorPreferences.spellCheck,
       mathPreviewOnHover: typeof stored.mathPreviewOnHover === "boolean" ? stored.mathPreviewOnHover : defaultEditorPreferences.mathPreviewOnHover,
       vimMode: typeof stored.vimMode === "boolean" ? stored.vimMode : defaultEditorPreferences.vimMode,

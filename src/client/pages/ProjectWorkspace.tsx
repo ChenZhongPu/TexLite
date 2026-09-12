@@ -140,6 +140,15 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [formatterRecovery, setFormatterRecovery] = useState<FormatterRecovery | null>(null);
   const [permissionDowngradeBusy, setPermissionDowngradeBusy] = useState(false);
   const [editorPreferences, setEditorPreferences] = useState<EditorPreferences>(() => loadEditorPreferences(user.id, projectId));
+  useEffect(() => {
+    const root = document.documentElement;
+    const value = editorPreferences.showTooltips ? "on" : "off";
+    root.setAttribute("data-texlite-tooltips", value);
+    return () => {
+      // Do not clear a value installed by a subsequently mounted workspace.
+      if (root.getAttribute("data-texlite-tooltips") === value) root.removeAttribute("data-texlite-tooltips");
+    };
+  }, [editorPreferences.showTooltips]);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const openTabsRef = useRef<string[]>([]);
   openTabsRef.current = openTabs;
@@ -1206,7 +1215,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     ? t("editor.savedAt", { time: new Date(lastSavedAt).toLocaleTimeString(i18n.resolvedLanguage, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) })
     : t(saveState);
 
-  return <div className="workspace">
+  return <div className="workspace" data-texlite-tooltips={editorPreferences.showTooltips ? "on" : "off"}>
     <WorkspaceTopbar
       site={site} project={project} activeFile={activeFile} saveStateLabel={saveStateLabel}
       editorPreferences={editorPreferences} activeSessions={activeSessions} collaborationStatus={collaborationStatus}

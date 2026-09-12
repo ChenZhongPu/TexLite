@@ -24,7 +24,7 @@ describe("editor preference scope", () => {
   beforeEach(() => storage.clear());
 
   it("keeps preferences isolated by user and project", () => {
-    const aliceProjectOne = { ...defaultEditorPreferences, fontSize: 20, vimMode: true, formatOnCompile: true, openFilesInTabs: true };
+    const aliceProjectOne = { ...defaultEditorPreferences, fontSize: 20, vimMode: true, formatOnCompile: true, openFilesInTabs: true, showTooltips: true };
     const bobProjectOne = { ...defaultEditorPreferences, fontSize: 12 };
     saveEditorPreferences("alice", "project-one", aliceProjectOne);
     saveEditorPreferences("bob", "project-one", bobProjectOne);
@@ -40,6 +40,7 @@ describe("editor preference scope", () => {
     expect(loadEditorPreferences("alice", "legacy").texFmtConfig).toBe(defaultTexFmtConfig);
     expect(loadEditorPreferences("alice", "legacy").openFilesInTabs).toBe(false);
     expect(loadEditorPreferences("alice", "legacy").mathPreviewOnHover).toBe(false);
+    expect(loadEditorPreferences("alice", "legacy").showTooltips).toBe(false);
   });
 
   it("keeps tex-fmt options scoped to the user and project", () => {

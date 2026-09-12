@@ -18,6 +18,7 @@ interface TooltipRect {
 
 const savedTitleAttribute = "data-texlite-tooltip-title";
 const tooltipSelector = `[data-tooltip], [title], [${savedTitleAttribute}]`;
+const disabledTooltipRegionSelector = '[data-texlite-tooltips="off"]';
 
 export function globalTooltipPosition(rect: TooltipRect, viewportWidth: number): Omit<TooltipState, "text"> {
   const preferredHalfWidth = Math.min(160, Math.max(16, (viewportWidth - 16) / 2));
@@ -40,6 +41,10 @@ function tooltipTarget(target: EventTarget | null): HTMLElement | null {
   return element && tooltipText(element) ? element : null;
 }
 
+function tooltipsDisabled(element: HTMLElement | null): boolean {
+  return Boolean(element?.closest(disabledTooltipRegionSelector));
+}
+
 function suppressNativeTitle(element: HTMLElement): void {
   const title = element.getAttribute("title");
   if (title === null || element.hasAttribute(savedTitleAttribute)) return;
@@ -49,6 +54,9 @@ function suppressNativeTitle(element: HTMLElement): void {
 
 function restoreNativeTitle(element: HTMLElement | null): void {
   if (!element) return;
+  // Keep browser-native title popups suppressed while a workspace has opted
+  // out. The saved value is still available if the preference is re-enabled.
+  if (tooltipsDisabled(element)) return;
   const title = element.getAttribute(savedTitleAttribute);
   if (title === null) return;
   if (!element.hasAttribute("title")) element.setAttribute("title", title);
@@ -82,6 +90,13 @@ export function GlobalTooltip() {
 
     const updateActive = () => {
       const next = pointerTarget ?? focusTarget;
+      if (next && tooltipsDisabled(next)) {
+        if (next !== active.current) restoreNativeTitle(active.current);
+        active.current = next;
+        suppressNativeTitle(next);
+        setTooltip(null);
+        return;
+      }
       if (next === active.current) {
         if (!next) return;
         const text = tooltipText(next);
@@ -107,6 +122,11 @@ export function GlobalTooltip() {
     const refreshPosition = () => {
       const element = active.current;
       if (!element) return;
+      if (tooltipsDisabled(element)) {
+        suppressNativeTitle(element);
+        setTooltip(null);
+        return;
+      }
       const text = tooltipText(element);
       if (!text) return;
       setTooltip({ text, ...globalTooltipPosition(element.getBoundingClientRect(), window.innerWidth) });
@@ -146,6 +166,12 @@ export function GlobalTooltip() {
     window.addEventListener("blur", dismiss);
     window.addEventListener("pagehide", dismiss);
     window.addEventListener("popstate", dismiss);
+    const preferenceObserver = new MutationObserver(updateActive);
+    preferenceObserver.observe(document.documentElement, {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ["data-texlite-tooltips"]
+    });
     return () => {
       document.removeEventListener("pointerover", onPointerOver, true);
       document.removeEventListener("pointerout", onPointerOut, true);
@@ -157,6 +183,7 @@ export function GlobalTooltip() {
       window.removeEventListener("blur", dismiss);
       window.removeEventListener("pagehide", dismiss);
       window.removeEventListener("popstate", dismiss);
+      preferenceObserver.disconnect();
       restoreNativeTitle(active.current);
       active.current = null;
     };
