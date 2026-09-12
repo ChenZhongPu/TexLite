@@ -25,6 +25,7 @@ logs/
 .env.*
 !.env.example
 texlite.config.json
+/TODO.md
 .DS_Store
 Thumbs.db
 .idea/

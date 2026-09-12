@@ -472,6 +472,15 @@ operating-system crash, the most recently acknowledged database transaction
 may be rolled back; normal process crashes do not have that trade-off. The
 setting is deliberately not `OFF`, which could permit database corruption.
 
+Database schema and data upgrades are append-only, versioned migrations stored
+in `texlite_schema_migrations`. Each migration and its version record commit in
+one SQLite transaction, so a failed upgrade is retried without being marked as
+complete. The first tracked migration is a compatibility baseline for earlier
+TexLite databases; it upgrades their schema once and records version 1. Future
+changes must append a new migration rather than change an already released one.
+This prevents historical backfills, such as the migration from project tags to
+private user tags, from running again on every server restart.
+
 Tags and archive state are private to each user. A project can therefore have
 different labels, filters, and archived/active visibility for different
 collaborators. Deleting a project removes its database rows and source/output

@@ -31,6 +31,45 @@ export interface ProjectRow {
   updated_at: string;
 }
 
+interface DatabaseMigrationContext {
+  /**
+   * Before migrations were tracked, `project_tags` was copied into
+   * `user_tags` on every startup.  Only databases from before private tags
+   * existed need that one-time conversion.  An existing `user_tags` table is
+   * evidence that a prior TexLite release has already performed it; importing
+   * again could recreate a tag that its owner deliberately deleted.
+   */
+  migrateLegacyProjectTags: boolean;
+  /** These backfills are safe only while introducing their missing column. */
+  backfillAdminCanCreateProjects: boolean;
+  backfillProjectLastModifiedBy: boolean;
+  backfillCompileRunMainFile: boolean;
+  backfillEditSegmentBytes: boolean;
+}
+
+interface DatabaseMigration {
+  version: number;
+  name: string;
+  apply: (db: DatabaseConnection, context: DatabaseMigrationContext) => void;
+}
+
+const migrationsTable = "texlite_schema_migrations";
+
+/**
+ * Keep this list append-only. Existing migration bodies must never be changed
+ * after release: a database records the version only after that migration's
+ * transaction has committed.
+ *
+ * Version 1 deliberately folds the untracked historical schema setup into a
+ * single baseline. It upgrades every database released before versioned
+ * migrations while preserving the current schema for new installations.
+ */
+const databaseMigrations: readonly DatabaseMigration[] = [
+  // Append future migrations below this entry. Never insert before or modify
+  // the released baseline: recorded databases will intentionally skip it.
+  { version: 1, name: "baseline_schema_and_legacy_upgrade", apply: applyBaselineMigration }
+];
+
 export function openDatabase(config: Config): DatabaseConnection {
   fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(config.projectsDir, { recursive: true, mode: 0o700 });
@@ -39,11 +78,70 @@ export function openDatabase(config: Config): DatabaseConnection {
   // per-transaction WAL fsync: a sudden host failure can lose the most recent
   // acknowledged transaction, but the database remains consistent.
   db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
-  migrate(db);
+  try {
+    migrate(db);
+  } catch (error) {
+    // A failed migration must not leave an open SQLite handle holding a lock
+    // while startup unwinds. Its transaction has already been rolled back.
+    db.close();
+    throw error;
+  }
   return db;
 }
 
 function migrate(db: DatabaseConnection): void {
+  const context: DatabaseMigrationContext = {
+    migrateLegacyProjectTags: tableExists(db, "project_tags") && !tableExists(db, "user_tags"),
+    backfillAdminCanCreateProjects: missingColumn(db, "users", "can_create_projects"),
+    backfillProjectLastModifiedBy: missingColumn(db, "projects", "last_modified_by"),
+    backfillCompileRunMainFile: missingColumn(db, "compile_runs", "main_file"),
+    backfillEditSegmentBytes: missingColumn(db, "project_edit_segments", "steps_bytes")
+  };
+  db.exec(`CREATE TABLE IF NOT EXISTS ${migrationsTable} (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+  )`);
+  const applied = (db.prepare(`SELECT version, name FROM ${migrationsTable}`).all() as Array<{ version: number; name: string }>)
+    .map((migration) => ({ version: Number(migration.version), name: migration.name }));
+  const knownMigrations = new Map(databaseMigrations.map((migration) => [migration.version, migration]));
+  const unknownMigration = applied.find((migration) => !knownMigrations.has(migration.version));
+  if (unknownMigration !== undefined) {
+    const latestVersion = databaseMigrations.at(-1)?.version ?? 0;
+    const direction = unknownMigration.version > latestVersion ? "newer than" : "not recognized by";
+    throw new Error(`Database schema version ${unknownMigration.version} is ${direction} this TexLite release.`);
+  }
+  const renamedMigration = applied.find((migration) => knownMigrations.get(migration.version)?.name !== migration.name);
+  if (renamedMigration) {
+    throw new Error(`Database migration ${renamedMigration.version} does not match this TexLite release.`);
+  }
+  const appliedVersions = new Set(applied.map((migration) => migration.version));
+  const missingBeforeApplied = databaseMigrations.find((migration) => !appliedVersions.has(migration.version)
+    && applied.some((appliedMigration) => appliedMigration.version > migration.version));
+  if (missingBeforeApplied) {
+    throw new Error(`Database migration ${missingBeforeApplied.version} is missing before a later migration.`);
+  }
+
+  const record = db.prepare(`INSERT INTO ${migrationsTable} (version, name, applied_at) VALUES (?, ?, ?)`);
+  for (const migration of databaseMigrations) {
+    if (appliedVersions.has(migration.version)) continue;
+    db.transaction(() => {
+      migration.apply(db, context);
+      record.run(migration.version, migration.name, new Date().toISOString());
+    })();
+  }
+}
+
+function tableExists(db: DatabaseConnection, table: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+function missingColumn(db: DatabaseConnection, table: string, column: string): boolean {
+  return tableExists(db, table)
+    && !db.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?").get(table, column);
+}
+
+function applyBaselineMigration(db: DatabaseConnection, context: DatabaseMigrationContext): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -315,10 +413,10 @@ function migrate(db: DatabaseConnection): void {
 
   const editColumns = db.prepare("PRAGMA table_info(project_edit_segments)").all() as Array<{ name: string }>;
   if (!editColumns.some((column) => column.name === "steps_bytes")) {
-    db.transaction(() => {
-      db.exec("ALTER TABLE project_edit_segments ADD COLUMN steps_bytes INTEGER NOT NULL DEFAULT 0");
+    db.exec("ALTER TABLE project_edit_segments ADD COLUMN steps_bytes INTEGER NOT NULL DEFAULT 0");
+    if (context.backfillEditSegmentBytes) {
       db.exec("UPDATE project_edit_segments SET steps_bytes = LENGTH(CAST(steps_json AS BLOB))");
-    })();
+    }
   }
   const projectColumns = db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
   if (!projectColumns.some((column) => column.name === "latexmkrc")) {
@@ -361,14 +459,24 @@ function migrate(db: DatabaseConnection): void {
     db.exec("ALTER TABLE citation_library_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
   }
   db.exec(`
-    UPDATE users SET can_create_projects = 1 WHERE role = 'admin';
-    UPDATE projects SET last_modified_by = owner_id WHERE last_modified_by IS NULL;
-    UPDATE compile_runs SET main_file = COALESCE(
-      (SELECT project.main_file FROM projects project WHERE project.id = compile_runs.project_id), ''
-    ) WHERE main_file = '';
     CREATE INDEX IF NOT EXISTS compile_runs_project_main_created
       ON compile_runs(project_id, main_file, created_at DESC);
+  `);
 
+  if (context.backfillProjectLastModifiedBy) {
+    db.exec("UPDATE projects SET last_modified_by = owner_id WHERE last_modified_by IS NULL");
+  }
+  if (context.backfillAdminCanCreateProjects) {
+    db.exec("UPDATE users SET can_create_projects = 1 WHERE role = 'admin'");
+  }
+  if (context.backfillCompileRunMainFile) {
+    db.exec(`UPDATE compile_runs SET main_file = COALESCE(
+      (SELECT project.main_file FROM projects project WHERE project.id = compile_runs.project_id), ''
+    ) WHERE main_file = ''`);
+  }
+
+  if (!context.migrateLegacyProjectTags) return;
+  db.exec(`
     INSERT OR IGNORE INTO tags (id, name, color, created_by, created_at, updated_at)
     SELECT legacy.id, legacy.name, legacy.color, p.owner_id, legacy.created_at, legacy.created_at
     FROM project_tags legacy
