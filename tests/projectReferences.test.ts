@@ -57,7 +57,7 @@ describe("project reference navigation", () => {
       "\\input{chapters/intro}"
     ].join("\n"));
     fs.writeFileSync(path.join(source, "chapters", "intro.tex"), [
-      "\\input{../preamble}",
+      "\\input{preamble}",
       "\\bibliography{../bibliography/references}"
     ].join("\n"));
     fs.writeFileSync(path.join(source, "preamble.tex"), "\\section{Preamble}\\label{sec:preamble}");

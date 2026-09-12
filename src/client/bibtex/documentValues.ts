@@ -14,6 +14,7 @@ export interface DocumentValues {
     organizations: Set<string>;
     addresses: Set<string>;
     years: Set<string>;
+    stringMacros: Set<string>;
     keys: Set<string>;
     byField: Map<string, Set<string>>;
 }
@@ -35,6 +36,20 @@ const FIELD_BUCKETS: Record<string, keyof Omit<DocumentValues, 'byField'>> = {
     year: 'years',
     origyear: 'years'
 };
+
+/**
+ * Completion can ask for document-wide values repeatedly while its popup is
+ * open. CodeMirror documents are immutable, but a background parse may still
+ * replace the syntax tree for the same document. Keying on both identities
+ * avoids a full tree walk for ordinary completion updates without retaining
+ * stale values after either kind of change.
+ */
+interface CachedDocumentValues {
+    tree: ReturnType<typeof syntaxTree>;
+    values: DocumentValues;
+}
+
+const documentValuesCache = new WeakMap<EditorState['doc'], CachedDocumentValues>();
 
 interface TopLevelAndSeparator {
     /** Includes the whitespace that separates the preceding name from `and`. */
@@ -123,17 +138,25 @@ function unwrapValueAtom(text: string): string {
 }
 
 export function collectDocumentValues(state: EditorState): DocumentValues {
+    const tree = syntaxTree(state);
+    const doc = state.doc;
+    const cached = documentValuesCache.get(doc);
+    if (cached?.tree === tree) return cached.values;
+
     const result: DocumentValues = {
         authors: new Set(), editors: new Set(), journals: new Set(),
         publishers: new Set(), schools: new Set(), institutions: new Set(),
         organizations: new Set(), addresses: new Set(), years: new Set(),
+        stringMacros: new Set(),
         keys: new Set(), byField: new Map()
     };
 
-    const tree = syntaxTree(state);
-    const doc = state.doc;
-
     tree.cursor().iterate((node: { name: string; node: SyntaxNode }) => {
+        if (node.name === 'StringEntry') {
+            const nameNode = node.node.getChild('StringName');
+            if (nameNode) result.stringMacros.add(doc.sliceString(nameNode.from, nameNode.to));
+            return false;
+        }
         if (node.name !== 'Entry') return;
         const entry = node.node;
 
@@ -168,5 +191,6 @@ export function collectDocumentValues(state: EditorState): DocumentValues {
         return false;
     });
 
+    documentValuesCache.set(doc, { tree, values: result });
     return result;
 }

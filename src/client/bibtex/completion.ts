@@ -30,39 +30,45 @@ export const journalAbbreviations: readonly string[] = [
 
 export const snippets: readonly Completion[] = [
   snippetCompletion(
-    '@article{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tjournaltitle = {#{journal}},\n\tdate = {#{year}},\n\tvolume = {#{volume}},\n\tnumber = {#{number}},\n\tpages = {#{pages}}\n}',
+    '@article{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tjournal = {#{journal}},\n\tyear = {#{year}},\n\tvolume = {#{volume}},\n\tnumber = {#{number}},\n\tpages = {#{pages}}\n}',
     { label: '@article', type: 'keyword', detail: 'Journal article' }
   ),
   snippetCompletion(
-    '@book{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tpublisher = {#{publisher}},\n\tdate = {#{year}},\n\tlocation = {#{location}}\n}',
+    '@book{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tpublisher = {#{publisher}},\n\tyear = {#{year}},\n\taddress = {#{address}}\n}',
     { label: '@book', type: 'keyword', detail: 'Book' }
   ),
   snippetCompletion(
-    '@inproceedings{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tbooktitle = {#{booktitle}},\n\tdate = {#{year}},\n\tpages = {#{pages}}\n}',
+    '@inproceedings{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tbooktitle = {#{booktitle}},\n\tyear = {#{year}},\n\tpages = {#{pages}}\n}',
     { label: '@inproceedings', type: 'keyword', detail: 'Conference paper' }
   ),
   snippetCompletion(
-    '@incollection{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tbooktitle = {#{booktitle}},\n\teditor = {#{editor}},\n\tpublisher = {#{publisher}},\n\tdate = {#{year}},\n\tpages = {#{pages}}\n}',
+    '@incollection{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tbooktitle = {#{booktitle}},\n\teditor = {#{editor}},\n\tpublisher = {#{publisher}},\n\tyear = {#{year}},\n\tpages = {#{pages}}\n}',
     { label: '@incollection', type: 'keyword', detail: 'Book chapter' }
   ),
   snippetCompletion(
-    '@thesis{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\ttype = {#{phdthesis}},\n\tinstitution = {#{institution}},\n\tdate = {#{year}}\n}',
-    { label: '@thesis', type: 'keyword', detail: 'Thesis (biblatex)' }
+    '@phdthesis{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tschool = {#{school}},\n\tyear = {#{year}}\n}',
+    { label: '@phdthesis', type: 'keyword', detail: 'PhD thesis' }
   ),
   snippetCompletion(
-    '@online{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\turl = {#{url}},\n\turldate = {#{urldate}},\n\tdate = {#{year}}\n}',
-    { label: '@online', type: 'keyword', detail: 'Online resource' }
+    '@mastersthesis{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tschool = {#{school}},\n\tyear = {#{year}}\n}',
+    { label: '@mastersthesis', type: 'keyword', detail: 'Master\'s thesis' }
+  ),
+  // Keep the explicit BibLaTeX convenience template available for projects
+  // that use it, while the core templates above stay BibTeX-compatible.
+  snippetCompletion(
+    '@online{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\turl = {#{url}},\n\turldate = {#{urldate}},\n\tyear = {#{year}}\n}',
+    { label: '@online', type: 'keyword', detail: 'Online resource (BibLaTeX)' }
   ),
   snippetCompletion(
-    '@misc{#{key},\n\ttitle = {#{title}},\n\tauthor = {#{author}},\n\tdate = {#{year}},\n\tnote = {#{note}}\n}',
+    '@misc{#{key},\n\ttitle = {#{title}},\n\tauthor = {#{author}},\n\tyear = {#{year}},\n\tnote = {#{note}}\n}',
     { label: '@misc', type: 'keyword', detail: 'Miscellaneous' }
   ),
   snippetCompletion(
-    '@manual{#{key},\n\ttitle = {#{title}},\n\tauthor = {#{author}},\n\torganization = {#{organization}},\n\tdate = {#{year}}\n}',
+    '@manual{#{key},\n\ttitle = {#{title}},\n\tauthor = {#{author}},\n\torganization = {#{organization}},\n\tyear = {#{year}}\n}',
     { label: '@manual', type: 'keyword', detail: 'Manual' }
   ),
   snippetCompletion(
-    '@techreport{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tinstitution = {#{institution}},\n\tdate = {#{year}},\n\tnumber = {#{number}}\n}',
+    '@techreport{#{key},\n\tauthor = {#{author}},\n\ttitle = {#{title}},\n\tinstitution = {#{institution}},\n\tyear = {#{year}},\n\tnumber = {#{number}}\n}',
     { label: '@techreport', type: 'keyword', detail: 'Technical report' }
   )
 ];
@@ -143,6 +149,27 @@ function getPresentFieldNames(node: SyntaxNode, doc: { sliceString(from: number,
   return present;
 }
 
+function hasFollowingFieldAssignment(
+  doc: { sliceString(from: number, to: number): string },
+  name: SyntaxNode,
+  field: SyntaxNode
+): boolean {
+  // `%` starts a BibTeX line comment. It is valid to put one between a field
+  // name and its equals sign, so whitespace alone is not enough here.
+  return /^(?:\s|%[^\n]*(?:\n|$))*=/.test(doc.sliceString(name.to, field.to));
+}
+
+function escapeQuotedBibtexLiteral(value: string): string {
+  let escaped = "";
+  let precedingBackslashes = 0;
+  for (const character of value) {
+    if (character === '"' && precedingBackslashes % 2 === 0) escaped += "\\";
+    escaped += character;
+    precedingBackslashes = character === "\\" ? precedingBackslashes + 1 : 0;
+  }
+  return escaped;
+}
+
 function completeEntryType(context: CompletionContext): CompletionResult | null {
   const match = context.matchBefore(/@[a-zA-Z]*/);
   if (!match || (match.from === match.to && !context.explicit)) return null;
@@ -170,6 +197,19 @@ function completeFieldName(
 
   const doc = context.state.doc;
   const present = getPresentFieldNames(inside, doc);
+  const field = findAncestor(inside, 'Field');
+  const currentName = field?.getChild('FieldName') ?? null;
+  // A Field node is also created while a new field name is being typed. Only
+  // treat it as an existing field when an equals sign follows its name. This
+  // lets a new `jou` expand to `journal = {value}`, while editing
+  // `jou = {Old}` only replaces the name itself.
+  const isAssignedFieldName = Boolean(
+    currentName && context.pos >= currentName.from && context.pos <= currentName.to &&
+    hasFollowingFieldAssignment(doc, currentName, field!)
+  );
+  if (isAssignedFieldName && currentName) {
+    present.delete(doc.sliceString(currentName.from, currentName.to).toLowerCase());
+  }
   const entryType = getEnclosingEntryType(inside, doc);
   const requirements = entryType ? fieldRequirements[entryType] : undefined;
 
@@ -188,14 +228,21 @@ function completeFieldName(
     let boost = 0.5;
     if (requiredSet.has(name)) boost = 2;
     else if (optionalSet.has(name)) boost = 1;
-    options.push(snippetCompletion(`${name} = {\${value}}`, {
-      label: name,
-      type: 'property',
-      boost
-    }));
+    options.push(isAssignedFieldName
+      ? { label: name, type: 'property', apply: name, boost }
+      : snippetCompletion(`${name} = {\${value}}`, {
+        label: name,
+        type: 'property',
+        boost
+      }));
   }
 
-  return { from: match.from, options, validFor: /^[a-zA-Z_]*$/ };
+  return {
+    from: isAssignedFieldName && currentName ? currentName.from : match.from,
+    to: isAssignedFieldName && currentName ? currentName.to : undefined,
+    options,
+    validFor: /^[a-zA-Z_]*$/
+  };
 }
 
 function completeFieldValue(
@@ -242,11 +289,27 @@ function completeFieldValue(
   const docValues = collectDocumentValues(context.state);
   const options: Completion[] = [];
   const seen = new Set<string>();
+  const stringMacros = new Set([...docValues.stringMacros].map((name) => name.toLowerCase()));
+  const shouldUseBareValue = (label: string) =>
+    fieldName === 'month' && monthAbbreviations.includes(label.toLowerCase());
   const add = (label: string, type: string, boost = 1) => {
     if (!label || seen.has(label)) return;
     seen.add(label);
-    options.push({ label, type, apply: label, boost });
+    // Values already inside braces or quotes retain their delimiter. A bare
+    // identifier is valid BibTeX syntax only for a number or a string macro;
+    // document values such as journal names must become a braced literal.
+    const preservesDelimiter = atom?.name === 'BracedValue' || atom?.name === 'QuotedValue';
+    const apply = atom?.name === 'QuotedValue'
+      ? escapeQuotedBibtexLiteral(label)
+      : preservesDelimiter || shouldUseBareValue(label) || stringMacros.has(label.toLowerCase())
+        ? label
+        : `{${label}}`;
+    options.push({ label, type, apply, boost });
   };
+
+  if (!isPersonField) {
+    for (const macro of docValues.stringMacros) add(macro, 'constant', 2.5);
+  }
 
   const bucket = VALUE_FIELDS_FROM_DOC[fieldName];
   if (bucket) {
@@ -280,6 +343,15 @@ export function bibtexCompletionSource(context: CompletionContext): CompletionRe
 
   const valueNode = findAncestorIn(node, VALUE_NODES);
   if (valueNode && findAncestor(valueNode, 'Field')) {
+    return completeFieldValue(context, node);
+  }
+
+  // The parser deliberately accepts an incomplete `field =` while the user
+  // is typing. It has no Value child yet, but completion should still offer
+  // field values rather than a second field-name template.
+  const field = findAncestor(node, 'Field');
+  const fieldName = field?.getChild('FieldName');
+  if (field && fieldName && /^\s*=\s*$/.test(context.state.sliceDoc(fieldName.to, context.pos))) {
     return completeFieldValue(context, node);
   }
 

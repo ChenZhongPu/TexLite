@@ -29,6 +29,11 @@ import { latexAutoPairInput, latexSkippedBracePair } from "./latexAutoPairs";
 import { latexFold } from "./latexFolding";
 import { latexCompletions } from "./latexCompletions";
 import { findLatexReferences, type LatexReference } from "../shared/latexReferences";
+import {
+  LatexReferenceViewportCache,
+  referenceScanWindows,
+  visibleLatexReferences
+} from "./latexReferenceDecorations";
 import type { SpellCheckIssue } from "./spellCheck";
 export type { SpellCheckIssue } from "./spellCheck";
 
@@ -162,37 +167,77 @@ const referenceNavigationSettings = Facet.define<ReferenceNavigationSettings, Re
  */
 const latexReferenceMarks = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
+  private cache: LatexReferenceViewportCache | null = null;
+  private viewportDocument: EditorState["doc"] | null = null;
+  private viewportChanges = 0;
+  private scrollTop: number;
+  private scrollLeft: number;
 
   constructor(private readonly view: EditorView) {
-    this.decorations = buildReferenceDecorations(view);
+    this.scrollTop = view.scrollDOM.scrollTop;
+    this.scrollLeft = view.scrollDOM.scrollLeft;
+    this.decorations = buildReferenceDecorations(view, null);
   }
 
   update(update: ViewUpdate): void {
-    if (update.docChanged || update.viewportChanged
-      || update.startState.facet(referenceNavigationSettings) !== update.state.facet(referenceNavigationSettings)) {
-      this.decorations = buildReferenceDecorations(this.view);
+    const settingsChanged = update.startState.facet(referenceNavigationSettings) !== update.state.facet(referenceNavigationSettings);
+    if (!update.docChanged && !update.viewportChanged && !settingsChanged) return;
+    const scrollMoved = update.viewportChanged && (
+      this.view.scrollDOM.scrollTop !== this.scrollTop || this.view.scrollDOM.scrollLeft !== this.scrollLeft
+    );
+    this.scrollTop = this.view.scrollDOM.scrollTop;
+    this.scrollLeft = this.view.scrollDOM.scrollLeft;
+
+    if (update.docChanged) {
+      // Keep typing on the existing bounded prefix path. A new immutable
+      // document must not trigger a full scan simply because one character was
+      // inserted far from the viewport.
+      this.cache?.clear();
+      this.cache = null;
+      this.viewportDocument = null;
+      this.viewportChanges = 0;
+      this.decorations = buildReferenceDecorations(this.view, null);
+      return;
     }
+
+    // A second scroll-offset change is a real navigation pattern. A viewport
+    // update can also come from reflow or wrapping, so it must not by itself
+    // promote this document to a full scan.
+    if (scrollMoved) {
+      if (this.viewportDocument !== update.state.doc) {
+        this.viewportDocument = update.state.doc;
+        this.viewportChanges = 0;
+      }
+      this.viewportChanges += 1;
+      if (this.viewportChanges >= 2) this.cache ??= new LatexReferenceViewportCache();
+    }
+    this.decorations = buildReferenceDecorations(this.view, this.cache);
   }
 }, {
   decorations: (plugin) => plugin.decorations
 });
 
-function buildReferenceDecorations(view: EditorView): DecorationSet {
+function buildReferenceDecorations(view: EditorView, cache: LatexReferenceViewportCache | null): DecorationSet {
   const settings = view.state.facet(referenceNavigationSettings);
   if (!settings.enabled || view.state.doc.length === 0) return Decoration.none;
-  const windows = referenceScanWindows(view);
+  const windows = referenceScanWindows(view.state.doc, view.visibleRanges);
   // Scan from the start of the document through the visible region. A
   // verbatim-like environment can start far above the viewport, so scanning
   // each visible slice independently would incorrectly decorate its contents.
-  // We still emit decorations only in the small visible windows below.
-  const scanTo = windows.reduce((maximum, window) => Math.max(maximum, window.to), 0);
-  const source = view.state.sliceDoc(0, scanTo);
+  // During ordinary typing retain this bounded scan; after scrolling, the
+  // viewport cache scans the immutable document once and preserves the same
+  // literal state without repeated prefix work.
+  const visibleReferences = cache
+    ? cache.referencesIn(view.state.doc, windows)
+    : visibleLatexReferences(
+      findLatexReferences(view.state.sliceDoc(0, windows.reduce((maximum, window) => Math.max(maximum, window.to), 0))),
+      windows
+    );
   const ranges: Range<Decoration>[] = [];
   const seen = new Set<string>();
-  for (const reference of findLatexReferences(source)) {
+  for (const reference of visibleReferences) {
     const from = reference.from;
     const to = reference.to;
-    if (!windows.some((window) => from >= window.from && to <= window.to)) continue;
     const signature = [reference.kind, reference.key, String(from), String(to)].join(":");
     if (seen.has(signature) || to <= from) continue;
     seen.add(signature);
@@ -210,27 +255,6 @@ function buildReferenceDecorations(view: EditorView): DecorationSet {
     }).range(from, to));
   }
   return ranges.length ? Decoration.set(ranges, true) : Decoration.none;
-}
-
-function referenceScanWindows(view: EditorView): Array<{ from: number; to: number }> {
-  const document = view.state.doc;
-  const context = 1_024;
-  const raw = (view.visibleRanges.length ? view.visibleRanges : [{ from: 0, to: document.length }])
-    .map((range) => {
-      const fromOffset = Math.max(0, range.from - context);
-      const toOffset = Math.min(document.length, range.to + context);
-      const from = document.lineAt(fromOffset).from;
-      const to = document.lineAt(Math.max(fromOffset, Math.max(0, toOffset - 1))).to;
-      return { from, to };
-    })
-    .sort((left, right) => left.from - right.from);
-  const merged: Array<{ from: number; to: number }> = [];
-  for (const range of raw) {
-    const previous = merged.at(-1);
-    if (previous && range.from <= previous.to) previous.to = Math.max(previous.to, range.to);
-    else merged.push(range);
-  }
-  return merged;
 }
 
 function referenceFromElement(element: EventTarget | null): LatexReference | null {

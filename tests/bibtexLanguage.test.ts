@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { CompletionContext } from "@codemirror/autocomplete";
+import { CompletionContext, type Completion } from "@codemirror/autocomplete";
 import { defaultHighlightStyle, foldable, matchBrackets, syntaxTree } from "@codemirror/language";
 import { EditorState, type Extension, type Transaction } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -37,16 +37,12 @@ function diagnostics(source: string, options: BibtexLinterOptions = {}) {
   return bibtexLinter(options)({ state } as unknown as EditorView);
 }
 
-function applyCompletion(
+function applyOption(
   state: EditorState,
-  completion: NonNullable<ReturnType<typeof bibtexCompletionSource>>,
-  label: string
+  option: Completion,
+  from: number,
+  to = from
 ): EditorState {
-  const option = completion.options.find((candidate) => candidate.label === label);
-  if (!option) throw new Error(`Missing completion: ${label}`);
-  const from = completion.from;
-  const to = completion.to ?? completion.from;
-
   if (typeof option.apply === "string" || option.apply === undefined) {
     return state.update({ changes: { from, to, insert: option.apply ?? option.label } }).state;
   }
@@ -62,6 +58,17 @@ function applyCompletion(
   } as unknown as EditorView;
   option.apply(view, option, from, to);
   return current;
+}
+
+function applyCompletion(
+  state: EditorState,
+  completion: NonNullable<ReturnType<typeof bibtexCompletionSource>>,
+  label: string,
+  fallbackTo = completion.from
+): EditorState {
+  const option = completion.options.find((candidate) => candidate.label === label);
+  if (!option) throw new Error(`Missing completion: ${label}`);
+  return applyOption(state, option, completion.from, completion.to ?? fallbackTo);
 }
 
 describe("internal BibTeX CodeMirror language", () => {
@@ -239,6 +246,96 @@ describe("internal BibTeX CodeMirror language", () => {
     expect(completed.doc.toString()).not.toContain("${0:value}");
   });
 
+  it("replaces a complete existing field name without inserting a second field assignment", () => {
+    const source = "@article{example,\n  journal = {Old}\n}";
+    const position = source.indexOf("jou") + "jou".length;
+    const state = bibtexState(source).update({ selection: { anchor: position } }).state;
+    const completion = bibtexCompletionSource(new CompletionContext(state, position, true));
+    expect(completion).not.toBeNull();
+
+    const completed = applyCompletion(state, completion!, "journal", position);
+    expect(completed.doc.toString()).toBe("@article{example,\n  journal = {Old}\n}");
+    expect(completed.doc.toString()).not.toContain("journal = {value} = {Old}");
+    expect(completed.doc.toString()).not.toContain("journalrnal");
+  });
+
+  it("recognizes comments between an existing field name and its assignment", () => {
+    const source = "@article{example,\n  jou % keep this comment\n  = {Old}\n}";
+    const position = source.indexOf("jou") + "jou".length;
+    const state = bibtexState(source).update({ selection: { anchor: position } }).state;
+    const completion = bibtexCompletionSource(new CompletionContext(state, position, true));
+    expect(completion).not.toBeNull();
+
+    const completed = applyCompletion(state, completion!, "journal", position);
+    expect(completed.doc.toString()).toBe("@article{example,\n  journal % keep this comment\n  = {Old}\n}");
+    expect(completed.doc.toString()).not.toContain("journal = {value}");
+  });
+
+  it("keeps existing value delimiters and braces bare literal completions", () => {
+    const source = String.raw`@article{source,
+  journal = {Nature Communications}
+}
+@article{bare,
+  journal = Nat
+}
+@article{quoted,
+  journal = "Nat"
+}`;
+    const state = bibtexState(source);
+
+    const barePosition = source.indexOf("journal = Nat") + "journal = Nat".length;
+    const bareCompletion = bibtexCompletionSource(new CompletionContext(state, barePosition, true));
+    expect(bareCompletion).not.toBeNull();
+    const withBareValue = applyCompletion(state, bareCompletion!, "Nature Communications");
+    expect(withBareValue.doc.toString()).toContain("journal = {Nature Communications}");
+
+    const quotedPosition = source.lastIndexOf("Nat") + "Nat".length;
+    const quotedCompletion = bibtexCompletionSource(new CompletionContext(state, quotedPosition, true));
+    expect(quotedCompletion).not.toBeNull();
+    const withQuotedValue = applyCompletion(state, quotedCompletion!, "Nature Communications");
+    expect(withQuotedValue.doc.toString()).toContain("journal = \"Nature Communications\"");
+  });
+
+  it("keeps string macros bare and safely escapes inserted quoted values", () => {
+    const source = String.raw`@string{venue = "Nature"}
+@article{source, journal = {Journal of "Examples"}}
+@article{macro-target, journal = ven}
+@article{quoted-target, journal = "Jo"}`;
+    const state = bibtexState(source);
+    expect(collectDocumentValues(state).stringMacros).toEqual(new Set(["venue"]));
+
+    const macroPosition = source.indexOf("journal = ven") + "journal = ven".length;
+    const macroCompletion = bibtexCompletionSource(new CompletionContext(state, macroPosition, true));
+    expect(macroCompletion?.options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "venue", type: "constant" })
+    ]));
+    const withMacro = applyCompletion(state, macroCompletion!, "venue");
+    expect(withMacro.doc.toString()).toContain("journal = venue");
+    expect(withMacro.doc.toString()).not.toContain("journal = {venue}");
+
+    const quotedPosition = source.lastIndexOf("Jo") + "Jo".length;
+    const quotedCompletion = bibtexCompletionSource(new CompletionContext(state, quotedPosition, true));
+    expect(quotedCompletion).not.toBeNull();
+    const withQuotedValue = applyCompletion(state, quotedCompletion!, 'Journal of "Examples"');
+    expect(withQuotedValue.doc.toString()).toContain(String.raw`journal = "Journal of \"Examples\""`);
+    expect(syntaxErrors(withQuotedValue)).toEqual([]);
+  });
+
+  it("uses traditional BibTeX fields in default entry templates", () => {
+    const state = bibtexState("@");
+    const completion = bibtexCompletionSource(new CompletionContext(state, 1, true));
+    const articleSnippet = completion?.options
+      .filter((option) => option.label === "@article")
+      .find((option) => typeof option.apply === "function");
+    expect(articleSnippet).toBeDefined();
+
+    const completed = applyOption(state, articleSnippet!, completion!.from, completion!.to ?? completion!.from);
+    expect(completed.doc.toString()).toContain("journal = {journal}");
+    expect(completed.doc.toString()).toContain("year = {year}");
+    expect(completed.doc.toString()).not.toContain("journaltitle");
+    expect(completed.doc.toString()).not.toContain("date =");
+  });
+
   it("collects document values for field, person, month and cross-reference completion", () => {
     const source = String.raw`@article{first,
   author = {Ada Lovelace and Grace Hopper},
@@ -273,6 +370,15 @@ describe("internal BibTeX CodeMirror language", () => {
     expect(monthCompletion?.options).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: "jan" })
     ]));
+  });
+
+  it("accepts common citation keys that include punctuation accepted by BibTeX", () => {
+    const source = "@misc{Smith+2026, title = {A valid key}}";
+    const state = bibtexState(source);
+
+    expect(syntaxErrors(state)).toEqual([]);
+    expect(collectDocumentValues(state).keys).toEqual(new Set(["Smith+2026"]));
+    expect(diagnostics(source).map((diagnostic) => diagnostic.message)).not.toContain("Syntax error");
   });
 
   it("does not reuse concatenated BibTeX values as literal field text", () => {

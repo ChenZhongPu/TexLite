@@ -202,6 +202,30 @@ See \citep[see][p. 4]{smith2025, doe2024} and \cref{fig:result, tab:summary}.`;
     ]);
   });
 
+  it("supports common unbraced inputs and ignores comments inside path arguments", () => {
+    const source = [
+      "\\input chapters/intro",
+      "\\input{appendices/% ignore this line",
+      "proof}",
+      "\\subinputfrom{appendices/}{supplement}",
+      "\\bibliography{references, % explanatory comment",
+      "  extra}",
+      "\\addbibresource{library% line continuation",
+      ".bib}"
+    ].join("\n");
+
+    const includes = findLatexSourceIncludes(source);
+    expect(includes.map((reference) => reference.path)).toEqual([
+      "chapters/intro",
+      "appendices/proof",
+      "appendices/supplement"
+    ]);
+    expect(source.slice(includes[1].from, includes[1].to)).toContain("% ignore this line");
+    expect(includes[2]).toMatchObject({ command: "subinputfrom", directory: "appendices/" });
+    expect(findLatexBibliographyFiles(source).map((reference) => reference.path))
+      .toEqual(["references", "extra", "library.bib"]);
+  });
+
   it("uses one-based source positions for navigation", () => {
     expect(lineAndColumnAt("first\nsecond\nthird", 6)).toEqual({ line: 2, column: 1 });
     expect(lineAndColumnAt("first\nsecond\nthird", 999)).toEqual({ line: 3, column: 6 });

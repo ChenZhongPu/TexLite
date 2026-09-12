@@ -93,7 +93,9 @@ StringRef  { nameIdentifier }
   EntryType { "@" $[a-zA-Z]+ }
 
   nameIdentifier { $[a-zA-Z_] $[a-zA-Z0-9_-]* }
-  keyIdentifier  { $[a-zA-Z0-9_] $[a-zA-Z0-9_:./-]* }
+  // Keep the entry delimiters out of a cite key, while accepting common
+  // punctuation such as `+` in `Smith+2026` without a syntax error.
+  keyIdentifier  { ![, \t\r\n{}()%]+ }
 
   Number { $[0-9]+ }
   Concat { "#" }

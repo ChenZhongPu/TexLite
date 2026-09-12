@@ -143,7 +143,13 @@ function citationLookupOrder(
     const directives = sourceDirectives.get(sourcePath);
     if (!directives) continue;
     for (const bibliography of directives.bibliographies) {
-      const resolved = resolveProjectReferencePath(bibliography, sourcePath, ".bib", bibPathSet, true);
+      const resolved = resolveProjectReferencePath(
+        bibliography,
+        sourcePath,
+        ".bib",
+        bibPathSet,
+        "project-root-then-source-file"
+      );
       if (resolved) declaredBibliographies.push(resolved);
     }
   }
