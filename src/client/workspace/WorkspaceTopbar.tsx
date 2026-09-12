@@ -36,7 +36,6 @@ export interface WorkspaceTopbarProps {
   readOnly: boolean;
   collaborationSynced: boolean;
   hasSelection: boolean;
-  onAddComment: () => void;
   onToggleComments: () => void;
   commentsOpen: boolean;
   unresolvedCommentCount: number;
@@ -57,7 +56,7 @@ export function WorkspaceTopbar({
   reconnectCollaboration, protocolUpgradeRequired, showEditor, filesCollapsed, toggleFilesPanel, workspaceLayout,
   changeWorkspaceLayout, onBack, onShare, showCitationLibrary, citationLibraryOpen,
   onCitationLibrary, onSelectionHistory, onHistory, onGit, canManageGit, formatting, readOnly, collaborationSynced,
-  hasSelection, onAddComment,
+  hasSelection,
   onToggleComments, commentsOpen, unresolvedCommentCount, hasActiveFile, onToggleSettings,
   settingsOpen, compileBusy, sharedCompiling, localCompiling, cancelling, compileState, onCompile, onCancelCompile
 }: WorkspaceTopbarProps) {
@@ -81,13 +80,17 @@ export function WorkspaceTopbar({
           <button type="button" className="history-action-snapshots" title={t("history.projectSnapshots")} onClick={onHistory}>{t("history.projectSnapshotsButton")}</button>
         </div>
       </div>
-      <div className="comments-action" role="group" aria-label={t("common.comments")}>
-        <div className="comments-action-label"><MessageSquare size={14} /><span>{t("common.comments")}</span></div>
-        <div className="comments-action-options">
-          <button type="button" className="comments-action-add" title={t("editor.addComment")} aria-label={t("editor.addComment")} onMouseDown={(event) => event.preventDefault()} onClick={onAddComment} disabled={!hasActiveFile}>{t("editor.commentsAdd")}</button>
-          <button type="button" className={`comments-action-all${commentsOpen ? " active" : ""}`} title={t("editor.commentsAll")} onClick={onToggleComments}>{t("editor.commentsAll")} {unresolvedCommentCount || ""}</button>
-        </div>
-      </div>
+      <button
+        type="button"
+        className={`comments-action${commentsOpen ? " active" : ""}`}
+        title={t("editor.commentsAll")}
+        aria-label={unresolvedCommentCount > 0 ? `${t("common.comments")} (${unresolvedCommentCount})` : t("common.comments")}
+        onClick={onToggleComments}
+      >
+        <MessageSquare size={15} />
+        <span>{t("common.comments")}</span>
+        {unresolvedCommentCount > 0 && <sup className="comments-action-count">{unresolvedCommentCount}</sup>}
+      </button>
       <button className="git-action" title={canManageGit ? t("git.title") : t("git.ownerOnly")} disabled={!canManageGit} onClick={onGit}><GitBranch size={15} />Git</button>
       <button className={settingsOpen ? "active" : ""} onClick={onToggleSettings}><Settings size={15} />{t("common.settings")}</button>
       {sharedCompiling || localCompiling

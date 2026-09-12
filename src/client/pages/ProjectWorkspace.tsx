@@ -1217,7 +1217,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       onSelectionHistory={() => setSelectionHistoryOpen(true)} onHistory={() => setHistoryOpen(true)} onGit={() => setGitOpen(true)} canManageGit={project.ownerId === user.id}
       formatting={formatting} readOnly={readOnly} collaborationSynced={collaborationSynced}
       hasSelection={Boolean(selection.selectedText.trim())}
-      onAddComment={openComment} onToggleComments={() => setSidePanel(sidePanel === "comments" ? null : "comments")}
+      onToggleComments={() => setSidePanel(sidePanel === "comments" ? null : "comments")}
       commentsOpen={sidePanel === "comments"} unresolvedCommentCount={comments.filter((item) => !item.resolved).length}
       hasActiveFile={Boolean(activeFile)} onToggleSettings={() => setSidePanel(sidePanel === "settings" ? null : "settings")}
       settingsOpen={sidePanel === "settings"} compileBusy={compileBusy} sharedCompiling={sharedCompiling}
@@ -1270,6 +1270,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
         editorNotice={editorNotice} activateTab={activateTab} closeTab={closeTab}
         handleTabKeyDown={handleTabKeyDown} updateEditorContent={updateEditorContent}
         setSelection={(selectedText, startOffset, endOffset) => setSelection({ selectedText, startOffset, endOffset })}
+        onAddComment={(selectedText, startOffset, endOffset, source) => openComment({ selectedText, startOffset, endOffset }, source)}
         onCommentClick={(id) => { const comment = comments.find((item) => item.id === id); if (comment) { setFocusComment({ ...comment }); setSidePanel("comments"); } }}
         onSpellCheckReplace={replaceSpellCheckIssue} onReferenceNavigate={navigateToReference} onCursor={updateSourceCursor}
       />}
