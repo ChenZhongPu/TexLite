@@ -407,6 +407,9 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .editor-actions button { padding: 8px 10px; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; border: 1px solid #ffffff28; color: white; background: #ffffff0d; font-size: 12px; white-space: nowrap; }
 .editor-actions .compile { background: #f3b943; border-color: #f3b943; color: #193023; font-weight: 700; }
 .editor-actions button.active { background: #d9eadf; color: #164c33; }
+.editor-actions .comments-action.active:hover:not(:disabled) { background: #c6e2cf; color: #164c33; }
+.editor-actions .comments-action.active:hover:not(:disabled) svg,
+.editor-actions .comments-action.active:hover:not(:disabled) span { color: inherit; }
 .history-action { min-width: 174px; display: flex; flex-direction: column; align-self: center; gap: 2px; }
 .history-action-label { height: 12px; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 5px; color: white; font-size: 9px; font-weight: 750; letter-spacing: .08em; line-height: 1; text-transform: uppercase; }
 .history-action-options { height: 27px; display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; border: 1px solid #ffffff35; border-radius: 6px; background: #ffffff0d; }

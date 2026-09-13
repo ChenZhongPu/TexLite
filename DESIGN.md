@@ -312,12 +312,15 @@ Project duplication flushes the live source room and copies the tree under a
 short read barrier. Uploading a replacement text file also re-anchors existing
 source comments against the old and new contents before notifying collaborators.
 
-The outline follows `\input`, `\include`, and `\subfile` references and
-jumps to source lines. The source and PDF panes expose explicit SyncTeX arrows,
-and PDF double-click can request the corresponding source location. Search and
-replace is project-wide, staged as one serialized operation, and records one
-history version. Structured compile diagnostics resolve project-relative
-file names and line numbers; the raw `latexmk` transcript remains available.
+The outline follows `\input`, `\include`, `\subfile`, and import-package
+references with the same path rules used by citation navigation and completion.
+It traverses included files depth-first at their source position, so headings
+remain in reading order rather than document-graph breadth-first order. The
+source and PDF panes expose explicit SyncTeX arrows, and PDF double-click can
+request the corresponding source location. Search and replace is project-wide,
+staged as one serialized operation, and records one history version. Structured
+compile diagnostics resolve project-relative file names and line numbers; the
+raw `latexmk` transcript remains available.
 
 ## Compilation and retained output
 

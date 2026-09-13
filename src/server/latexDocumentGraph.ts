@@ -1,8 +1,9 @@
 import path from "node:path";
 import {
   findLatexBibliographyFiles,
-  findLatexSourceIncludes
-} from "../shared/latexReferences.js";
+  findLatexSourceIncludes,
+  type LatexPathReference
+} from "../shared/latexDependencies.js";
 
 /** The path-bearing directives needed to follow one LaTeX document graph. */
 export interface LatexDocumentDirectives {
@@ -17,6 +18,12 @@ export interface LatexIncludeDirective {
   directory?: string;
 }
 
+export interface ResolvedLatexInclude {
+  path: string;
+  /** Active import.sty base for directives in the resolved source. */
+  importBase: string;
+}
+
 type ProjectReferenceResolution = "project-root" | "source-file" | "project-root-then-source-file";
 
 /**
@@ -26,12 +33,16 @@ type ProjectReferenceResolution = "project-root" | "source-file" | "project-root
  */
 export function latexDocumentDirectives(source: string): LatexDocumentDirectives {
   return {
-    includes: findLatexSourceIncludes(source).map((reference) => ({
-      path: reference.path,
-      command: reference.command,
-      ...(reference.directory !== undefined ? { directory: reference.directory } : {})
-    })),
+    includes: findLatexSourceIncludes(source).map(toLatexIncludeDirective),
     bibliographies: findLatexBibliographyFiles(source).map((reference) => reference.path)
+  };
+}
+
+export function toLatexIncludeDirective(reference: LatexPathReference): LatexIncludeDirective {
+  return {
+    path: reference.path,
+    command: reference.command,
+    ...(reference.directory === undefined ? {} : { directory: reference.directory })
   };
 }
 
@@ -55,7 +66,7 @@ export function documentSourceOrder(
     seen.add(current.path);
     result.push(current.path);
     for (const include of directives.includes) {
-      const resolved = resolveIncludePath(include, current.importBase, sources);
+      const resolved = resolveLatexInclude(include, current.importBase, sources);
       if (resolved && !seen.has(resolved.path)) queued.push(resolved);
     }
   }
@@ -119,11 +130,11 @@ export function resolveProjectReferencePath(
  * the active path first, then the compiler root, matching import.sty's
  * `\\input@path` fallback behavior.
  */
-function resolveIncludePath(
+export function resolveLatexInclude(
   include: LatexIncludeDirective,
   importBase: string,
   available: ReadonlySet<string> | ReadonlyMap<string, unknown>
-): { path: string; importBase: string } | null {
+): ResolvedLatexInclude | null {
   switch (include.command.toLowerCase()) {
     case "input":
     case "include": {

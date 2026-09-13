@@ -1,7 +1,10 @@
 import fs from "node:fs";
-import path from "node:path";
+import { maskLatexComments } from "../shared/latexLiterals.js";
+import { findLatexSourceIncludes } from "../shared/latexDependencies.js";
+import { forEachLatexCommand, readLatexMandatoryArguments } from "../shared/latexScanner.js";
 import type { Config } from "./config.js";
-import { listProjectFilesAsync, resolveSourcePath, safeRelativePath } from "./files.js";
+import { resolveLatexInclude, toLatexIncludeDirective, type LatexIncludeDirective } from "./latexDocumentGraph.js";
+import { listProjectFiles, listProjectFilesAsync, resolveSourcePath, safeRelativePath, type FileEntry } from "./files.js";
 
 export interface ProjectOutlineItem {
   path: string;
@@ -10,43 +13,67 @@ export interface ProjectOutlineItem {
   title: string;
 }
 
-const levels: Record<string, number> = { part: 0, chapter: 0, section: 1, subsection: 2, subsubsection: 3, paragraph: 4 };
-const commandPattern = /\\(part|chapter|section|subsection|subsubsection|paragraph)\*?(?:\s*\[[^\]]*\])?\s*\{|\\(?:input|include|subfile)\s*\{/g;
+const levels = new Map<string, number>([
+  ["part", 0],
+  ["chapter", 0],
+  ["section", 1],
+  ["subsection", 2],
+  ["subsubsection", 3],
+  ["paragraph", 4]
+]);
+
+type OutlineSourceEvent =
+  | { type: "heading"; from: number; line: number; level: number; title: string }
+  | { type: "include"; from: number; directive: LatexIncludeDirective };
 
 export function buildProjectOutline(config: Config, projectId: string, mainFileInput: string): ProjectOutlineItem[] {
   const mainFile = safeRelativePath(mainFileInput);
+  return buildProjectOutlineFromFiles(config, projectId, mainFile, sourceFilePaths(listProjectFiles(config, projectId)));
+}
+
+function buildProjectOutlineFromFiles(
+  config: Config,
+  projectId: string,
+  mainFile: string,
+  availableFiles: ReadonlySet<string>
+): ProjectOutlineItem[] {
   const result: ProjectOutlineItem[] = [];
   const visited = new Set<string>();
-  const visit = (filePath: string): void => {
+  const visit = (filePath: string, importBase: string): void => {
     if (visited.has(filePath) || visited.size >= 200) return;
     visited.add(filePath);
     const absolute = resolveSourcePath(config, projectId, filePath);
     if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile() || fs.statSync(absolute).size > 3 * 1024 * 1024) return;
-    const content = stripCommentsPreserveLines(fs.readFileSync(absolute, "utf8"));
-    const lineStarts = sourceLineStarts(content);
-    commandPattern.lastIndex = 0;
-    for (const command of content.matchAll(commandPattern)) {
-      const start = (command.index ?? 0) + command[0].length;
-      const argument = balancedArgument(content, start);
-      if (!argument) continue;
-      if (command[1]) {
-        result.push({ path: filePath, line: lineAtOffset(lineStarts, command.index ?? 0), level: levels[command[1]], title: cleanTitle(argument.value) });
+    const content = fs.readFileSync(absolute, "utf8");
+    for (const event of scanOutlineSource(content)) {
+      if (event.type === "heading") {
+        result.push({ path: filePath, line: event.line, level: event.level, title: event.title });
         continue;
       }
-      const included = resolveIncludedFile(config, projectId, filePath, argument.value);
-      if (included) visit(included);
+      const included = resolveLatexInclude(event.directive, importBase, availableFiles);
+      if (included) visit(included.path, included.importBase);
     }
   };
-  visit(mainFile);
+  visit(mainFile, "");
   return result;
 }
 
 /** Async outline builder used by the HTTP path so large projects do not block the event loop. */
 export async function buildProjectOutlineAsync(config: Config, projectId: string, mainFileInput: string): Promise<ProjectOutlineItem[]> {
   const mainFile = safeRelativePath(mainFileInput);
+  const availableFiles = sourceFilePaths(await listProjectFilesAsync(config, projectId));
+  return buildProjectOutlineAsyncFromFiles(config, projectId, mainFile, availableFiles);
+}
+
+async function buildProjectOutlineAsyncFromFiles(
+  config: Config,
+  projectId: string,
+  mainFile: string,
+  availableFiles: ReadonlySet<string>
+): Promise<ProjectOutlineItem[]> {
   const result: ProjectOutlineItem[] = [];
   const visited = new Set<string>();
-  const visit = async (filePath: string): Promise<void> => {
+  const visit = async (filePath: string, importBase: string): Promise<void> => {
     if (visited.has(filePath) || visited.size >= 200) return;
     visited.add(filePath);
     let stat: fs.Stats;
@@ -54,23 +81,18 @@ export async function buildProjectOutlineAsync(config: Config, projectId: string
     catch { return; }
     if (!stat.isFile() || stat.size > 3 * 1024 * 1024) return;
     let content: string;
-    try { content = stripCommentsPreserveLines(await fs.promises.readFile(resolveSourcePath(config, projectId, filePath), "utf8")); }
+    try { content = await fs.promises.readFile(resolveSourcePath(config, projectId, filePath), "utf8"); }
     catch { return; }
-    const lineStarts = sourceLineStarts(content);
-    const pattern = new RegExp(commandPattern.source, commandPattern.flags);
-    for (const command of content.matchAll(pattern)) {
-      const start = (command.index ?? 0) + command[0].length;
-      const argument = balancedArgument(content, start);
-      if (!argument) continue;
-      if (command[1]) {
-        result.push({ path: filePath, line: lineAtOffset(lineStarts, command.index ?? 0), level: levels[command[1]], title: cleanTitle(argument.value) });
+    for (const event of scanOutlineSource(content)) {
+      if (event.type === "heading") {
+        result.push({ path: filePath, line: event.line, level: event.level, title: event.title });
         continue;
       }
-      const included = await resolveIncludedFileAsync(config, projectId, filePath, argument.value);
-      if (included) await visit(included);
+      const included = resolveLatexInclude(event.directive, importBase, availableFiles);
+      if (included) await visit(included.path, included.importBase);
     }
   };
-  await visit(mainFile);
+  await visit(mainFile, "");
   return result;
 }
 
@@ -113,7 +135,12 @@ export class ProjectOutlineService {
       cached.touched = Date.now();
       return cached.outline;
     }
-    const outline = await buildProjectOutlineAsync(this.config, projectId, mainFile);
+    const outline = await buildProjectOutlineAsyncFromFiles(
+      this.config,
+      projectId,
+      mainFile,
+      sourceFilePaths(entries)
+    );
     this.cache.set(key, { signature, outline, touched: Date.now() });
     if (this.cache.size > 64) {
       const oldest = [...this.cache.entries()].sort((left, right) => left[1].touched - right[1].touched)[0];
@@ -123,58 +150,47 @@ export class ProjectOutlineService {
   }
 }
 
-function resolveIncludedFile(config: Config, projectId: string, currentFile: string, value: string): string | null {
-  const raw = value.trim();
-  if (!raw || /[\\#]/.test(raw)) return null;
-  const withExtension = path.posix.extname(raw) ? raw : `${raw}.tex`;
-  const candidates = [withExtension, path.posix.join(path.posix.dirname(currentFile), withExtension)];
-  for (const candidate of [...new Set(candidates)]) {
-    try {
-      const safe = safeRelativePath(candidate);
-      if (fs.existsSync(resolveSourcePath(config, projectId, safe))) return safe;
-    } catch { /* Ignore includes outside the project. */ }
+function sourceFilePaths(entries: readonly FileEntry[]): Set<string> {
+  return new Set(entries.filter((entry) => entry.type === "file").map((entry) => entry.path));
+}
+
+/**
+ * Read one source file into ordered outline events. The shared scanner keeps
+ * offsets from the original source while skipping comments and literal TeX
+ * forms, so the synchronous and asynchronous builders cannot drift in their
+ * interpretation of headings and arguments.
+ */
+function scanOutlineSource(source: string): OutlineSourceEvent[] {
+  const lineStarts = sourceLineStarts(source);
+  const events: OutlineSourceEvent[] = [];
+  forEachLatexCommand(source, (command) => {
+    const level = levels.get(command.name);
+    if (level === undefined) return;
+    const argument = readLatexMandatoryArguments(source, command.to, 1)[0];
+    if (!argument) return;
+    const value = source.slice(argument.contentFrom, argument.contentTo);
+    events.push({
+      type: "heading",
+      from: command.from,
+      line: lineAtOffset(lineStarts, command.from),
+      level,
+      title: cleanTitle(maskLatexComments(value))
+    });
+  });
+  for (const reference of findLatexSourceIncludes(source)) {
+    const directive = toLatexIncludeDirective(reference);
+    if (!isStaticOutlineInclude(directive)) continue;
+    events.push({
+      type: "include",
+      from: reference.from,
+      directive
+    });
   }
-  return null;
-}
-
-async function resolveIncludedFileAsync(config: Config, projectId: string, currentFile: string, value: string): Promise<string | null> {
-  const raw = value.trim();
-  if (!raw || /[\\#]/.test(raw)) return null;
-  const withExtension = path.posix.extname(raw) ? raw : `${raw}.tex`;
-  const candidates = [withExtension, path.posix.join(path.posix.dirname(currentFile), withExtension)];
-  for (const candidate of [...new Set(candidates)]) {
-    try {
-      const safe = safeRelativePath(candidate);
-      const stat = await fs.promises.stat(resolveSourcePath(config, projectId, safe));
-      if (stat.isFile()) return safe;
-    } catch { /* Ignore includes outside the project. */ }
-  }
-  return null;
-}
-
-function balancedArgument(source: string, start: number): { value: string; end: number } | null {
-  let depth = 1;
-  for (let index = start; index < source.length; index += 1) {
-    if (source[index] === "{" && !escapedAt(source, index)) depth += 1;
-    if (source[index] === "}" && !escapedAt(source, index)) depth -= 1;
-    if (depth === 0) return { value: source.slice(start, index), end: index };
-  }
-  return null;
-}
-
-function stripCommentsPreserveLines(source: string): string {
-  return source.split(/(?<=\n)/).map((line) => {
-    for (let index = 0; index < line.length; index += 1) {
-      if (line[index] === "%" && !escapedAt(line, index)) return `${line.slice(0, index)}${line.endsWith("\n") ? "\n" : ""}`;
-    }
-    return line;
-  }).join("");
-}
-
-function escapedAt(source: string, index: number): boolean {
-  let slashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) slashes += 1;
-  return slashes % 2 === 1;
+  return events.sort((left, right) => {
+    if (left.from !== right.from) return left.from - right.from;
+    if (left.type === right.type) return 0;
+    return left.type === "heading" ? -1 : 1;
+  });
 }
 
 function sourceLineStarts(source: string): number[] {
@@ -195,5 +211,29 @@ function lineAtOffset(starts: number[], offset: number): number {
 }
 
 function cleanTitle(value: string): string {
-  return value.replace(/\\(?:texorpdfstring|MakeUppercase)\s*\{([^{}]*)\}(?:\{[^{}]*\})?/g, "$1").replace(/\\[a-zA-Z@]+\*?/g, "").replace(/[{}]/g, "").trim() || value.trim();
+  const cleaned = value
+    .replace(/\\(?:texorpdfstring|MakeUppercase)\s*\{([^{}]*)\}(?:\{[^{}]*\})?/g, "$1")
+    .replace(/\\[a-zA-Z@]+\*?/g, "")
+    .replace(/[{}]/g, "");
+  return compactOutlineWhitespace(cleaned) || compactOutlineWhitespace(value);
+}
+
+/**
+ * `maskLatexComments` intentionally keeps source offsets intact, so a long
+ * comment becomes a long run of spaces. Outline titles are display-only: keep
+ * their original line breaks but collapse that offset-preserving padding.
+ */
+function compactOutlineWhitespace(value: string): string {
+  return value.replace(/[^\S\r\n]{2,}/g, " ").trim();
+}
+
+/**
+ * TeX paths containing a command or parameter marker need macro expansion.
+ * Do not guess their target while building an outline. The generic document
+ * graph deliberately supports backslash-separated paths for other consumers,
+ * while the legacy outline already skipped these dynamic forms.
+ */
+function isStaticOutlineInclude(directive: LatexIncludeDirective): boolean {
+  return !/[\\#]/.test(directive.path)
+    && (directive.directory === undefined || !/[\\#]/.test(directive.directory));
 }
