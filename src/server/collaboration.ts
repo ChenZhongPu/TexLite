@@ -25,27 +25,35 @@ import {
 } from "./projects.js";
 import { reanchorFileComments } from "./anchors.js";
 import { hashText, type EditHistorySegmentInput, type EditHistorySpan, type EditHistoryStep } from "./editHistory.js";
+import {
+  COLLABORATION_PROTOCOL_VERSION,
+  CollaborationMessageType,
+  isCollaborationCleanMode,
+  isCollaborationCompileStatus,
+  type CollaborationSaveReceipt,
+  type SharedCompileState,
+  type SharedCompileStates
+} from "../shared/collaborationProtocol.js";
 
-const MESSAGE_SYNC = 0;
-const MESSAGE_AWARENESS = 1;
-const MESSAGE_QUERY_AWARENESS = 3;
-const MESSAGE_FLUSH = 4;
-const MESSAGE_PROTOCOL = 5;
-const MESSAGE_MAINTENANCE = 6;
-const MESSAGE_PERMISSION = 7;
-// A small, non-Yjs handshake message used for ephemeral compile metadata.
-// Source text still uses the normal Yjs sync protocol; this message prevents
-// an old IndexedDB metadata entry from being treated as an active compile.
-const MESSAGE_COMPILE_STATES = 8;
-// Ephemeral, per-file formatter leases. These are deliberately kept out of
-// the Yjs document and source persistence state.
-const MESSAGE_FORMAT_LEASE = 9;
+export { COLLABORATION_PROTOCOL_VERSION } from "../shared/collaborationProtocol.js";
+export type { CollaborationSaveReceipt, SharedCompileState, SharedCompileStates } from "../shared/collaborationProtocol.js";
+
+const {
+  Sync: MESSAGE_SYNC,
+  Awareness: MESSAGE_AWARENESS,
+  QueryAwareness: MESSAGE_QUERY_AWARENESS,
+  Flush: MESSAGE_FLUSH,
+  Protocol: MESSAGE_PROTOCOL,
+  Maintenance: MESSAGE_MAINTENANCE,
+  Permission: MESSAGE_PERMISSION,
+  CompileStates: MESSAGE_COMPILE_STATES,
+  FormatLease: MESSAGE_FORMAT_LEASE
+} = CollaborationMessageType;
 /**
  * Increment this when a wire-level collaboration change cannot be decoded by
  * an older browser. The epoch marker is rotated at the same time, which makes
  * already-open older pages discard their local draft and reload safely.
  */
-export const COLLABORATION_PROTOCOL_VERSION = 3;
 const VERSIONED_EPOCH_PREFIX = `${COLLABORATION_PROTOCOL_VERSION}:`;
 const SOURCE_PREFIX = "source:";
 const MAX_PROJECT_SESSIONS = 10;
@@ -138,30 +146,12 @@ interface RoomBootstrap {
   files: Array<{ path: string; content: string }>;
 }
 
-export interface CollaborationSaveReceipt {
-  revision: number;
-  persistedAt: string;
-  ok: boolean;
-  failedPaths?: string[];
-}
-
 export interface CollaborationPersistEvent {
   projectId: string;
   userId: string | null;
   paths: string[];
   edits: EditHistorySegmentInput[];
   durationMs: number;
-}
-
-export interface SharedCompileState {
-  mainFile: string;
-  runId: string;
-  status: "queued" | "running" | "succeeded" | "failed" | "cleaned";
-  cleanMode?: "cache" | "artifacts";
-  /** The PDF was compiled from a consistent snapshot before newer edits arrived. */
-  stale?: boolean;
-  requestedBy: { id: string; username: string; name: string };
-  updatedAt: string;
 }
 
 export class CollaborationService {
@@ -529,7 +519,7 @@ export class CollaborationService {
     if (!room) return;
     const current = room.meta.get("compileStates");
     const states = current && typeof current === "object" && !Array.isArray(current)
-      ? { ...current as Record<string, SharedCompileState> }
+      ? { ...current as SharedCompileStates }
       : {};
     states[state.mainFile] = state;
     const retained = Object.fromEntries(Object.entries(states)
@@ -550,7 +540,7 @@ export class CollaborationService {
       if (current !== undefined) room.doc.transact(() => room.meta.delete("compileStates"), META_ORIGIN);
       return;
     }
-    const retained: Record<string, SharedCompileState> = {};
+    const retained: SharedCompileStates = {};
     let changed = false;
     const checkedAt = Date.now();
     const findRun = this.db.prepare(`SELECT id, status, main_file FROM compile_runs
@@ -615,9 +605,9 @@ export class CollaborationService {
    * was queued. This keeps the handshake authoritative without making every
    * compile request persist a duplicate Yjs metadata update.
    */
-  private compileStatesForClient(room: Room): Record<string, SharedCompileState> {
+  private compileStatesForClient(room: Room): SharedCompileStates {
     const current = room.meta.get("compileStates");
-    const states: Record<string, SharedCompileState> = isCompileStateMap(current) ? { ...current } : {};
+    const states: SharedCompileStates = isCompileStateMap(current) ? { ...current } : {};
     const activeRuns = this.db.prepare(`SELECT run.id, run.main_file, run.status, run.requested_by,
       run.created_at, user.username AS requested_by_username, user.display_name AS requested_by_name
       FROM compile_runs run LEFT JOIN users user ON user.id = run.requested_by
@@ -1828,9 +1818,8 @@ function isSharedCompileState(mainFile: string, value: unknown): value is Shared
   const requestedBy = state.requestedBy;
   return state.mainFile === mainFile
     && typeof state.runId === "string" && state.runId.length > 0
-    && (state.status === "queued" || state.status === "running" || state.status === "succeeded"
-      || state.status === "failed" || state.status === "cleaned")
-    && (state.status !== "cleaned" || state.cleanMode === "cache" || state.cleanMode === "artifacts")
+    && isCollaborationCompileStatus(state.status)
+    && (state.status !== "cleaned" || isCollaborationCleanMode(state.cleanMode))
     && (state.stale === undefined || typeof state.stale === "boolean")
     && typeof state.updatedAt === "string"
     && Boolean(requestedBy && typeof requestedBy === "object"
@@ -1838,7 +1827,7 @@ function isSharedCompileState(mainFile: string, value: unknown): value is Shared
       && typeof requestedBy.name === "string");
 }
 
-function isCompileStateMap(value: unknown): value is Record<string, SharedCompileState> {
+function isCompileStateMap(value: unknown): value is SharedCompileStates {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   return Object.entries(value as Record<string, unknown>).every(([mainFile, state]) => isSharedCompileState(mainFile, state));
 }

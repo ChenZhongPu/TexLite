@@ -16,16 +16,18 @@ import { CollaborationService, collaborationEpochPath, collaborationStatePath, m
 import type { Config } from "../src/server/config.js";
 import { openDatabase, type DatabaseConnection, type UserRow } from "../src/server/db.js";
 import { hashPassword } from "../src/server/security.js";
+import { COLLABORATION_PROTOCOL_VERSION, CollaborationMessageType } from "../src/shared/collaborationProtocol.js";
 
 const REMOTE_ORIGIN = Symbol("remote");
-const MESSAGE_SYNC = 0;
-const MESSAGE_AWARENESS = 1;
-const MESSAGE_FLUSH = 4;
-const MESSAGE_PROTOCOL = 5;
-const MESSAGE_PERMISSION = 7;
-const MESSAGE_COMPILE_STATES = 8;
-const MESSAGE_FORMAT_LEASE = 9;
-const COLLABORATION_PROTOCOL_VERSION = 3;
+const {
+  Sync: MESSAGE_SYNC,
+  Awareness: MESSAGE_AWARENESS,
+  Flush: MESSAGE_FLUSH,
+  Protocol: MESSAGE_PROTOCOL,
+  Permission: MESSAGE_PERMISSION,
+  CompileStates: MESSAGE_COMPILE_STATES,
+  FormatLease: MESSAGE_FORMAT_LEASE
+} = CollaborationMessageType;
 
 describe("project collaboration", () => {
   let root: string;

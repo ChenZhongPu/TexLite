@@ -8,6 +8,18 @@ import * as syncProtocol from "y-protocols/sync";
 import { IndexeddbPersistence } from "y-indexeddb";
 import type { Project, User } from "./types";
 import { appPath, scopedStorageKey } from "./basePath";
+import {
+  COLLABORATION_PROTOCOL_VERSION,
+  CollaborationMessageType,
+  isCollaborationCleanMode,
+  isCollaborationCompileStatus,
+  type CollaborationSaveReceipt,
+  type FormatLeaseState,
+  type SharedCompileState,
+  type SharedCompileStates
+} from "../shared/collaborationProtocol";
+
+export type { CollaborationSaveReceipt, FormatLeaseState, SharedCompileState, SharedCompileStates } from "../shared/collaborationProtocol";
 
 const COLORS = [
   ["#1677c8", "#1677c833"], ["#d65745", "#d6574533"], ["#16866a", "#16866a33"],
@@ -15,13 +27,16 @@ const COLORS = [
   ["#be3e7b", "#be3e7b33"], ["#4964c6", "#4964c633"], ["#8a6a14", "#8a6a1433"],
   ["#087f8c", "#087f8c33"]
 ] as const;
-const MESSAGE_FLUSH = 4;
-const MESSAGE_PROTOCOL = 5;
-const MESSAGE_MAINTENANCE = 6;
-const MESSAGE_PERMISSION = 7;
-const MESSAGE_COMPILE_STATES = 8;
-const MESSAGE_FORMAT_LEASE = 9;
-const COLLABORATION_PROTOCOL_VERSION = 3;
+const {
+  Sync: MESSAGE_SYNC,
+  Awareness: MESSAGE_AWARENESS,
+  Flush: MESSAGE_FLUSH,
+  Protocol: MESSAGE_PROTOCOL,
+  Maintenance: MESSAGE_MAINTENANCE,
+  Permission: MESSAGE_PERMISSION,
+  CompileStates: MESSAGE_COMPILE_STATES,
+  FormatLease: MESSAGE_FORMAT_LEASE
+} = CollaborationMessageType;
 const FORMAT_LEASE_REQUEST_TIMEOUT_MS = 60_000;
 const WRITABLE_DRAFT_MARKER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const WRITABLE_DRAFT_HEARTBEAT_MS = 15_000;
@@ -53,30 +68,6 @@ export interface FilesEvent {
   revision: string;
 }
 
-export interface SharedCompileState {
-  mainFile: string;
-  runId: string;
-  status: "queued" | "running" | "succeeded" | "failed" | "cleaned";
-  cleanMode?: "cache" | "artifacts";
-  stale?: boolean;
-  requestedBy: { id: string; username: string; name: string };
-  updatedAt: string;
-}
-
-export interface CollaborationSaveReceipt {
-  revision: number;
-  persistedAt: string;
-  ok: boolean;
-  failedPaths?: string[];
-}
-
-export interface FormatLeaseState {
-  path: string;
-  holderUserId: string;
-  holderName: string;
-  expiresAt: number;
-}
-
 export interface FormatLease {
   path: string;
   token: string;
@@ -104,8 +95,8 @@ export function sharedCompileState(value: unknown): SharedCompileState | null {
   const candidate = value as Partial<SharedCompileState>;
   const requestedBy = candidate.requestedBy;
   if (typeof candidate.mainFile !== "string" || typeof candidate.runId !== "string"
-    || !["queued", "running", "succeeded", "failed", "cleaned"].includes(candidate.status ?? "")
-    || (candidate.status === "cleaned" && candidate.cleanMode !== "cache" && candidate.cleanMode !== "artifacts")
+    || !isCollaborationCompileStatus(candidate.status)
+    || (candidate.status === "cleaned" && !isCollaborationCleanMode(candidate.cleanMode))
     || (candidate.stale !== undefined && typeof candidate.stale !== "boolean")
     || typeof candidate.updatedAt !== "string"
     || !requestedBy || typeof requestedBy.id !== "string"
@@ -113,9 +104,9 @@ export function sharedCompileState(value: unknown): SharedCompileState | null {
   return candidate as SharedCompileState;
 }
 
-export function sharedCompileStates(value: unknown): Record<string, SharedCompileState> {
+export function sharedCompileStates(value: unknown): SharedCompileStates {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const result: Record<string, SharedCompileState> = {};
+  const result: SharedCompileStates = {};
   for (const [mainFile, state] of Object.entries(value)) {
     const parsed = sharedCompileState(state);
     if (parsed && parsed.mainFile === mainFile) result[mainFile] = parsed;
@@ -187,7 +178,7 @@ export class ProjectCollaboration {
    * items for the lifetime of the project page.
    */
   private readonly undoManagers = new Map<string, Y.UndoManager>();
-  private authoritativeCompileStates: Record<string, SharedCompileState> | null = null;
+  private authoritativeCompileStates: SharedCompileStates | null = null;
   private readonly metaObserver: (event: Y.YMapEvent<unknown>, transaction: Y.Transaction) => void;
   private readonly localDraftTransactionObserver: (transaction: Y.Transaction) => void;
 
@@ -329,11 +320,11 @@ export class ProjectCollaboration {
       encoding.writeVarUint(acknowledgement, COLLABORATION_PROTOCOL_VERSION);
       socket.send(encoding.toUint8Array(acknowledgement));
       const sync = encoding.createEncoder();
-      encoding.writeVarUint(sync, 0);
+      encoding.writeVarUint(sync, MESSAGE_SYNC);
       syncProtocol.writeSyncStep1(sync, this.doc);
       socket.send(encoding.toUint8Array(sync));
       const awareness = encoding.createEncoder();
-      encoding.writeVarUint(awareness, 1);
+      encoding.writeVarUint(awareness, MESSAGE_AWARENESS);
       encoding.writeVarUint8Array(awareness, encodeAwarenessUpdate(this.awareness, [this.doc.clientID]));
       socket.send(encoding.toUint8Array(awareness));
     };
@@ -367,7 +358,7 @@ export class ProjectCollaboration {
       decoding.readVarString(decoder);
     };
     this.provider.messageHandlers[MESSAGE_COMPILE_STATES] = (_encoder, decoder) => {
-      let states: Record<string, SharedCompileState> = {};
+      let states: SharedCompileStates = {};
       try {
         states = sharedCompileStates(JSON.parse(decoding.readVarString(decoder)));
       } catch {
@@ -467,7 +458,7 @@ export class ProjectCollaboration {
   }
 
   /** Return server-validated compile states when the handshake supplied one. */
-  compileStates(): Record<string, SharedCompileState> {
+  compileStates(): SharedCompileStates {
     return this.authoritativeCompileStates ?? sharedCompileStates(this.meta.get("compileStates"));
   }
 

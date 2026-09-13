@@ -172,6 +172,17 @@ reload before it can decode or send source updates. Protocol-only migrations
 preserve the browser's offline draft; source-tree replacements still clear the
 draft because the server tree is authoritative.
 
+The wire contract is defined in the dependency-free
+`src/shared/collaborationProtocol.ts` module. It assigns stable message numbers
+for Yjs sync/awareness, flush receipts, the protocol handshake, maintenance and
+permission notices, compile-state metadata, and formatter leases, and currently
+uses protocol version `3`. The module also owns the shared compile-state and
+save-receipt shapes plus their status validators; client and server modules
+re-export these types so existing imports remain valid. Binary encoding and
+decoding remain next to the transport code on each side, which keeps field order
+and established packet bytes unchanged. A wire-incompatible change must bump
+the shared version and provide an intentional migration or reload path.
+
 The collaboration service persists dirty text with atomic temporary-file writes
 and returns a receipt containing `revision`, `persistedAt`, `ok`, and failed
 paths. Failed writes remain dirty and are retried in the background. Every
