@@ -36,24 +36,32 @@ fs.writeFileSync(
 console.log("Fake latexmk completed.");
 `);
 
-writeExecutable("synctex", `#!/usr/bin/env node
-import path from "node:path";
+writeExecutable("synctex", `#!/bin/sh
+set -e
 
-const operation = process.argv[2];
-if (operation === "view") {
-  console.log("Page:1\\nx:42\\ny:84\\nW:10\\nH:12");
-  process.exit(0);
-}
-if (operation === "edit") {
-  const outputIndex = process.argv.indexOf("-o");
-  const location = outputIndex >= 0 ? process.argv[outputIndex + 1] : "";
-  const pdfPath = location.split(":").slice(3).join(":");
-  const source = path.resolve(path.basename(pdfPath).replace(/\\.pdf$/i, ".tex"));
-  console.log("Input:" + source + "\\nLine:4\\nColumn:1");
-  process.exit(0);
-}
-console.error("unsupported fake synctex operation");
-process.exit(2);
+case "$1" in
+  view)
+    printf '%s\\n' 'Page:1' 'x:42' 'y:84' 'W:10' 'H:12'
+    ;;
+  edit)
+    location=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "-o" ]; then
+        shift
+        location="$1"
+        break
+      fi
+      shift
+    done
+    pdfPath="$(printf '%s' "$location" | sed 's/^.*:[^:]*:[^:]*://')"
+    stem="$(basename "$pdfPath" .pdf)"
+    printf 'Input:%s/%s.tex\\nLine:4\\nColumn:1\\n' "$(pwd)" "$stem"
+    ;;
+  *)
+    printf '%s\\n' 'unsupported fake synctex operation' >&2
+    exit 2
+    ;;
+esac
 `);
 
 function writeExecutable(name: string, source: string): void {
