@@ -19,6 +19,7 @@ interface TooltipRect {
 const savedTitleAttribute = "data-texlite-tooltip-title";
 const tooltipSelector = `[data-tooltip], [title], [${savedTitleAttribute}]`;
 const disabledTooltipRegionSelector = '[data-texlite-tooltips="off"]';
+const alwaysEnabledTooltipSelector = "[data-texlite-tooltip-always]";
 
 export function globalTooltipPosition(rect: TooltipRect, viewportWidth: number): Omit<TooltipState, "text"> {
   const preferredHalfWidth = Math.min(160, Math.max(16, (viewportWidth - 16) / 2));
@@ -41,8 +42,13 @@ function tooltipTarget(target: EventTarget | null): HTMLElement | null {
   return element && tooltipText(element) ? element : null;
 }
 
+export function tooltipIsDisabled(element: { closest: (selector: string) => unknown } | null): boolean {
+  return Boolean(element?.closest(disabledTooltipRegionSelector))
+    && !Boolean(element?.closest(alwaysEnabledTooltipSelector));
+}
+
 function tooltipsDisabled(element: HTMLElement | null): boolean {
-  return Boolean(element?.closest(disabledTooltipRegionSelector));
+  return tooltipIsDisabled(element);
 }
 
 function suppressNativeTitle(element: HTMLElement): void {

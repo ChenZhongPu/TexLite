@@ -98,6 +98,7 @@ class AddCommentLineMarker extends GutterMarker {
     button.tabIndex = -1;
     button.className = "cm-comment-add-button";
     button.dataset.commentAdd = "true";
+    button.dataset.texliteTooltipAlways = "true";
     button.title = this.label;
     button.setAttribute("aria-label", this.label);
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

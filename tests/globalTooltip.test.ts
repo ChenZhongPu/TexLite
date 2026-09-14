@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { globalTooltipPosition } from "../src/client/GlobalTooltip";
+import { globalTooltipPosition, tooltipIsDisabled } from "../src/client/GlobalTooltip";
 
 describe("global tooltip placement", () => {
   it("places ordinary controls above their anchor", () => {
@@ -11,4 +11,16 @@ describe("global tooltip placement", () => {
     expect(globalTooltipPosition({ top: 18, bottom: 42, left: 0, width: 24 }, 320))
       .toEqual({ placement: "below", top: 50, left: 152 });
   });
+
+  it("keeps explicitly essential tooltips enabled when the workspace opts out", () => {
+    const disabledWorkspace = fakeTooltipElement('[data-texlite-tooltips="off"]');
+    const essentialControl = fakeTooltipElement('[data-texlite-tooltips="off"]', "[data-texlite-tooltip-always]");
+    expect(tooltipIsDisabled(disabledWorkspace)).toBe(true);
+    expect(tooltipIsDisabled(essentialControl)).toBe(false);
+  });
 });
+
+function fakeTooltipElement(...ancestors: string[]): { closest: (selector: string) => unknown } {
+  const matches = new Set(ancestors);
+  return { closest: (selector) => matches.has(selector) ? {} : null };
+}
