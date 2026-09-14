@@ -118,8 +118,12 @@ Docker 版的用户配置和日常运维请参见
 ## 范围与安全
 
 TexLite 是一个面向可信用户的单宿主机应用，并非 LaTeX 编译沙箱：LaTeX 本身以及启用的
-项目 `latexmkrc` 都可能执行强大的本机行为。除非已配备适合不可信环境的认证、网络控制和
-独立编译沙箱，否则请保持默认的 `127.0.0.1` 监听地址。
+项目 `latexmkrc` 都可能执行强大的本机行为。
+如果需要让可信小团队安全协作而不直接暴露服务，可以考虑使用
+[Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve)。
+如果主机位于 NAT 后且确实需要公网访问，也可以考虑使用
+[rathole](https://github.com/rapiz1/rathole) 或 [frp](https://github.com/fatedier/frp)；
+在将 TexLite 暴露到公网前，请配置认证和 TLS 等安全措施。
 
 ## 许可证
 

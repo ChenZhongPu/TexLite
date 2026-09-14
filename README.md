@@ -131,9 +131,12 @@ for its user-facing configuration and operations guide.
 
 TexLite is a single-host application for trusted users. It is not a compiler
 sandbox: LaTeX and an enabled project `latexmkrc` can execute powerful local
-behaviour. Keep the default `127.0.0.1` bind unless you add the authentication,
-network controls, and isolated compiler environment appropriate for an
-untrusted deployment.
+behaviour.
+For secure small-team access without exposing the service directly, consider
+[Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve).
+If the host is behind NAT and public access is required, you may also consider
+[rathole](https://github.com/rapiz1/rathole) or [frp](https://github.com/fatedier/frp);
+configure authentication and TLS before exposing TexLite to the public Internet.
 
 ## License
 
