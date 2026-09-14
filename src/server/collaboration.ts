@@ -1623,7 +1623,7 @@ export function maxCollaborativeFileBytes(config: Config): number {
 }
 
 export function isCollaborativeTextFile(filePath: string): boolean {
-  return /(?:\.tex|\.bib|\.sty|\.cls|\.txt|\.md|latexmkrc)$/i.test(filePath);
+  return /(?:\.tex|\.bib|\.bst|\.sty|\.cls|\.txt|\.md|latexmkrc)$/i.test(filePath);
 }
 
 function collaborativeEntrySignature(entry: FileEntry): string {

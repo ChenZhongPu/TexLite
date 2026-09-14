@@ -2,6 +2,8 @@ import { StreamLanguage, type StreamParser, type StringStream } from "@codemirro
 import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { inlineLatexLiteralEnd, isLatexLiteralEnvironment, literalEnvironmentEnd } from "./latexLiterals";
 
+export { bstLanguage, bstStream } from "./bstLanguage";
+
 const bracketCharacters = new Set(["(", ")", "[", "]", "{", "}"]);
 const numberBeforeComment = /^\d[\w.]*(?=%)/;
 

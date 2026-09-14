@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type { Config } from "../config.js";
 import type { DatabaseConnection, ProjectRow, UserRow } from "../db.js";
 import { reanchorFileComments, offsetToLine } from "../anchors.js";
-import { maxCollaborativeFileBytes } from "../collaboration.js";
+import { isCollaborativeTextFile, maxCollaborativeFileBytes } from "../collaboration.js";
 import { listProjectFiles, resolveSourcePath } from "../files.js";
 import { httpError, ValidationError } from "../http.js";
 import { accessibleProject, canEdit } from "../projects.js";
@@ -175,8 +175,7 @@ export function requireActualProjectOwner(db: DatabaseConnection, projectId: str
 }
 
 export function projectTextSnapshot(config: Config, projectId: string): Map<string, string> {
-  const versionedText = (filePath: string) => /(?:\.tex|\.bib|\.sty|\.cls|\.txt|\.md|latexmkrc)$/i.test(filePath);
-  return new Map(listProjectFiles(config, projectId).filter((entry) => entry.type === "file" && versionedText(entry.path)).map((entry) => {
+  return new Map(listProjectFiles(config, projectId).filter((entry) => entry.type === "file" && isCollaborativeTextFile(entry.path)).map((entry) => {
     const absolute = resolveSourcePath(config, projectId, entry.path);
     return [entry.path, fs.statSync(absolute).size <= maxCollaborativeFileBytes(config) ? fs.readFileSync(absolute, "utf8") : ""] as const;
   }));

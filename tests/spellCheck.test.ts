@@ -56,14 +56,18 @@ class DelayedHarperService extends HarperService {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Harper writing checks", () => {
-  it("always disables writing checks for BibTeX files", async () => {
+  it("always disables writing checks for BibTeX data and style files", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
 
     expect(supportsWritingChecks("references.bib")).toBe(false);
     expect(supportsWritingChecks("REFERENCES.BIB")).toBe(false);
+    expect(supportsWritingChecks("plain.bst")).toBe(false);
+    expect(supportsWritingChecks("CUSTOM.BST")).toBe(false);
     expect(supportsWritingChecks("main.tex")).toBe(true);
     await expect(lintLatex("project", "references.bib", "author = {Mispeled}"))
+      .resolves.toEqual([]);
+    await expect(lintLatex("project", "plain.bst", "FUNCTION {mispeled} {}"))
       .resolves.toEqual([]);
     expect(fetch).not.toHaveBeenCalled();
   });
