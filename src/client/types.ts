@@ -223,6 +223,8 @@ export interface LatexCompletionIndex {
 
 export interface Comment {
   id: string;
+  /** Project-relative source path. Present for both file and project comment queries. */
+  filePath: string;
   authorId: string | null;
   authorUsername: string | null;
   authorDisplayName: string | null;

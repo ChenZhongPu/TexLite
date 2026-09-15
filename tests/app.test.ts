@@ -1257,6 +1257,65 @@ Second version.
     expect(markAll.json()).toMatchObject({ ok: true, changed: 1 });
   });
 
+  it("lists a readable project-wide comment review with source paths and replies", async () => {
+    const reader = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: "comment-review-reader", displayName: "Comment Review Reader", password: "reader-password" }
+    });
+    const readerLogin = await app.inject({
+      method: "POST", url: "/api/auth/login",
+      payload: { username: "comment-review-reader", password: "reader-password" }
+    });
+    const readerCookie = sessionCookie(readerLogin.headers);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Comment review scope" }
+    })).json().project as { id: string };
+    await app.inject({
+      method: "PUT", url: `/api/projects/${project.id}/members/${reader.json().user.id}`, headers: { cookie },
+      payload: { permission: "read" }
+    });
+    const chapterSource = "\\section{Introduction}\nA reviewed paragraph.\n";
+    await app.inject({
+      method: "PUT", url: `/api/projects/${project.id}/file`, headers: { cookie },
+      payload: { path: "chapters/intro.tex", content: chapterSource }
+    });
+    const rootComment = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/comments`, headers: { cookie },
+      payload: { path: "main.tex", startOffset: 0, endOffset: 0, content: "Review the root." }
+    });
+    const chapterComment = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/comments`, headers: { cookie },
+      payload: { path: "chapters/intro.tex", startOffset: 0, endOffset: 8, content: "Review the chapter." }
+    });
+    await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/comments/${chapterComment.json().comment.id}/replies`, headers: { cookie },
+      payload: { content: "A reply in the chapter thread." }
+    });
+    await app.inject({
+      method: "PATCH", url: `/api/projects/${project.id}/comments/${chapterComment.json().comment.id}`, headers: { cookie },
+      payload: { resolved: true }
+    });
+
+    const projectComments = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/comments?scope=project`, headers: { cookie: readerCookie }
+    });
+    expect(projectComments.statusCode).toBe(200);
+    expect(projectComments.json().comments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: rootComment.json().comment.id, filePath: "main.tex", replies: [] }),
+      expect.objectContaining({ id: chapterComment.json().comment.id, filePath: "chapters/intro.tex", resolved: true, replies: [expect.objectContaining({ content: "A reply in the chapter thread." })] })
+    ]));
+    const fileComments = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/comments?path=main.tex`, headers: { cookie: readerCookie }
+    });
+    expect(fileComments.statusCode).toBe(200);
+    expect(fileComments.json().comments).toEqual([expect.objectContaining({ id: rootComment.json().comment.id, filePath: "main.tex" })]);
+    const conflictingScope = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/comments?scope=project&path=main.tex`, headers: { cookie: readerCookie }
+    });
+    expect(conflictingScope.statusCode).toBe(400);
+    expect(conflictingScope.json()).toMatchObject({ code: "REQUEST_INVALID" });
+  });
+
   it("allows only authors to edit or delete their comments and replies", async () => {
     const createdUser = await app.inject({
       method: "POST", url: "/api/admin/users", headers: { cookie },

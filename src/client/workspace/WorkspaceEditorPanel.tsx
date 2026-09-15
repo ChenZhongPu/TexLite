@@ -9,6 +9,7 @@ import type { EditorPreferences } from "../editorPreferences";
 import type { SpellCheckIssue } from "../spellCheck";
 import type { SpellCheckJump } from "../LatexEditor";
 import type { LatexReference } from "../../shared/latexReferences";
+import { commentsForEditorFile, focusCommentForEditorFile } from "./commentNavigation";
 
 const LatexEditor = lazy(() => import("../LatexEditor").then((module) => ({ default: module.LatexEditor })));
 
@@ -51,6 +52,11 @@ export function WorkspaceEditorPanel({
   handleTabKeyDown, updateEditorContent, setSelection, onAddComment, onCommentClick, onSpellCheckReplace, onReferenceNavigate, onCursor
 }: WorkspaceEditorPanelProps) {
   const { t } = useTranslation();
+  // Comment offsets are meaningful only for the source document which
+  // produced them. Keep a late response or cross-file review selection from
+  // decorating the newly mounted editor tab.
+  const editorComments = commentsForEditorFile(comments, activeFile);
+  const editorFocusComment = focusCommentForEditorFile(focusComment, activeFile, loadedFile);
   return <Panel id="source" order={2} defaultSize={42} minSize={22}>
     <main className="source-panel">
       {editorPreferences.openFilesInTabs && openTabs.length > 0 && (
@@ -74,7 +80,7 @@ export function WorkspaceEditorPanel({
       )}
       <div id="editor-source-content" className="editor-content-container">
         <Suspense fallback={<div className="preview-empty"><LoaderCircle className="spin" size={22} /><span>{t("common.loading")}</span></div>}>
-          <LatexEditor key={activeFile} value={content} filePath={activeFile} readOnly={readOnly} comments={comments} focusComment={focusComment} preferences={editorPreferences} nativeSpellCheck={nativeSpellCheck} completionIndex={completionIndex} spellCheckIssues={spellCheckIssues} spellCheckJump={spellCheckJump} jumpTo={loadedFile === activeFile && sourceJump?.path === activeFile ? sourceJump : null} searchRequest={0} collaboration={collaborativeText ? { text: collaborativeText, awareness: collaborationAwareness, undoManager: readOnly ? undefined : undoManager } : undefined} onChange={updateEditorContent} onSelection={setSelection} onAddComment={onAddComment} onCommentClick={onCommentClick} onSpellCheckReplace={onSpellCheckReplace} onReferenceNavigate={onReferenceNavigate} onCursor={onCursor} />
+          <LatexEditor key={activeFile} value={content} filePath={activeFile} readOnly={readOnly} comments={editorComments} focusComment={editorFocusComment} preferences={editorPreferences} nativeSpellCheck={nativeSpellCheck} completionIndex={completionIndex} spellCheckIssues={spellCheckIssues} spellCheckJump={spellCheckJump} jumpTo={loadedFile === activeFile && sourceJump?.path === activeFile ? sourceJump : null} searchRequest={0} collaboration={collaborativeText ? { text: collaborativeText, awareness: collaborationAwareness, undoManager: readOnly ? undefined : undoManager } : undefined} onChange={updateEditorContent} onSelection={setSelection} onAddComment={onAddComment} onCommentClick={onCommentClick} onSpellCheckReplace={onSpellCheckReplace} onReferenceNavigate={onReferenceNavigate} onCursor={onCursor} />
         </Suspense>
         {editorNotice && <div className="editor-centered-notice" role="status" aria-live="polite">{editorNotice}</div>}
       </div>

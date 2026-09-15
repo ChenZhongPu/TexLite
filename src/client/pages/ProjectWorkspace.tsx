@@ -1,7 +1,7 @@
 import { lazy, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { api, ApiError } from "../api";
-import type { CitationLibraryEntry, CommentMention, FileEntry, LatexCompletionIndex, Project, SiteConfig, User, WordCountResult } from "../types";
+import type { CitationLibraryEntry, Comment, CommentMention, FileEntry, LatexCompletionIndex, Project, SiteConfig, User, WordCountResult } from "../types";
 import i18n from "../i18n";
 import { AlertTriangle, GripVertical, LoaderCircle, X } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
@@ -13,6 +13,7 @@ import { errorMessage } from "../errors";
 import type { WordCountMode, WorkspaceLayout } from "../workspace/types";
 import type { CompileCleanMode } from "../workspace/useProjectCompilation";
 import { useProjectComments, type SourceSelection } from "../workspace/useProjectComments";
+import { resolvePendingCommentFocus } from "../workspace/commentNavigation";
 import { useProjectMentions } from "../workspace/useProjectMentions";
 import { useProjectCollaboration } from "../workspace/useProjectCollaboration";
 import { useProjectCompilation } from "../workspace/useProjectCompilation";
@@ -24,6 +25,7 @@ import type { SpellCheckIssue } from "../spellCheck";
 import { supportsWritingChecks } from "../../shared/writingChecks";
 import { loadPdfPreview, type WorkspacePreload } from "../workspacePreload";
 import { hasDocumentClass as hasDocumentClassInSource } from "../latexRoot";
+import { findLatexSourceIncludes } from "../../shared/latexDependencies";
 import { WorkspaceTopbar } from "../workspace/WorkspaceTopbar";
 import { WorkspaceFilePanel } from "../workspace/WorkspaceFilePanel";
 import { WorkspaceEditorPanel } from "../workspace/WorkspaceEditorPanel";
@@ -83,6 +85,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [rootDocuments, setRootDocuments] = useState<Set<string>>(new Set());
   const [content, setContent] = useState("");
   const [analysisSource, setAnalysisSource] = useState<SourceAnalysisSnapshot>({ filePath: "", content: "" });
+  const [rootIncludeState, setRootIncludeState] = useState<{ path: string; hasIncludes: boolean }>({ path: "", hasIncludes: false });
   const [loadedFile, setLoadedFile] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saveState, setSaveState] = useState("editor.saved");
@@ -121,6 +124,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   };
   const [sidePanel, setSidePanel] = useState<"comments" | "settings" | null>(null);
   const [targetMention, setTargetMention] = useState<CommentMention | null>(null);
+  const [pendingCommentFocus, setPendingCommentFocus] = useState<Comment | null>(null);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [gitOpen, setGitOpen] = useState(false);
@@ -168,7 +172,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const wordCountRequest = useRef<AbortController | null>(null);
   const mentionTargetRequest = useRef<AbortController | null>(null);
   const referenceNavigationRequest = useRef<AbortController | null>(null);
-  const scrolledMentionId = useRef<string | null>(null);
+  const handledMentionTargetId = useRef<string | null>(null);
   const formattingRef = useRef(false);
   const formattingTaskRef = useRef<Promise<void> | null>(null);
   const onBackRef = useRef(onBack);
@@ -219,8 +223,9 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     mentionTargetRequest.current = null;
     referenceNavigationRequest.current?.abort();
     referenceNavigationRequest.current = null;
-    scrolledMentionId.current = null;
+    handledMentionTargetId.current = null;
     setTargetMention(null);
+    setPendingCommentFocus(null);
     setWordCountOpen(false);
     setWordCountBusy(false);
     setWordCountError("");
@@ -408,7 +413,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     const isCurrent = () => !cancelled && projectLoadSequence.current === sequence;
     let projectLoaded = false;
     let initialMainFile = "";
-    setProject(null); setFiles([]); setProjectOutline([]); setActiveFile(""); setActiveMainFile(""); setRootDocuments(new Set()); setContent(""); setLoadedFile(""); setCompileState(null);
+    setProject(null); setFiles([]); setProjectOutline([]); setActiveFile(""); setActiveMainFile(""); setRootIncludeState({ path: "", hasIncludes: false }); setRootDocuments(new Set()); setContent(""); setLoadedFile(""); setCompileState(null);
     clearPdfViewport(); setCompletionIndex(null); setDictionaryWords([]);
     void loadPdfPreview();
     const projectRequest = (preload?.projectId === projectId
@@ -970,7 +975,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     });
   }, [files, editorPreferences.openFilesInTabs]);
   const {
-    comments, focusComment, setFocusComment, commentOpen, openComment, closeComment, commentText, setCommentText,
+    comments, commentsFilePath, commentsReady, reviewComments, reviewCommentsLoading, reviewCommentsError, retryReviewComments, commentScope, setCommentScope, focusComment, setFocusComment, commentOpen, openComment, closeComment, commentText, setCommentText,
     commentSelection, commentSubmitting, commentError, addComment, toggleComment, replyToComment, editComment,
     deleteComment, editCommentReply, deleteCommentReply
   } = useProjectComments({
@@ -986,6 +991,74 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     onAdded: () => setSidePanel("comments"),
     onChanged: () => { void refreshMentions(); }
   });
+  // Most small projects are a single document. Only offer a project review
+  // scope when the selected root actually pulls other source files in, so the
+  // common case is not burdened with a meaningless scope selector.
+  useEffect(() => {
+    if (!activeMainFile || analysisSource.filePath !== activeMainFile) return;
+    const hasIncludes = findLatexSourceIncludes(analysisSource.content).length > 0;
+    setRootIncludeState((current) => current.path === activeMainFile && current.hasIncludes === hasIncludes
+      ? current
+      : { path: activeMainFile, hasIncludes });
+  }, [activeMainFile, analysisSource]);
+  useEffect(() => {
+    // The active root already flows through the debounced source-analysis
+    // pipeline above. Observe Yjs only while another source tab is open.
+    if (!activeMainFile || !collaborationSynced || activeFile === activeMainFile) return;
+    // Keep the small scope affordance truthful even while the reader is
+    // editing an included file and a collaborator changes the root document.
+    const rootText = collaboration.getText(activeMainFile);
+    let timer: number | null = null;
+    const refreshRootIncludes = () => {
+      const hasIncludes = findLatexSourceIncludes(rootText.toString()).length > 0;
+      setRootIncludeState((current) => current.path === activeMainFile && current.hasIncludes === hasIncludes
+        ? current
+        : { path: activeMainFile, hasIncludes });
+    };
+    const scheduleRootIncludesRefresh = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        refreshRootIncludes();
+      }, SOURCE_ANALYSIS_DEBOUNCE_MS);
+    };
+    refreshRootIncludes();
+    rootText.observe(scheduleRootIncludesRefresh);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      rootText.unobserve(scheduleRootIncludesRefresh);
+    };
+  }, [activeFile, activeMainFile, collaboration, collaborationSynced]);
+  const hasProjectCommentsScope = useMemo(() => {
+    return rootIncludeState.path === activeMainFile && rootIncludeState.hasIncludes;
+  }, [activeMainFile, rootIncludeState]);
+  const focusReviewComment = (comment: Comment): void => {
+    setSidePanel("comments");
+    // A review selection is a file-scoped command, not a durable editor
+    // selection. Wait for both the source and its matching comment resource.
+    setFocusComment(null);
+    setPendingCommentFocus(comment);
+    if (activeFileRef.current !== comment.filePath) {
+      jumpToSource(comment.filePath, comment.startLine, 1);
+    }
+  };
+  useEffect(() => {
+    if (!pendingCommentFocus) return;
+    const canonical = resolvePendingCommentFocus(
+      pendingCommentFocus, activeFile, loadedFile, commentsFilePath, commentsReady, comments
+    );
+    if (canonical) {
+      setFocusComment({ ...canonical });
+      setPendingCommentFocus(null);
+      return;
+    }
+    // If the target file has finished loading and the canonical response no
+    // longer contains this thread, it was deleted or became inaccessible.
+    if (pendingCommentFocus.filePath === activeFile && loadedFile === activeFile
+      && commentsFilePath === activeFile && commentsReady) {
+      setPendingCommentFocus(null);
+    }
+  }, [activeFile, comments, commentsFilePath, commentsReady, loadedFile, pendingCommentFocus, setFocusComment]);
   const markVisibleMentionRead = async (nextMentionId: string): Promise<boolean> => {
     const marked = await markMentionRead(nextMentionId);
     if (marked) onMentionsReadRef.current?.(1);
@@ -1001,19 +1074,14 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     if (!targetMention || activeFile !== targetMention.filePath || sidePanel !== "comments") return;
     const comment = comments.find((item) => item.id === targetMention.commentId);
     if (!comment || (targetMention.replyId && !comment.replies.some((reply) => reply.id === targetMention.replyId))) return;
-    const selector = targetMention.replyId
-      ? `[data-comment-reply-id="${targetMention.replyId}"]`
-      : `[data-comment-id="${targetMention.commentId}"]`;
-    const element = document.querySelector<HTMLElement>(selector);
-    if (!element || scrolledMentionId.current === targetMention.id) return;
-    scrolledMentionId.current = targetMention.id;
-    setFocusComment({ ...comment });
-    const frame = window.requestAnimationFrame(() => element.scrollIntoView({ block: "center", behavior: "smooth" }));
+    if (handledMentionTargetId.current === targetMention.id) return;
+    handledMentionTargetId.current = targetMention.id;
+    // WorkspaceContextPanel keeps the target visible across status filters
+    // and scrolls it after render; do not make navigation depend on a DOM
+    // element already existing here.
+    focusReviewComment(comment);
     const timer = window.setTimeout(() => setTargetMention((current) => current?.id === targetMention.id ? null : current), 3_000);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(timer);
-    };
+    return () => window.clearTimeout(timer);
   }, [activeFile, comments, sidePanel, targetMention]);
   const {
     pdfUrl, pdfCompiledAt, pdfLoadingMode, pdfLoading, compileLog, compileDiagnostics, compileOutcome,
@@ -1280,7 +1348,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
         handleTabKeyDown={handleTabKeyDown} updateEditorContent={updateEditorContent}
         setSelection={(selectedText, startOffset, endOffset) => setSelection({ selectedText, startOffset, endOffset })}
         onAddComment={(selectedText, startOffset, endOffset, source) => openComment({ selectedText, startOffset, endOffset }, source)}
-        onCommentClick={(id) => { const comment = comments.find((item) => item.id === id); if (comment) { setFocusComment({ ...comment }); setSidePanel("comments"); } }}
+        onCommentClick={(id) => { const comment = comments.find((item) => item.id === id); if (comment) focusReviewComment(comment); }}
         onSpellCheckReplace={replaceSpellCheckIssue} onReferenceNavigate={navigateToReference} onCursor={updateSourceCursor}
       />}
       {showPreview && <WorkspacePreviewPanel
@@ -1307,10 +1375,13 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       />}
       <WorkspaceContextPanel
         sidePanel={sidePanel} onClose={() => setSidePanel(null)} project={project} projectId={projectId}
-        site={site} files={files} currentUserId={user.id} comments={comments} unreadMentions={unreadMentions}
+        site={site} files={files} currentUserId={user.id} comments={reviewComments} commentsLoading={reviewCommentsLoading}
+        commentsError={reviewCommentsError} onRetryComments={retryReviewComments} activeFile={activeFile}
+        hasProjectCommentsScope={hasProjectCommentsScope} commentScope={commentScope} onCommentScopeChange={setCommentScope}
+        focusedCommentId={focusComment?.id} onClearFocusComment={() => setFocusComment(null)} unreadMentions={unreadMentions}
         onMarkMentionRead={markVisibleMentionRead} onMarkAllMentionsRead={markAllVisibleMentionsRead}
         targetCommentId={targetMention?.commentId} targetReplyId={targetMention?.replyId}
-        onFocusComment={(comment) => setFocusComment({ ...comment })} onToggleComment={toggleComment}
+        onFocusComment={focusReviewComment} onToggleComment={toggleComment}
         onReplyComment={replyToComment} onEditComment={editComment} onDeleteComment={deleteComment}
         onEditCommentReply={editCommentReply} onDeleteCommentReply={deleteCommentReply}
         dictionaryWords={dictionaryWords} onDictionaryChange={setDictionaryWords}

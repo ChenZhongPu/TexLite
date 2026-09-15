@@ -195,6 +195,7 @@ export function movedProjectPath(value: string | null, source: string, destinati
 
 interface CommentRow {
   id: string;
+  file_path: string;
   author_id: string | null;
   author_username: string | null;
   author_display_name: string | null;
@@ -238,21 +239,34 @@ export function repliesForComment(db: DatabaseConnection, commentId: string) {
   }));
 }
 
-export function commentsForFile(db: DatabaseConnection, config: Config, projectId: string, filePath: string) {
-  const absolute = resolveSourcePath(config, projectId, filePath);
-  const source = fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8") : "";
+function commentsForScope(db: DatabaseConnection, config: Config, projectId: string, filePath?: string) {
+  const hasFileScope = typeof filePath === "string";
+  const fileClause = hasFileScope ? " AND c.file_path = ?" : "";
+  // File-scoped reads retain chronological order for backwards compatibility.
+  // A project review is grouped by file and source position so next/previous
+  // follows the manuscript rather than arbitrary database insertion order.
+  const commentOrder = hasFileScope
+    ? "c.created_at"
+    : "c.file_path COLLATE NOCASE, c.start_line, c.created_at";
   const rows = db.prepare(`SELECT c.*, u.username AS author_username, u.display_name AS author_display_name FROM comments c
-    LEFT JOIN users u ON u.id = c.author_id WHERE c.project_id = ? AND c.file_path = ? ORDER BY c.created_at`)
-    .all(projectId, filePath) as unknown as CommentRow[];
+    LEFT JOIN users u ON u.id = c.author_id WHERE c.project_id = ?${fileClause} ORDER BY ${commentOrder}`)
+    .all(projectId, ...(hasFileScope ? [filePath] : [])) as unknown as CommentRow[];
   if (!rows.length) return [];
+
+  const sourceByPath = new Map<string, string>();
+  for (const row of rows) {
+    if (sourceByPath.has(row.file_path)) continue;
+    const absolute = resolveSourcePath(config, projectId, row.file_path);
+    sourceByPath.set(row.file_path, fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8") : "");
+  }
 
   const replies = db.prepare(`SELECT reply.*, user.username AS author_username, user.display_name AS author_display_name
     FROM comment_replies reply
     JOIN comments c ON c.id = reply.comment_id
     LEFT JOIN users user ON user.id = reply.author_id
-    WHERE c.project_id = ? AND c.file_path = ?
+    WHERE c.project_id = ?${fileClause}
     ORDER BY reply.created_at`)
-    .all(projectId, filePath) as unknown as Array<CommentReplyRow & { comment_id: string }>;
+    .all(projectId, ...(hasFileScope ? [filePath] : [])) as unknown as Array<CommentReplyRow & { comment_id: string }>;
 
   const replyMap = new Map<string, Array<{
     id: string;
@@ -282,14 +296,15 @@ export function commentsForFile(db: DatabaseConnection, config: Config, projectI
 
   return rows.map((comment) => ({
     id: comment.id,
+    filePath: comment.file_path,
     authorId: comment.author_id,
     authorUsername: comment.author_username,
     authorDisplayName: comment.author_display_name,
     selectedText: comment.selected_text,
     startOffset: comment.start_offset,
     endOffset: comment.end_offset,
-    startLine: offsetToLine(source, comment.start_offset),
-    endLine: offsetToLine(source, comment.end_offset),
+    startLine: offsetToLine(sourceByPath.get(comment.file_path) ?? "", comment.start_offset),
+    endLine: offsetToLine(sourceByPath.get(comment.file_path) ?? "", comment.end_offset),
     content: comment.content,
     resolved: Boolean(comment.resolved),
     orphaned: Boolean(comment.orphaned),
@@ -298,4 +313,14 @@ export function commentsForFile(db: DatabaseConnection, config: Config, projectI
     editedAt: comment.edited_at,
     replies: replyMap.get(comment.id) ?? []
   }));
+}
+
+/** Comments anchored in one source file, used for editor decorations. */
+export function commentsForFile(db: DatabaseConnection, config: Config, projectId: string, filePath: string) {
+  return commentsForScope(db, config, projectId, filePath);
+}
+
+/** All project comments, grouped in manuscript order for the review drawer. */
+export function commentsForProject(db: DatabaseConnection, config: Config, projectId: string) {
+  return commentsForScope(db, config, projectId);
 }

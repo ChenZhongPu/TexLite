@@ -494,7 +494,7 @@ export function LatexEditor({
     });
     view.current = new EditorView({ state, parent: host.current });
     syncVimStatus(view.current, preferences.vimMode);
-    view.current.dispatch({ effects: setCommentMarks.of(toMarks(comments)) });
+    view.current.dispatch({ effects: setCommentMarks.of(toMarks(comments, filePath)) });
     return () => {
       vimStatusCleanup.current?.();
       vimStatusCleanup.current = null;
@@ -560,17 +560,17 @@ export function LatexEditor({
   }, [value, collaboration]);
 
   useEffect(() => {
-    view.current?.dispatch({ effects: setCommentMarks.of(toMarks(comments)) });
-  }, [comments]);
+    view.current?.dispatch({ effects: setCommentMarks.of(toMarks(comments, filePath)) });
+  }, [comments, filePath]);
 
   useEffect(() => {
     const editor = view.current;
-    if (!editor || !focusComment || focusComment.orphaned) return;
+    if (!editor || !focusComment || focusComment.filePath !== filePath || focusComment.orphaned) return;
     const from = Math.min(focusComment.startOffset, editor.state.doc.length);
     const to = Math.min(Math.max(from, focusComment.endOffset), editor.state.doc.length);
     editor.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: "center" }) });
     editor.focus();
-  }, [focusComment]);
+  }, [filePath, focusComment]);
 
   useEffect(() => {
     const editor = view.current;
@@ -750,8 +750,8 @@ function buildSpellCheckIssueDecorations(issues: SpellCheckIssue[], documentLeng
   }).range(issue.from, issue.to)), true);
 }
 
-function toMarks(comments: Comment[]): CommentMark[] {
-  return comments.map((comment) => ({
+function toMarks(comments: Comment[], filePath: string): CommentMark[] {
+  return comments.filter((comment) => comment.filePath === filePath).map((comment) => ({
     id: comment.id, from: comment.startOffset, to: comment.endOffset,
     resolved: comment.resolved, orphaned: comment.orphaned
   }));

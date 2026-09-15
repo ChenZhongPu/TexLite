@@ -19,7 +19,7 @@ import {
   markCommentMentionsResolved,
   mentionableUsersForProject
 } from "../commentMentions.js";
-import { commentsForFile, now, repliesForComment, text } from "./projectShared.js";
+import { commentsForFile, commentsForProject, now, repliesForComment, text } from "./projectShared.js";
 
 interface CommentRouteContext {
   config: Config;
@@ -89,11 +89,15 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const { path: filePath } = request.query as { path?: string };
+    const { path: filePath, scope } = request.query as { path?: string; scope?: string };
     if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
-    const relative = safeRelativePath(filePath ?? "");
+    if (scope !== undefined && scope !== "project") return apiError(reply, 400, "REQUEST_INVALID");
+    if (scope === "project" && filePath !== undefined) return apiError(reply, 400, "REQUEST_INVALID");
+    const load = scope === "project"
+      ? () => commentsForProject(db, config, id)
+      : () => commentsForFile(db, config, id, safeRelativePath(filePath ?? ""));
     return {
-      comments: await projectMutations.runConsistentRead(id, () => commentsForFile(db, config, id, relative), {
+      comments: await projectMutations.runConsistentRead(id, load, {
         preflight: () => {
           if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
         }
