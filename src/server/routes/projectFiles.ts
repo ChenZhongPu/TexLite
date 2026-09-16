@@ -271,7 +271,12 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       }
     };
 
-    return await projectMutations.runExclusive(id, "move project path", () => {
+    // Moving/renaming is collaboration-aware: movePath() remaps the live Yjs
+    // texts and publishes a files event.  It therefore needs the ordinary
+    // durable write lock, not maintenance mode.  Maintenance resets the Yjs
+    // epoch and makes every connected browser reload after an otherwise safe
+    // drag-and-drop move.
+    return await projectMutations.runWrite(id, () => {
       fs.renameSync(sourceAbsolute, destinationAbsolute);
       let hasCommentUpdates = false;
       db.exec("BEGIN IMMEDIATE");

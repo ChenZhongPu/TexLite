@@ -802,6 +802,37 @@ describe("project collaboration", () => {
       expect(peer.connected).toBe(true);
     } finally { peer.destroy(); }
   });
+
+  it("keeps active sessions connected while moving a live collaborative file", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Live move" }
+    });
+    const projectId = created.json().project.id as string;
+    const peer = await TestPeer.connect(app, projectId, adminCookie, { id: adminId, username: "admin", name: "Administrator" });
+    try {
+      const content = "\\section{A live collaborative draft}";
+      const source = await app.inject({
+        method: "POST", url: `/api/projects/${projectId}/file`, headers: { cookie: adminCookie },
+        payload: { path: "draft.tex", content }
+      });
+      expect(source.statusCode).toBe(201);
+      await waitFor(() => peer.doc.getText("source:draft.tex").toString() === content);
+      const folder = await app.inject({
+        method: "POST", url: `/api/projects/${projectId}/folders`, headers: { cookie: adminCookie }, payload: { path: "chapters" }
+      });
+      expect(folder.statusCode).toBe(201);
+
+      const response = await app.inject({
+        method: "PATCH", url: `/api/projects/${projectId}/path`, headers: { cookie: adminCookie },
+        payload: { source: "draft.tex", destinationDirectory: "chapters" }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ ok: true, path: "chapters/draft.tex" });
+      await waitFor(() => peer.doc.getText("source:chapters/draft.tex").toString() === content);
+      expect(peer.doc.getText("source:draft.tex").toString()).toBe("");
+      expect(peer.connected).toBe(true);
+    } finally { peer.destroy(); }
+  });
 });
 
 interface PeerUser { id: string; username: string; name: string }
