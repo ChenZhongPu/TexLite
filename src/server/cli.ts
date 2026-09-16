@@ -114,6 +114,9 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
   const effectiveDataDirectory = configuredDataDirectory
     ? path.resolve(path.dirname(configPath), configuredDataDirectory)
     : dataDirectory;
+  const configuredPort = Number.parseInt(process.env.TEXLITE_PORT ?? "", 10);
+  const initialPort = Number.isInteger(configuredPort) && configuredPort >= 1 && configuredPort <= 65_535
+    ? configuredPort : CONFIG_DEFAULTS.port;
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   // Data parents are not guaranteed to exist on a fresh account. Create only
   // the parent here; the configured data directory itself is created by
@@ -126,8 +129,8 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
     siteName,
     adminEmail,
     sessionDays: CONFIG_DEFAULTS.sessionDays,
-    server: { host: CONFIG_DEFAULTS.host, port: CONFIG_DEFAULTS.port, basePath: CONFIG_DEFAULTS.basePath },
-    storage: { dataDir: dataDirectory },
+    server: { host: process.env.TEXLITE_HOST?.trim() || CONFIG_DEFAULTS.host, port: initialPort, basePath: CONFIG_DEFAULTS.basePath },
+    storage: { dataDir: configuredDataDirectory || dataDirectory },
     uploads: { maxFileSizeMB: CONFIG_DEFAULTS.maxFileSizeMB },
     pdf: {
       loadingStrategy: CONFIG_DEFAULTS.pdfLoadingStrategy,

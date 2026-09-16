@@ -41,8 +41,9 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "npm run generate:lucide-icons && tsx watch src/server/index.ts",
-    "dev:web": "npm run generate:bibtex-parser && vite",
+    "dev": "npm run generate:lucide-icons && node scripts/run-dev.mjs server",
+    "dev:init": "node scripts/run-dev.mjs init",
+    "dev:web": "npm run generate:bibtex-parser && node scripts/run-dev.mjs web",
     "build": "npm run build:web && npm run build:server",
     "build:web": "npm run generate:bibtex-parser && vite build",
     "build:server": "tsc -p tsconfig.server.json && npm run generate:lucide-icons",

@@ -55,7 +55,7 @@ export default defineConfig(({ command }) => {
       port: 5173,
       proxy: {
         [apiPrefix]: {
-          target: "http://127.0.0.1:3000",
+          target: `http://127.0.0.1:${process.env.TEXLITE_DEV_SERVER_PORT ?? "3000"}`,
           ws: true
         }
       }

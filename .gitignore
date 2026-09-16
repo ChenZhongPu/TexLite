@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .texlite/
+/.texlite-dev/
 coverage/
 logs/
 *.tsbuildinfo

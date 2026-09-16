@@ -305,20 +305,22 @@ distribution changes the environment used by subsequent compiles.
 
 ## Development and verification
 
-Run the API/server watcher and Vite in separate terminals:
+Run the API/server watcher and Vite in separate terminals. Development uses a
+dedicated `.texlite-dev/` directory in this repository and port `3001`, so it
+does not reuse or lock the normal user configuration, database, or port `3000`:
 
 ~~~bash
-npm run dev       # API/server: http://127.0.0.1:3000
+npm run dev:init   # once: create the development config and administrator
+npm run dev        # API/server: http://127.0.0.1:3001
 npm run dev:web   # Vite UI:    http://127.0.0.1:5173
 ~~~
 
-When testing a configured `server.basePath`, export the same configuration path
-in both terminals. Vite reads it, serves the matching prefix, and proxies the
-prefixed API and WebSocket endpoints:
+To test a configured `server.basePath`, edit `.texlite-dev/texlite.config.json`
+and restart both terminals. Vite reads this development configuration, serves
+the matching prefix, and proxies the prefixed API and WebSocket endpoints:
 
 ~~~bash
-export TEXLITE_CONFIG="$PWD/texlite.config.json"
-npm run dev       # API/server, for example http://127.0.0.1:3000/texlite/
+npm run dev       # API/server, for example http://127.0.0.1:3001/texlite/
 npm run dev:web   # Vite UI, for example http://127.0.0.1:5173/texlite/
 ~~~
 
