@@ -16,7 +16,6 @@ const LatexEditor = lazy(() => import("../LatexEditor").then((module) => ({ defa
 export interface WorkspaceEditorPanelProps {
   project: Project;
   activeFile: string;
-  activeMainFile: string;
   openTabs: string[];
   content: string;
   loadedFile: string;
@@ -46,7 +45,7 @@ export interface WorkspaceEditorPanelProps {
 }
 
 export function WorkspaceEditorPanel({
-  project, activeFile, activeMainFile, openTabs, content, loadedFile, readOnly, comments, focusComment,
+  project, activeFile, openTabs, content, loadedFile, readOnly, comments, focusComment,
   editorPreferences, completionIndex, nativeSpellCheck, spellCheckIssues, spellCheckJump, sourceJump,
   collaborativeText, collaborationAwareness, undoManager, editorNotice, activateTab, closeTab,
   handleTabKeyDown, updateEditorContent, setSelection, onAddComment, onCommentClick, onSpellCheckReplace, onReferenceNavigate, onCursor
@@ -64,7 +63,11 @@ export function WorkspaceEditorPanel({
           <div className="editor-tabs-scroll">
             {openTabs.map((tabPath, index) => {
               const isActive = tabPath === activeFile;
-              const isMain = tabPath === (activeMainFile || project.mainFile);
+              // The visible main-document badge reflects the shared project
+              // setting. `activeMainFile` can deliberately vary per user for
+              // compilation, so using it here made the UI appear to change
+              // the project's configured main document when a tab was opened.
+              const isMain = tabPath === project.mainFile;
               const fileName = tabPath.split("/").at(-1) || tabPath;
               return <div className={`editor-tab-item${isActive ? " active" : ""}`} role="presentation" key={tabPath}>
                 <button id={`editor-tab-${encodeURIComponent(tabPath)}`} type="button" role="tab" aria-selected={isActive} aria-controls="editor-source-content" tabIndex={isActive ? 0 : -1} className={`editor-tab${isActive ? " active" : ""}${isMain ? " main-tab" : ""}`} onClick={() => activateTab(tabPath)} onKeyDown={(event) => handleTabKeyDown(event, index)} title={tabPath}>

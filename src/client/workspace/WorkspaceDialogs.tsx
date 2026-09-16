@@ -51,7 +51,7 @@ export interface WorkspaceDialogsProps {
   setNewFolderOpen: (open: boolean) => void;
   newFolderName: string;
   setNewFolderName: (name: string) => void;
-  selectedFolder: string;
+  selectedFolder: string | null;
   fileDialogError: string;
   setFileDialogError: (message: string) => void;
   createFile: () => Promise<void>;

@@ -75,11 +75,10 @@ interface UseProjectFilesOptions {
   onProject: (project: Project) => void;
   onActiveFile: (updater: string | ((current: string) => string)) => void;
   onActiveMainFile: (updater: string | ((current: string) => string)) => void;
-  onRootDocuments: (updater: (current: Set<string>) => Set<string>) => void;
 }
 
 export function useProjectFiles({
-  projectId, site, activeFile, dirty, save, onError, onProject, onActiveFile, onActiveMainFile, onRootDocuments
+  projectId, site, activeFile, dirty, save, onError, onProject, onActiveFile, onActiveMainFile
 }: UseProjectFilesOptions) {
   const { t } = useTranslation();
   const [files, setFiles] = useState<FileEntry[]>([]);
@@ -90,7 +89,10 @@ export function useProjectFiles({
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [fileDialogError, setFileDialogError] = useState("");
-  const [selectedFolder, setSelectedFolder] = useState("");
+  // A selected folder takes visual precedence over the active editor file.
+  // `null` means that no folder is selected, so the active file is highlighted.
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [moveEntry, setMoveEntry] = useState<FileEntry | null>(null);
   const [moveName, setMoveName] = useState("");
@@ -131,6 +133,7 @@ export function useProjectFiles({
       });
       await loadFiles();
       onActiveFile(newFilePath);
+      setSelectedFolder(null);
       setExpandedFolders((current) => new Set([...current, ...parentFolders(newFilePath)]));
       setNewFileOpen(false);
       setNewFilePath("");
@@ -160,7 +163,7 @@ export function useProjectFiles({
     const maxSize = site.maxUploadSizeMB;
     const oversized = filesToUpload.find((file) => file.size > maxSize * 1024 * 1024);
     if (oversized) return onError(t("errors.fileTooLarge", { size: maxSize }));
-    const directory = directoryOverride;
+    const directory = directoryOverride ?? "";
     const uploadPaths = filesToUpload.map((file) => directory ? `${directory}/${file.name}` : file.name);
     const pathCounts = new Map<string, number>();
     for (const uploadPath of uploadPaths) pathCounts.set(uploadPath, (pathCounts.get(uploadPath) ?? 0) + 1);
@@ -202,7 +205,10 @@ export function useProjectFiles({
         }
       }
       await loadFiles();
-      if (lastTextPath) onActiveFile(lastTextPath);
+      if (lastTextPath) {
+        onActiveFile(lastTextPath);
+        setSelectedFolder(null);
+      }
     } catch (error) { onError(errorMessage(error)); }
     finally { setUploadingFiles(false); }
   };
@@ -263,6 +269,8 @@ export function useProjectFiles({
   };
 
   const openFile = (entry: FileEntry) => {
+    setSelectedFolder(null);
+    setSelectedFile(entry.path);
     const kind = resourcePreviewKind(entry.path);
     const maxCollaborativeBytes = site.maxCollaborativeFileSizeMB * 1024 * 1024;
     if ((entry.size ?? 0) > MAX_DIRECT_RESOURCE_PREVIEW_BYTES
@@ -274,34 +282,47 @@ export function useProjectFiles({
     }
   };
 
+  const relocatePath = async (entry: FileEntry, destinationDirectory: string, destinationName: string) => {
+    if (!(await save())) return null;
+    const result = await api<{ path: string }>(`/api/projects/${projectId}/path`, {
+      method: "PATCH", body: JSON.stringify({ source: entry.path, destinationDirectory, destinationName })
+    });
+    const remap = (value: string) => value === entry.path
+      ? result.path
+      : value.startsWith(`${entry.path}/`) ? `${result.path}${value.slice(entry.path.length)}` : value;
+    onActiveFile((current) => remap(current));
+    onActiveMainFile((current) => remap(current));
+    setSelectedFolder((current) => current ? remap(current) : current);
+    setSelectedFile((current) => current ? remap(current) : current);
+    const [fileResult, projectResult] = await Promise.all([
+      api<{ files: FileEntry[] }>(`/api/projects/${projectId}/files`),
+      api<{ project: Project }>(`/api/projects/${projectId}`)
+    ]);
+    setFiles(fileResult.files);
+    onProject(projectResult.project);
+    setExpandedFolders((current) => new Set([...current, ...parentFolders(result.path), destinationDirectory].filter(Boolean)));
+    return result.path;
+  };
+
   const movePath = async () => {
     if (!moveEntry) return;
     const destinationName = moveName.trim();
     if (!destinationName) return;
     setFileDialogError("");
     try {
-      if (!(await save())) return;
-      const result = await api<{ path: string }>(`/api/projects/${projectId}/path`, {
-        method: "PATCH", body: JSON.stringify({ source: moveEntry.path, destinationDirectory: moveDestination, destinationName })
-      });
-      const remap = (value: string) => value === moveEntry.path
-        ? result.path
-        : value.startsWith(`${moveEntry.path}/`) ? `${result.path}${value.slice(moveEntry.path.length)}` : value;
-      onActiveFile((current) => remap(current));
-      onActiveMainFile((current) => remap(current));
-      onRootDocuments((current) => new Set([...current].map(remap)));
-      setSelectedFolder((current) => current ? remap(current) : current);
-      const [fileResult, projectResult] = await Promise.all([
-        api<{ files: FileEntry[] }>(`/api/projects/${projectId}/files`),
-        api<{ project: Project }>(`/api/projects/${projectId}`)
-      ]);
-      setFiles(fileResult.files);
-      onProject(projectResult.project);
-      setExpandedFolders((current) => new Set([...current, ...parentFolders(result.path), moveDestination].filter(Boolean)));
+      if (!(await relocatePath(moveEntry, moveDestination, destinationName))) return;
       setMoveEntry(null);
       setMoveName("");
       setMoveDestination("");
     } catch (error) { setFileDialogError(errorMessage(error)); }
+  };
+
+  const movePathToFolder = async (entry: FileEntry, destinationDirectory: string) => {
+    if (parentFolder(entry.path) === destinationDirectory) return;
+    if (entry.type === "directory" && (destinationDirectory === entry.path || destinationDirectory.startsWith(`${entry.path}/`))) return;
+    try {
+      await relocatePath(entry, destinationDirectory, entry.path.split("/").at(-1) ?? entry.path);
+    } catch (error) { onError(errorMessage(error)); }
   };
 
   const removePath = async () => {
@@ -325,6 +346,10 @@ export function useProjectFiles({
     setResourcePreviewLoading(false);
   }, [activeFile]);
 
+  useEffect(() => {
+    if (activeFile) setSelectedFile(activeFile);
+  }, [activeFile]);
+
   const directoryEntries = files.filter((entry) => entry.type === "directory");
   const visibleEntries = files.filter((entry) => parentFolders(entry.path).every((folder) => expandedFolders.has(folder)));
 
@@ -334,13 +359,18 @@ export function useProjectFiles({
     resourcePreview, setResourcePreview, resourcePreviewLoading, setResourcePreviewLoading,
     newFolderOpen, setNewFolderOpen, newFolderName, setNewFolderName,
     fileDialogError, setFileDialogError,
-    selectedFolder, setSelectedFolder,
+    selectedFolder, setSelectedFolder, selectedFile, setSelectedFile,
     expandedFolders, setExpandedFolders,
     moveEntry, setMoveEntry, moveName, setMoveName, moveDestination, setMoveDestination,
     deleteEntry, setDeleteEntry,
     fileDragActive, setFileDragActive,
     uploadConflict, setUploadConflict, uploadingFiles,
     directoryEntries, visibleEntries,
-    createFile, createFolder, uploadFiles, upload, openFile, movePath, removePath
+    createFile, createFolder, uploadFiles, upload, openFile, movePath, movePathToFolder, removePath
   };
+}
+
+function parentFolder(filePath: string): string {
+  const separator = filePath.lastIndexOf("/");
+  return separator < 0 ? "" : filePath.slice(0, separator);
 }

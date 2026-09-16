@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { AlignLeft, BookOpen, ChevronDown, ChevronRight, FilePlus2, FileSearch, FileText, Folder, FolderOpen, FolderPlus, Hash, ListTree, LoaderCircle, Move, PanelLeftClose, Search, Trash2, Upload } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore, type ChangeEvent, type RefObject } from "react";
+import { AlignLeft, ChevronDown, ChevronRight, FilePlus2, FileSearch, FileText, Folder, FolderPlus, Hash, ListTree, LoaderCircle, Move, PanelLeftClose, Search, Trash2, Upload } from "lucide-react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type ChangeEvent, type DragEvent, type RefObject } from "react";
 import { Panel, type ImperativePanelHandle } from "react-resizable-panels";
 import type { FileEntry, Project } from "../types";
 import type { WordCountMode, ProjectOutlineItem } from "./types";
@@ -14,8 +14,8 @@ export interface WorkspaceFilePanelProps {
   visibleEntries: FileEntry[];
   activeFile: string;
   activeMainFile: string;
-  rootDocuments: Set<string>;
-  selectedFolder: string;
+  selectedFile: string;
+  selectedFolder: string | null;
   expandedFolders: Set<string>;
   fileDragActive: boolean;
   uploadingFiles: boolean;
@@ -31,7 +31,7 @@ export interface WorkspaceFilePanelProps {
   hasSelection: boolean;
   hasFormatSelection: boolean;
   uploadInput: RefObject<HTMLInputElement | null>;
-  setSelectedFolder: (folder: string) => void;
+  setSelectedFolder: (folder: string | null) => void;
   setExpandedFolders: (updater: (current: Set<string>) => Set<string>) => void;
   setMoveEntry: (entry: FileEntry) => void;
   setMoveName: (name: string) => void;
@@ -47,9 +47,11 @@ export interface WorkspaceFilePanelProps {
   setFileDragActive: (active: boolean) => void;
   setFilesCollapsed: (collapsed: boolean) => void;
   toggleFilesPanel: () => void;
+  onError: (message: string) => void;
   uploadFiles: (files: File[]) => Promise<void>;
   upload: (event: ChangeEvent<HTMLInputElement>) => Promise<void>;
   openFile: (entry: FileEntry) => void;
+  movePathToFolder: (entry: FileEntry, destinationDirectory: string) => Promise<void>;
   onFormatFile: () => void;
   onFormatSelection: () => void;
   jumpToSource: (path: string, line: number, column: number) => void;
@@ -58,32 +60,38 @@ export interface WorkspaceFilePanelProps {
 }
 
 export function WorkspaceFilePanel({
-  project, filesPanel, files, visibleEntries, activeFile, activeMainFile, rootDocuments, selectedFolder,
+  project, filesPanel, files, visibleEntries, activeFile, activeMainFile, selectedFile, selectedFolder,
   expandedFolders, fileDragActive, uploadingFiles, readOnly, formatting, canFormat, activeFormatLease, collaborationSynced,
   editorFontSize, outline, sourceCursorStore, wordCountBusy, hasSelection, hasFormatSelection, uploadInput,
   setSelectedFolder, setExpandedFolders, setMoveEntry, setMoveName, setMoveDestination,
   setDeleteEntry, setFileDialogError, setNewFolderName, setNewFolderOpen, setNewFilePath, setNewFileOpen,
-  setQuickOpen, setProjectSearchOpen, setFileDragActive, setFilesCollapsed, toggleFilesPanel, uploadFiles, upload, openFile,
-  onFormatFile, onFormatSelection, jumpToSource, syncSourceToPdf, onWordCount
+  setQuickOpen, setProjectSearchOpen, setFileDragActive, setFilesCollapsed, toggleFilesPanel, uploadFiles, upload, openFile, movePathToFolder,
+  onError, onFormatFile, onFormatSelection, jumpToSource, syncSourceToPdf, onWordCount
 }: WorkspaceFilePanelProps) {
   const { t } = useTranslation();
   const [showFileSizes, setShowFileSizes] = useState(false);
+  const [draggedEntry, setDraggedEntry] = useState<FileEntry | null>(null);
+  const [dropTargetFolder, setDropTargetFolder] = useState<string | null>(null);
+  const canMoveToFolder = (source: FileEntry, destination: string) => parentFolder(source.path) !== destination
+    && (source.type !== "directory" || (destination !== source.path && !destination.startsWith(`${source.path}/`)));
+  const clearMoveDrag = () => {
+    setDraggedEntry(null);
+    setDropTargetFolder(null);
+  };
   return <Panel id="files" order={1} ref={filesPanel} defaultSize={16} minSize={12} maxSize={30} collapsible collapsedSize={0} onCollapse={() => setFilesCollapsed(true)} onExpand={() => setFilesCollapsed(false)}>
     <aside className="left-panel">
-      <section className={`files-panel${fileDragActive ? " drop-active" : ""}`} onDragEnter={(event) => { if (!event.dataTransfer.types.includes("Files")) return; event.preventDefault(); if (!readOnly && !uploadingFiles) setFileDragActive(true); }} onDragOver={(event) => { if (!event.dataTransfer.types.includes("Files")) return; event.preventDefault(); event.dataTransfer.dropEffect = readOnly || uploadingFiles ? "none" : "copy"; }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFileDragActive(false); }} onDrop={(event) => { event.preventDefault(); setFileDragActive(false); if (!readOnly && !uploadingFiles) void uploadFiles(Array.from(event.dataTransfer.files)); }}>
+      <section className={`files-panel${fileDragActive ? " drop-active" : ""}`} onDragEnter={(event) => { if (!event.dataTransfer.types.includes("Files")) return; event.preventDefault(); if (!readOnly && !uploadingFiles) setFileDragActive(true); }} onDragOver={(event) => { if (!event.dataTransfer.types.includes("Files")) return; event.preventDefault(); event.dataTransfer.dropEffect = readOnly || uploadingFiles ? "none" : "copy"; }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFileDragActive(false); }} onDrop={(event) => { event.preventDefault(); setFileDragActive(false); if (readOnly || uploadingFiles) return; const files = Array.from(event.dataTransfer.files); if (containsDroppedFolder(event.dataTransfer) || files.length === 0) { onError(t("editor.dropFoldersUnsupported")); return; } void uploadFiles(files); }}>
         <div className="panel-title"><button className="file-size-toggle" type="button" aria-pressed={showFileSizes} title={t(showFileSizes ? "editor.hideFileSizes" : "editor.showFileSizes")} onClick={() => setShowFileSizes((current) => !current)}>{t("common.files")}</button><span className="file-tools"><button aria-label={t("navigation.quickOpen")} title={`${t("navigation.quickOpen")} (Ctrl/Cmd+P)`} onClick={() => setQuickOpen(true)}><FileSearch size={15} /></button><button aria-label={t("navigation.projectSearch")} title={`${t("navigation.projectSearch")} (Ctrl/Cmd+Shift+F)`} onClick={() => setProjectSearchOpen(true)}><Search size={15} /></button>{!readOnly && <><button disabled={uploadingFiles} aria-label={t("editor.uploadAttachment")} title={t("editor.uploadTo", { folder: selectedFolder || t("editor.projectRoot") })} onClick={() => uploadInput.current?.click()}><Upload size={15} /></button><button aria-label={t("editor.newFolder")} title={t("editor.newFolder")} onClick={() => { setNewFolderName(""); setNewFolderOpen(true); }}><FolderPlus size={15} /></button><button aria-label={t("editor.newFile")} title={t("editor.newFile")} onClick={() => { setNewFilePath(selectedFolder ? `${selectedFolder}/` : ""); setNewFileOpen(true); }}><FilePlus2 size={15} /></button><input ref={uploadInput} type="file" multiple hidden onChange={(event) => void upload(event)} /></>}<button aria-label={t("editor.collapseFiles")} title={t("editor.collapseFiles")} onClick={toggleFilesPanel}><PanelLeftClose size={15} /></button></span></div>
         {fileDragActive && <div className="file-drop-overlay"><Upload size={24} /><strong>{t("editor.dropFiles")}</strong><span>{t("editor.uploadTo", { folder: selectedFolder || t("editor.projectRoot") })}</span></div>}
-        <div className="file-list" style={{ fontSize: `${editorFontSize}px` }}>
-          <div className={`file-entry folder-entry root-entry${selectedFolder === "" ? " selected" : ""}`}><button className="file-entry-main" onClick={() => setSelectedFolder("")}><FolderOpen size={15} /><span>{t("editor.projectRoot")}</span></button></div>
+        <div className={`file-list${selectedFolder !== null ? " folder-selected" : ""}`} style={{ fontSize: `${editorFontSize}px` }}>
           {visibleEntries.map((entry) => {
             const depth = entry.path.split("/").length - 1;
             const name = entry.path.split("/").at(-1);
             const expanded = expandedFolders.has(entry.path);
-            const rootDocument = rootDocuments.has(entry.path);
-            const compileTarget = activeMainFile === entry.path;
+            const configuredMainDocument = project.mainFile === entry.path;
             const canDelete = entry.path !== project.mainFile && !project.mainFile.startsWith(`${entry.path}/`);
-            if (entry.type === "directory") return <div className={`file-entry folder-entry${selectedFolder === entry.path ? " selected" : ""}`} style={{ paddingLeft: `${depth * 13 + 5}px` }} key={entry.path}><button className="file-entry-main" onClick={() => { setSelectedFolder(entry.path); setExpandedFolders((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next; }); }}>{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<Folder size={14} /><span>{name}</span></button>{!readOnly && <><button className="file-entry-action" title={t("editor.move")} aria-label={t("editor.move")} onClick={() => { setMoveEntry(entry); setMoveName(name ?? ""); setMoveDestination(""); }}><Move size={13} /></button>{canDelete && <button className="file-entry-action danger-text" title={t("editor.deletePath")} aria-label={t("editor.deletePath")} onClick={() => { setDeleteEntry(entry); setFileDialogError(""); }}><Trash2 size={13} /></button>}</>}</div>;
-            return <div className={`file-entry${activeFile === entry.path ? " active" : ""}${rootDocument ? " root-document" : ""}${compileTarget ? " compile-target" : ""}`} style={{ paddingLeft: `${depth * 13 + 18}px` }} key={entry.path}><button className="file-entry-main" onClick={() => openFile(entry)}>{rootDocument ? <BookOpen size={13} /> : <FileText size={13} />}<span>{name}</span>{compileTarget && <small>{t("editor.currentMainShort")}</small>}</button>{showFileSizes && typeof entry.size === "number" && <span className="file-entry-size">{formatFileSize(entry.size)}</span>}{!readOnly && <><button className="file-entry-action" title={t("editor.move")} aria-label={t("editor.move")} onClick={() => { setMoveEntry(entry); setMoveName(name ?? ""); setMoveDestination(""); }}><Move size={13} /></button>{canDelete && <button className="file-entry-action danger-text" title={t("editor.deletePath")} aria-label={t("editor.deletePath")} onClick={() => { setDeleteEntry(entry); setFileDialogError(""); }}><Trash2 size={13} /></button>}</>}</div>;
+            if (entry.type === "directory") return <div className={`file-entry folder-entry${selectedFolder === entry.path ? " selected" : ""}${dropTargetFolder === entry.path ? " move-drop-target" : ""}${draggedEntry?.path === entry.path ? " move-drag-source" : ""}`} style={{ paddingLeft: `${depth * 13 + 5}px` }} key={entry.path} onDragOver={(event) => { if (!draggedEntry) return; event.preventDefault(); event.stopPropagation(); if (!canMoveToFolder(draggedEntry, entry.path)) { event.dataTransfer.dropEffect = "none"; return; } event.dataTransfer.dropEffect = "move"; setDropTargetFolder(entry.path); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTargetFolder((current) => current === entry.path ? null : current); }} onDrop={(event) => { if (!draggedEntry) return; event.preventDefault(); event.stopPropagation(); const source = draggedEntry; clearMoveDrag(); if (canMoveToFolder(source, entry.path)) void movePathToFolder(source, entry.path); }}><button className="file-entry-main" draggable={!readOnly} onDragStart={(event) => startPathDrag(event, entry, setDraggedEntry)} onDragEnd={clearMoveDrag} onClick={() => { setSelectedFolder(entry.path); setExpandedFolders((current) => { const next = new Set(current); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next; }); }}>{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}<Folder size={14} /><span>{name}</span></button>{!readOnly && <><button className="file-entry-action" title={t("editor.move")} aria-label={t("editor.move")} onClick={() => { setMoveEntry(entry); setMoveName(name ?? ""); setMoveDestination(""); }}><Move size={13} /></button>{canDelete && <button className="file-entry-action danger-text" title={t("editor.deletePath")} aria-label={t("editor.deletePath")} onClick={() => { setDeleteEntry(entry); setFileDialogError(""); }}><Trash2 size={13} /></button>}</>}</div>;
+            return <div className={`file-entry${selectedFolder === null && selectedFile === entry.path ? " active" : ""}${draggedEntry?.path === entry.path ? " move-drag-source" : ""}`} style={{ paddingLeft: `${depth * 13 + 18}px` }} key={entry.path}><button className="file-entry-main" draggable={!readOnly} onDragStart={(event) => startPathDrag(event, entry, setDraggedEntry)} onDragEnd={clearMoveDrag} onClick={() => openFile(entry)}><FileText size={13} /><span>{name}</span>{configuredMainDocument && <small>{t("editor.currentMainShort")}</small>}</button>{showFileSizes && typeof entry.size === "number" && <span className="file-entry-size">{formatFileSize(entry.size)}</span>}{!readOnly && <><button className="file-entry-action" title={t("editor.move")} aria-label={t("editor.move")} onClick={() => { setMoveEntry(entry); setMoveName(name ?? ""); setMoveDestination(""); }}><Move size={13} /></button>{canDelete && <button className="file-entry-action danger-text" title={t("editor.deletePath")} aria-label={t("editor.deletePath")} onClick={() => { setDeleteEntry(entry); setFileDialogError(""); }}><Trash2 size={13} /></button>}</>}</div>;
           })}
         </div>
         {!readOnly && canFormat && <div className="file-format-footer" role="group" aria-label={t("editor.format")} aria-busy={formatting}>
@@ -97,6 +105,29 @@ export function WorkspaceFilePanel({
       <WorkspaceOutlinePanel outline={outline} activeFile={activeFile} activeMainFile={activeMainFile} sourceCursorStore={sourceCursorStore} wordCountBusy={wordCountBusy} hasSelection={hasSelection} jumpToSource={jumpToSource} syncSourceToPdf={syncSourceToPdf} onWordCount={onWordCount} />
     </aside>
   </Panel>;
+}
+
+function containsDroppedFolder(dataTransfer: DataTransfer): boolean {
+  return Array.from(dataTransfer.items).some((item) => {
+    const entry = (item as DataTransferItem & {
+      webkitGetAsEntry?: () => { isDirectory?: boolean } | null;
+    }).webkitGetAsEntry?.();
+    return entry?.isDirectory === true;
+  });
+}
+
+function parentFolder(filePath: string): string {
+  const separator = filePath.lastIndexOf("/");
+  return separator < 0 ? "" : filePath.slice(0, separator);
+}
+
+function startPathDrag(event: DragEvent<HTMLButtonElement>, entry: FileEntry, setDraggedEntry: (entry: FileEntry) => void): void {
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("application/x-texlite-project-path", entry.path);
+  // Safari can be selective about custom drag MIME types. A plain-text value
+  // makes the drag valid there without trusting data from outside this tree.
+  event.dataTransfer.setData("text/plain", entry.path);
+  setDraggedEntry(entry);
 }
 
 function WorkspaceOutlinePanel({

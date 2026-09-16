@@ -482,18 +482,19 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .file-format-actions button.active:disabled { border-color: #c8d8cd; background: #eff5f0; color: #6f8778; }
 .file-entry { min-width: 0; height: calc(1em + 18px); min-height: 30px; display: flex; align-items: center; border-radius: 5px; color: #4f5952; }
 .file-entry:hover { background: #f0f3f0; }
-.file-entry.active, .file-entry.selected { background: #e2efe7; color: #15583a; font-weight: 650; }
+.file-entry.active, .file-entry.selected { background: #e2efe7; box-shadow: inset 3px 0 #28724e; color: #15583a; font-weight: 650; }
+.file-list.folder-selected .file-entry.active { background: transparent; box-shadow: none; color: #4f5952; font-weight: 400; }
+.file-entry.move-drag-source { opacity: .48; }
+.file-entry.folder-entry.move-drop-target { background: #dff1e6; box-shadow: inset 0 0 0 1px #4a9a70; color: #15583a; }
+.file-entry-main[draggable="true"] { cursor: grab; }
+.file-entry-main[draggable="true"]:active { cursor: grabbing; }
 .file-entry-main { min-width: 0; height: 100%; flex: 1; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; padding: 0 4px; background: transparent; color: inherit; text-align: left; font-size: inherit; }
 .file-entry-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-entry-main svg { flex: none; color: #28724e; }
-.file-entry.root-document .file-entry-main > svg { color: #2d6f9f; }
-.file-entry.compile-target { background: #e9f2ec; box-shadow: inset 2px 0 #28724e; }
 .file-entry-main small { flex: none; padding: 1px 4px; border-radius: 999px; background: #d9eadf; color: #1d5b3e; font-size: 8px; line-height: 1.35; }
 .file-entry-size { flex: none; margin-right: 5px; color: #78837b; font-size: .86em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .folder-entry .file-entry-main svg:first-child { color: #78837b; }
 .folder-entry .file-entry-main svg:nth-child(2) { color: #d49b2d; }
-.root-entry { padding-left: 5px; }
-.root-entry .file-entry-main svg { color: #d49b2d; }
 .file-entry-action { width: 26px; height: 26px; flex: none; display: none; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #657069; }
 .file-entry:hover .file-entry-action, .file-entry:focus-within .file-entry-action { display: grid; }
 .file-entry-action:hover { background: #dfe7e1; color: #176b44; }

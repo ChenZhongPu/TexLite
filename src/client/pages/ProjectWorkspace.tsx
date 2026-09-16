@@ -82,7 +82,6 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [projectOutline, setProjectOutline] = useState<ProjectOutlineItem[]>([]);
   const [activeFile, setActiveFile] = useState("");
   const [activeMainFile, setActiveMainFile] = useState("");
-  const [rootDocuments, setRootDocuments] = useState<Set<string>>(new Set());
   const [content, setContent] = useState("");
   const [analysisSource, setAnalysisSource] = useState<SourceAnalysisSnapshot>({ filePath: "", content: "" });
   const [rootIncludeState, setRootIncludeState] = useState<{ path: string; hasIncludes: boolean }>({ path: "", hasIncludes: false });
@@ -413,7 +412,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     const isCurrent = () => !cancelled && projectLoadSequence.current === sequence;
     let projectLoaded = false;
     let initialMainFile = "";
-    setProject(null); setFiles([]); setProjectOutline([]); setActiveFile(""); setActiveMainFile(""); setRootIncludeState({ path: "", hasIncludes: false }); setRootDocuments(new Set()); setContent(""); setLoadedFile(""); setCompileState(null);
+    setProject(null); setFiles([]); setProjectOutline([]); setActiveFile(""); setActiveMainFile(""); setRootIncludeState({ path: "", hasIncludes: false }); setContent(""); setLoadedFile(""); setCompileState(null);
     clearPdfViewport(); setCompletionIndex(null); setDictionaryWords([]);
     void loadPdfPreview();
     const projectRequest = (preload?.projectId === projectId
@@ -426,7 +425,6 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       setActiveFile(result.project.mainFile);
       activeMainFileRef.current = result.project.mainFile;
       setActiveMainFile(result.project.mainFile);
-      setRootDocuments(new Set());
       setExpandedFolders(new Set(parentFolders(result.project.mainFile)));
     }).catch((e) => { if (isCurrent()) setError(errorMessage(e)); });
     const filesLoadRequest = api<{ files: FileEntry[] }>(`/api/projects/${projectId}/files`, { signal: controller.signal })
@@ -521,8 +519,8 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
         : value.startsWith(`${source}/`) ? `${destination}${value.slice(source.length)}` : value;
       setActiveFile((current) => remap(current));
       setActiveMainFile((current) => remap(current));
-      setRootDocuments((current) => new Set([...current].map(remap)));
       setSelectedFolder((current) => current ? remap(current) : current);
+      setSelectedFile((current) => current ? remap(current) : current);
       updateOpenTabs((current) => current.map(remap));
     }
     if (deletedActiveFile) {
@@ -532,8 +530,8 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       setNotice(t("editor.fileDeletedByCollaborator", { path: filesEvent.path }));
     }
     if (filesEvent.kind === "delete" && filesEvent.path) {
-      setRootDocuments((current) => new Set([...current].filter((filePath) => !pathContains(filesEvent.path!, filePath))));
-      setSelectedFolder((current) => pathContains(filesEvent.path!, current) ? "" : current);
+      setSelectedFolder((current) => current && pathContains(filesEvent.path!, current) ? null : current);
+      setSelectedFile((current) => pathContains(filesEvent.path!, current) ? "" : current);
       setResourcePreview((current) => current && pathContains(filesEvent.path!, current.path) ? null : current);
       updateOpenTabs((current) => current.filter((filePath) => !pathContains(filesEvent.path!, filePath)));
     }
@@ -885,14 +883,14 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     resourcePreview, setResourcePreview, resourcePreviewLoading, setResourcePreviewLoading,
     newFolderOpen, setNewFolderOpen, newFolderName, setNewFolderName,
     fileDialogError, setFileDialogError,
-    selectedFolder, setSelectedFolder,
+    selectedFolder, setSelectedFolder, selectedFile, setSelectedFile,
     expandedFolders, setExpandedFolders,
     moveEntry, setMoveEntry, moveName, setMoveName, moveDestination, setMoveDestination,
     deleteEntry, setDeleteEntry,
     fileDragActive, setFileDragActive,
     uploadConflict, setUploadConflict, uploadingFiles,
     directoryEntries, visibleEntries,
-    createFile, createFolder, uploadFiles, upload, openFile, movePath, removePath
+    createFile, createFolder, uploadFiles, upload, openFile, movePath, movePathToFolder, removePath
   } = useProjectFiles({
     projectId,
     site,
@@ -902,8 +900,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     onError: setError,
     onProject: setProject,
     onActiveFile: setActiveFile,
-    onActiveMainFile: setActiveMainFile,
-    onRootDocuments: setRootDocuments
+    onActiveMainFile: setActiveMainFile
   });
 
   const getCurrentMainFile = (): string => activeMainFileRef.current || project?.mainFile || "";
@@ -921,12 +918,6 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     const source = collaboration.getText(currentFile).toString();
     const isRoot = hasDocumentClassInSource(source) || texFileCount === 1;
     if (isRoot) {
-      setRootDocuments((current) => {
-        if (current.has(currentFile)) return current;
-        const next = new Set(current);
-        next.add(currentFile);
-        return next;
-      });
       if (currentMainFile !== currentFile) {
         // Keep the ref current immediately: the compile hook can run before
         // React has committed the matching activeMainFile state update.
@@ -952,13 +943,6 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     const configuredRoot = activeFile === project?.mainFile;
     const detectedRoot = hasDocumentClassInSource(analysisSource.content);
     const isRoot = detectedRoot || texFileCount === 1;
-    setRootDocuments((current) => {
-      if (current.has(activeFile) === isRoot) return current;
-      const next = new Set(current);
-      if (isRoot) next.add(activeFile);
-      else next.delete(activeFile);
-      return next;
-    });
     if (isRoot && !configuredRoot && activeMainFileRef.current !== activeFile) {
       setActiveMainFile(activeFile);
     } else if (!isRoot && activeMainFileRef.current === activeFile && project?.mainFile) {
@@ -1317,7 +1301,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     <PanelGroup autoSaveId={scopedStorageKey("texlite-workspace-layout")} direction="horizontal" className="work-grid">
       {showEditor && <WorkspaceFilePanel
         project={project} filesPanel={filesPanel} files={files} visibleEntries={visibleEntries}
-        activeFile={activeFile} activeMainFile={activeMainFile} rootDocuments={rootDocuments}
+        activeFile={activeFile} activeMainFile={activeMainFile} selectedFile={selectedFile}
         selectedFolder={selectedFolder} expandedFolders={expandedFolders} fileDragActive={fileDragActive}
         uploadingFiles={uploadingFiles} readOnly={readOnly} formatting={formatting}
         canFormat={isFormattableLatexFile(activeFile)} activeFormatLease={Boolean(activeFormatLease)} collaborationSynced={collaborationSynced}
@@ -1332,13 +1316,14 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
         setNewFilePath={setNewFilePath} setNewFileOpen={setNewFileOpen}
         setQuickOpen={setQuickOpen} setProjectSearchOpen={setProjectSearchOpen}
         setFileDragActive={setFileDragActive} setFilesCollapsed={setFilesCollapsed} toggleFilesPanel={toggleFilesPanel}
-        uploadFiles={uploadFiles} upload={upload} openFile={openFile}
+        onError={setError}
+        uploadFiles={uploadFiles} upload={upload} openFile={openFile} movePathToFolder={movePathToFolder}
         onFormatFile={() => void formatCurrentFile()} onFormatSelection={() => void formatSelectedSource()}
         jumpToSource={jumpToSource} syncSourceToPdf={syncSourceToPdf} onWordCount={(mode) => void requestWordCount(mode)}
       />}
       {showEditor && <PanelResizeHandle className="resize-handle"><GripVertical size={12} /></PanelResizeHandle>}
       {showEditor && <WorkspaceEditorPanel
-        project={project} activeFile={activeFile} activeMainFile={activeMainFile} openTabs={openTabs}
+        project={project} activeFile={activeFile} openTabs={openTabs}
         content={content} loadedFile={loadedFile} readOnly={readOnly} comments={comments}
         focusComment={focusComment} editorPreferences={editorPreferences} completionIndex={completionIndex}
         nativeSpellCheck={spellCheck.nativeFallback} spellCheckIssues={spellCheck.issues}
