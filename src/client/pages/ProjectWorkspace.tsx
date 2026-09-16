@@ -34,6 +34,7 @@ import { WorkspaceDialogs } from "../workspace/WorkspaceDialogs";
 import { WorkspaceContextPanel } from "../workspace/WorkspaceContextPanel";
 import { createSourceCursorStore, type SourceCursorStore } from "../workspace/sourceCursorStore";
 import type { DiagnosticTab, PreviewSurface, PreviewTab, ProjectOutlineItem } from "../workspace/types";
+import { workspaceOutlineForMainFile, type LoadedProjectOutline, type OutlineSourceSnapshot } from "../workspace/outlineState";
 import { LazyModal } from "../LazyLoadBoundary";
 import type { LatexReference } from "../../shared/latexReferences";
 import { scopedStorageKey } from "../basePath";
@@ -58,10 +59,8 @@ type FormatterRecoveryAction = "file" | "selection";
 interface FormatterRecovery { action: FormatterRecoveryAction; kind: TexFmtFailureKind; detail: string }
 interface FormattedSource { formatted: string }
 interface LoadOptions { signal?: AbortSignal; isCurrent?: () => boolean }
-interface SourceAnalysisSnapshot { filePath: string; content: string }
-
-// Main-document detection and the fallback outline both scan the entire
-// source. They do not need to run on every keystroke.
+// Main-document detection and the main-file fallback outline scan source text
+// only after it has settled. They do not need to run on every keystroke.
 const SOURCE_ANALYSIS_DEBOUNCE_MS = 300;
 
 export function ProjectWorkspace({ site, user, projectId, preload, mentionId = null, onMentionTargeted, onMentionsRead, onBack }: {
@@ -79,11 +78,11 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [collaborationReady, setCollaborationReady] = useState(false);
   const [dictionaryWords, setDictionaryWords] = useState<string[]>([]);
   const [completionIndex, setCompletionIndex] = useState<LatexCompletionIndex | null>(null);
-  const [projectOutline, setProjectOutline] = useState<ProjectOutlineItem[]>([]);
+  const [projectOutline, setProjectOutline] = useState<LoadedProjectOutline>({ mainFile: "", items: [] });
   const [activeFile, setActiveFile] = useState("");
   const [activeMainFile, setActiveMainFile] = useState("");
   const [content, setContent] = useState("");
-  const [analysisSource, setAnalysisSource] = useState<SourceAnalysisSnapshot>({ filePath: "", content: "" });
+  const [analysisSource, setAnalysisSource] = useState<OutlineSourceSnapshot>({ filePath: "", content: "" });
   const [rootIncludeState, setRootIncludeState] = useState<{ path: string; hasIncludes: boolean }>({ path: "", hasIncludes: false });
   const [loadedFile, setLoadedFile] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -383,9 +382,16 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     try {
       const query = mainFile ? `?mainFile=${encodeURIComponent(mainFile)}` : "";
       const result = await api<{ outline: ProjectOutlineItem[] }>(`/api/projects/${projectId}/outline${query}`, { signal: options.signal ?? controller?.signal });
-      if (!options.isCurrent || options.isCurrent()) setProjectOutline(result.outline);
+      // A slow response for a root the user has since left must not replace
+      // the current main document's outline.
+      if ((!options.isCurrent || options.isCurrent()) && activeMainFileRef.current === mainFile) {
+        setProjectOutline({ mainFile, items: result.outline });
+      }
     } catch (error) {
-      if (!isAbortError(error) && (!options.isCurrent || options.isCurrent())) setProjectOutline([]);
+      // Keep the last successfully loaded outline on a transient failure.
+      // The scoped resolver below will never substitute another open file's
+      // headings for this root document.
+      if (isAbortError(error)) return;
     } finally {
       if (controller && outlineRequest.current === controller) outlineRequest.current = null;
     }
@@ -412,7 +418,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     const isCurrent = () => !cancelled && projectLoadSequence.current === sequence;
     let projectLoaded = false;
     let initialMainFile = "";
-    setProject(null); setFiles([]); setProjectOutline([]); setActiveFile(""); setActiveMainFile(""); setRootIncludeState({ path: "", hasIncludes: false }); setContent(""); setLoadedFile(""); setCompileState(null);
+    setProject(null); setFiles([]); setProjectOutline({ mainFile: "", items: [] }); setActiveFile(""); setActiveMainFile(""); setRootIncludeState({ path: "", hasIncludes: false }); setContent(""); setLoadedFile(""); setCompileState(null);
     clearPdfViewport(); setCompletionIndex(null); setDictionaryWords([]);
     void loadPdfPreview();
     const projectRequest = (preload?.projectId === projectId
@@ -905,10 +911,9 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
 
   const getCurrentMainFile = (): string => activeMainFileRef.current || project?.mainFile || "";
 
-  // This is deliberately the only path that may synchronously select a new
-  // root from source text. It is called only after compilation has passed its
-  // permission and collaboration checks; all other compilation actions use
-  // the pure getCurrentMainFile lookup.
+  // A compile may explicitly promote the currently open document when it is
+  // a valid root. Opening a source file alone must not change the selected
+  // root: the outline, PDF, and collaboration scope stay tied to that root.
   const resolveCompileMainFile = (): string => {
     const currentMainFile = getCurrentMainFile();
     const currentFile = activeFileRef.current;
@@ -936,19 +941,18 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   };
 
   useEffect(() => {
-    if (!activeFile || loadedFile !== activeFile || analysisSource.filePath !== activeFile
-      || !activeFile.toLocaleLowerCase().endsWith(".tex")) return;
+    // Do not infer a new main document just because another .tex file was
+    // opened. Root selection is an explicit project setting or compile action;
+    // switching editor files must leave the main-file outline untouched.
+    if (!activeFile || activeFile !== activeMainFile || loadedFile !== activeFile
+      || analysisSource.filePath !== activeFile || !activeFile.toLocaleLowerCase().endsWith(".tex")) return;
     const texFileCount = files.filter((entry) => entry.type === "file" && /\.tex$/i.test(entry.path)).length;
-    if (texFileCount === 0) return;
-    const configuredRoot = activeFile === project?.mainFile;
-    const detectedRoot = hasDocumentClassInSource(analysisSource.content);
-    const isRoot = detectedRoot || texFileCount === 1;
-    if (isRoot && !configuredRoot && activeMainFileRef.current !== activeFile) {
-      setActiveMainFile(activeFile);
-    } else if (!isRoot && activeMainFileRef.current === activeFile && project?.mainFile) {
+    if (texFileCount === 0 || activeFile === project?.mainFile) return;
+    if (!hasDocumentClassInSource(analysisSource.content) && project?.mainFile) {
+      activeMainFileRef.current = project.mainFile;
       setActiveMainFile(project.mainFile);
     }
-  }, [activeFile, loadedFile, analysisSource, files, project?.mainFile]);
+  }, [activeFile, activeMainFile, loadedFile, analysisSource, files, project?.mainFile]);
 
   useEffect(() => {
     if (!editorPreferences.openFilesInTabs || files.length === 0) return;
@@ -1146,11 +1150,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     if (filesPanel.current?.isCollapsed()) filesPanel.current.expand();
     else filesPanel.current?.collapse();
   };
-  const outline = useMemo(() => {
-    if (projectOutline.length) return projectOutline;
-    if (analysisSource.filePath !== activeFile) return [];
-    return parseOutline(analysisSource.content).map((item) => ({ ...item, path: activeFile }));
-  }, [projectOutline, analysisSource, activeFile]);
+  const outline = useMemo(() => workspaceOutlineForMainFile(projectOutline, activeMainFile, analysisSource), [projectOutline, activeMainFile, analysisSource]);
   const compileMessages = useMemo(() => classifyCompileLog(compileLog, compileOutcome), [compileLog, compileOutcome]);
   const showEditor = workspaceLayout !== "pdf-only";
   const showPreview = workspaceLayout !== "editor-only";
@@ -1407,17 +1407,4 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       dismissPermissionDowngrade={dismissPermissionDowngrade} discardPermissionDraft={discardPermissionDraft}
     />
   </div>;
-}
-
-
-
-function parseOutline(content: string): Array<{ level: number; title: string; line: number }> {
-  const result: Array<{ level: number; title: string; line: number }> = [];
-  const pattern = /^\s*\\(part|chapter|section|subsection|subsubsection)\*?(?:\[[^\]]*\])?\{([^}]*)\}/;
-  const levels: Record<string, number> = { part: 0, chapter: 0, section: 1, subsection: 2, subsubsection: 3 };
-  content.split("\n").forEach((line, index) => {
-    const match = line.match(pattern);
-    if (match) result.push({ level: levels[match[1]], title: match[2], line: index + 1 });
-  });
-  return result;
 }

@@ -216,10 +216,14 @@ function WorkspaceOutlinePanel({
     const { item } = entry;
     const collapsed = collapsedKeys.has(entry.key);
     const current = activeFile === item.path && sourceCursorLine === item.line;
+    // Main-document rows keep their line numbers even when another source
+    // tab is active. Included-file rows show their file name unless that
+    // file is the active tab, where its line number is useful again.
+    const showLineNumber = item.path === activeMainFile || item.path === activeFile;
     return <div className={`outline-row${current ? " current" : ""}`} key={entry.key}>
       <span className="outline-guides" aria-hidden style={{ width: `${item.level * 12}px` }} />
       {entry.hasChildren ? <button className="outline-toggle" type="button" aria-label={t(collapsed ? "editor.expandOutlineItem" : "editor.collapseOutlineItem", { title: item.title })} aria-expanded={!collapsed} onClick={() => toggleItem(entry.key)}>{collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}</button> : <span className="outline-toggle-spacer" aria-hidden />}
-      <button className="outline-item" type="button" onClick={() => { jumpToSource(item.path, item.line, 1); void syncSourceToPdf(item.path, item.line, 1); }}><small>{item.path === activeFile ? item.line : item.path.split("/").at(-1)}</small><span className="outline-title">{item.title}</span></button>
+      <button className="outline-item" type="button" onClick={() => { jumpToSource(item.path, item.line, 1); void syncSourceToPdf(item.path, item.line, 1); }}><small>{showLineNumber ? item.line : item.path.split("/").at(-1)}</small><span className="outline-title">{item.title}</span></button>
     </div>;
   })}{outline.length === 0 && <p className="muted padded">{t("editor.noOutline")}</p>}</div></section>;
 }
