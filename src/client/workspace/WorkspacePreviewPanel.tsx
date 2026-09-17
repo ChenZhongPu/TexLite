@@ -6,6 +6,7 @@ import type { CompileDiagnostics } from "../compileDiagnostics";
 import type { CompileMessages } from "../compileLog";
 import type { FileEntry } from "../types";
 import type { PdfTarget } from "../PdfPreview";
+import { appPath } from "../basePath";
 import i18n from "../i18n";
 import { loadPdfPreview } from "../workspacePreload";
 import type { CompileCleanMode } from "./useProjectCompilation";
@@ -72,7 +73,7 @@ export function WorkspacePreviewPanel({
       <section className="preview-panel">
         <div className="preview-tabs">
           <div className="preview-tab-list" role="tablist" aria-label={t("editor.outputTabs")}>
-            <button role="tab" aria-selected={previewTab === "pdf"} className={`pdf-tab${previewTab === "pdf" ? " active" : ""}`} onClick={() => selectPreviewTab("pdf")} title={pdfCompiledAt ? t("editor.pdfCompiledAtFor", { file: activeMainFile, time: new Date(pdfCompiledAt).toLocaleString(i18n.resolvedLanguage) }) : t("editor.currentMainDocument", { path: activeMainFile })}><FileText size={16} /><span className="pdf-tab-label">PDF · {pdfTargetLabel}{pdfCompiledLabel && <small>{pdfCompiledLabel}</small>}</span></button>
+            <button role="tab" aria-selected={previewTab === "pdf"} className={`pdf-tab${previewTab === "pdf" ? " active" : ""}`} onClick={() => selectPreviewTab("pdf")} title={pdfCompiledAt ? t("editor.pdfCompiledAtFor", { file: activeMainFile, time: new Date(pdfCompiledAt).toLocaleString(i18n.resolvedLanguage) }) : t("editor.currentMainDocument", { path: activeMainFile })}><img className="pdf-tab-icon" src={appPath("/pdf-download.svg")} alt="" aria-hidden="true" /><span className="pdf-tab-label">PDF · {pdfTargetLabel}{pdfCompiledLabel && <small>{pdfCompiledLabel}</small>}</span></button>
             <button role="tab" aria-selected={previewTab === "diagnostics"} className={`diagnostics-tab${previewTab === "diagnostics" ? " active" : ""}`} onClick={() => selectPreviewTab("diagnostics")}><ScrollText size={14} />{t("editor.outputTabs")}<span>{diagnosticCount}</span></button>
           </div>
           {pdfDownloadUrl && <a className="pdf-download-top" href={pdfDownloadUrl} download title={t("editor.downloadPdf")} aria-label={t("editor.downloadPdf")}><Download size={15} /><span>{t("editor.downloadPdf")}</span></a>}

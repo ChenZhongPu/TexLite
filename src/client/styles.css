@@ -491,7 +491,18 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .file-entry-main[draggable="true"]:active { cursor: grabbing; }
 .file-entry-main { min-width: 0; height: 100%; flex: 1; overflow: hidden; display: flex; align-items: center; gap: 5px; border: 0; padding: 0 4px; background: transparent; color: inherit; text-align: left; font-size: inherit; }
 .file-entry-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-entry-main svg { flex: none; color: #28724e; }
+.file-entry-main .file-type-icon { flex: none; }
+.file-entry-main svg.file-type-icon { color: #28724e; }
+.file-entry-main img.file-type-icon { object-fit: contain; }
+.file-entry-main .file-type-icon-pdf { color: #b0444b; }
+.file-entry-main .file-type-icon-image { color: #7b55a5; }
+.file-entry-main .file-type-icon-markdown { color: #3d6da8; }
+.file-entry-main .file-type-icon-text { color: #69766f; }
+.file-entry-main .file-type-icon-code { color: #28724e; }
+.file-entry-main .file-type-icon-spreadsheet { color: #3c815b; }
+.file-entry-main .file-type-icon-archive { color: #a8732c; }
+.file-entry-main .file-type-icon-audio, .file-entry-main .file-type-icon-video { color: #a15183; }
+.file-entry-main .file-type-icon-file { color: #78837b; }
 .file-entry-main small { flex: none; padding: 1px 4px; border-radius: 999px; background: #d9eadf; color: #1d5b3e; font-size: 8px; line-height: 1.35; }
 .file-entry-size { flex: none; margin-right: 5px; color: #78837b; font-size: .86em; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .folder-entry .file-entry-main svg:first-child { color: #78837b; }
@@ -595,12 +606,13 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .preview-tabs button span { min-width: 17px; padding: 1px 4px; border-radius: 999px; background: #ffffff20; font-size: 9px; }
 .preview-tabs button.active span { background: #dfe8e2; }
 .preview-tabs .pdf-tab { justify-content: flex-start; padding: 0 12px; font-size: 12px; }
+.preview-tabs .pdf-tab-icon { width: 16px; height: 16px; flex: none; object-fit: contain; }
 .preview-tabs button .pdf-tab-label { min-width: 0; overflow: hidden; padding: 0; border-radius: 0; background: transparent; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-size: 12px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .preview-tabs button.active .pdf-tab-label { background: transparent; }
 .preview-tabs .pdf-tab small { max-width: 100%; overflow: hidden; color: #bcc4bf; font-size: 8px; font-weight: 400; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .preview-tabs .pdf-tab.active small { color: #65756c; }
-.pdf-download-top { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 4px; padding: 0 11px; border: 0; border-radius: 6px 6px 0 0; color: #d7dcd8; font-size: 10px; text-decoration: none; white-space: nowrap; }
-.pdf-download-top:hover { background: #ffffff1b; color: white; }
+.pdf-download-top { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-left: 4px; padding: 0 11px; border: 0; border-radius: 6px 6px 0 0; color: #a9cce8; font-size: 10px; text-decoration: none; white-space: nowrap; }
+.pdf-download-top:hover { background: #d7ecff24; color: #eaf5ff; }
 .preview-subtabs { height: 36px; flex: none; display: flex; align-items: center; gap: 3px; padding: 4px 7px; border-bottom: 1px solid #cfd6d1; background: #e4e9e5; }
 .preview-subtabs button { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: #58665d; font-size: 10px; }
 .preview-subtabs button:hover { background: #d8e3db; color: #205c40; }
@@ -650,12 +662,13 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .artifact-row > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .artifact-row strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-row small { color: #89928c; font-size: 9px; }
-.artifact-row > a { width: 30px; flex: none; display: grid; place-items: center; color: #52705f; }
-.artifact-row > a:hover { background: #dce8e0; color: #176641; }
+.artifact-row > a { width: 30px; flex: none; display: grid; place-items: center; color: #3c6fa3; }
+.artifact-row > a:hover { background: #e5f1fb; color: #245a8b; }
 .artifact-preview { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #202522; color: #dbe2dd; }
 .artifact-preview > header { height: 36px; flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; border-bottom: 1px solid #39413c; background: #303732; font-size: 11px; }
 .artifact-preview > header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.artifact-preview > header a { flex: none; display: inline-flex; align-items: center; gap: 4px; color: #c9ddd1; }
+.artifact-preview > header a { flex: none; display: inline-flex; align-items: center; gap: 4px; color: #a9cce8; }
+.artifact-preview > header a:hover { color: #eaf5ff; }
 .artifact-preview > pre { min-height: 0; flex: 1; margin: 0; overflow: auto; padding: 13px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 "SFMono-Regular", Consolas, monospace; }
 .compile-output { min-height: 100%; margin: 0; padding: 16px; color: #dbe2dd; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 "SFMono-Regular", Consolas, monospace; }
 .compile-output.compile-warning { color: #ffdfa0; background: #2d281c; }

@@ -4,6 +4,7 @@ import type { CompileDiagnostic } from "../compileDiagnostics";
 import type { FileEntry } from "../types";
 import type { CompileArtifact } from "./types";
 import { appPath } from "../basePath";
+import { FileTypeIcon } from "../fileIcons";
 
 export function CompileDiagnosticOutput({ diagnostics, files, empty, tone, onJump }: {
   diagnostics: CompileDiagnostic[];
@@ -47,7 +48,7 @@ export function CompileArtifacts({ projectId, mainFile, artifacts, preview, load
     <div className="artifact-list">
       {artifacts.map((artifact) => <div className={`artifact-row${preview?.path === artifact.path ? " active" : ""}`} key={artifact.path}>
         <button type="button" disabled={!artifact.viewable} title={artifact.viewable ? t("editor.viewArtifact") : t("editor.downloadToView")} onClick={() => onView(artifact)}>
-          <FileText size={14} /><span><strong>{artifact.path}</strong><small>{formatFileSize(artifact.size)}</small></span>
+          <FileTypeIcon path={artifact.path} size={14} /><span><strong>{artifact.path}</strong><small>{formatFileSize(artifact.size)}</small></span>
         </button>
         <a href={downloadUrl(artifact.path)} title={t("editor.downloadArtifact")} aria-label={t("editor.downloadArtifact")}><Download size={14} /></a>
       </div>)}
