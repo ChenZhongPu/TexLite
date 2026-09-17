@@ -75,6 +75,12 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
 }) {
   const { t } = useTranslation();
   const [project, setProject] = useState<Project | null>(null);
+  useEffect(() => {
+    document.title = project?.name ? `${site.siteName} | ${project.name}` : site.siteName;
+    return () => {
+      document.title = site.siteName;
+    };
+  }, [project?.name, site.siteName]);
   const [collaborationReady, setCollaborationReady] = useState(false);
   const [dictionaryWords, setDictionaryWords] = useState<string[]>([]);
   const [completionIndex, setCompletionIndex] = useState<LatexCompletionIndex | null>(null);
