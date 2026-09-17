@@ -22,7 +22,7 @@ import type { Awareness } from "y-protocols/awareness";
 import type { Comment, LatexCompletionIndex } from "./types";
 import { editorFontStack, type EditorPreferences } from "./editorPreferences";
 import { countSearchMatches, searchQuerySignature } from "./editorSearch";
-import { bibtexCompletionSource, bibtexLanguage, bstLanguage, createBibtexEditorExtensions, latexLanguage, localizedBibtexMessages } from "./latexLanguage";
+import { bibtexCompletionSource, bibtexHighlightStyle, bibtexLanguage, bstLanguage, createBibtexEditorExtensions, latexLanguage, localizedBibtexMessages } from "./latexLanguage";
 import { supportsLatexMathHover } from "./latexMath";
 import { latexMathHover } from "./mathHover";
 import { latexAutoPairInput, latexSkippedBracePair } from "./latexAutoPairs";
@@ -403,6 +403,7 @@ export function LatexEditor({
         commentAddLineNumberExtension(t("editor.addComment"), (...args) => onAddCommentRef.current(...args)),
         foldGutter(), ...(collaboration ? [] : [history()]), drawSelection(), highlightActiveLine(), highlightSpecialChars(),
         isBibtexFile ? [bibtexLanguage, ...createBibtexEditorExtensions(localizedBibtexMessages(t))] : isBstFile ? bstLanguage : latexLanguage, syntaxHighlighting(defaultHighlightStyle),
+        ...(isBibtexFile ? [syntaxHighlighting(bibtexHighlightStyle)] : []),
         ...(isBibtexFile ? [] : [bracketMatching(), ...(isBstFile ? [] : [Prec.high(EditorView.inputHandler.of(latexAutoPairInput)), latexSkippedBracePair, latexFold])]),
         closeBrackets(), indentOnInput(), commentMarks, spellCheckIssueMarks, activeSpellCheckIssueMarks,
         referenceNavigation.current.of(isBstFile ? [] : referenceNavigationSettings.of(referenceNavigationOptions(filePath, t))),

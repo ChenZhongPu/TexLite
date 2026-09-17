@@ -16,6 +16,7 @@ import { createBibtexHoverTooltip } from "./hover";
 import { defaultBibtexMessages, type BibtexMessages } from "./messages";
 
 export const bibtexLanguage = parser;
+export { bibtexHighlightStyle } from "./parser";
 
 export const bibtexBracketMatching = bracketMatching({
   brackets: "()[]{}"

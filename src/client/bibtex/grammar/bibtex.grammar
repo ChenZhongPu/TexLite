@@ -49,6 +49,7 @@ CommentEntry {
   commentParenContent { CommentParenValue | Escape | parenText }
   CommentParenValue { "(" commentParenContent* ")" }
   BracedValue { "{" bracedContent* "}" }
+  NestedBracedValue { "{" bracedContent* "}" }
   QuotedValue { "\"" quotedContent* "\"" }
 }
 
@@ -81,8 +82,11 @@ ValueAtom {
   StringRef
 }
 
-bracedContent { BracedValue | Escape | bracedText }
-quotedContent { BracedValue | Escape | quotedText }
+// A value's first brace pair is represented by `BracedValue`. Additional
+// brace pairs inside it get their own node so themes can distinguish protected
+// case/grouping braces such as `{{ISO/IEC}}` from the value's outer delimiters.
+bracedContent { NestedBracedValue | Command | Escape | bracedText }
+quotedContent { NestedBracedValue | Command | Escape | quotedText }
 
 EntryKey  { keyIdentifier }
 FieldName { nameIdentifier }
@@ -100,6 +104,10 @@ StringRef  { nameIdentifier }
   Number { $[0-9]+ }
   Concat { "#" }
 
+  // TeX control words must be consumed as one token. The previous `_` form
+  // highlighted only the backslash plus its first character (`\\u` in
+  // `\\url`), leaving the rest of the command as ordinary text.
+  Command { "\\" $[a-zA-Z@]+ }
   Escape { "\\" _ }
 
   bracedText  { ![{}\\]+ }
@@ -108,7 +116,7 @@ StringRef  { nameIdentifier }
   LineComment { "%" ![\n]* }
   whitespace  { $[ \t\r\n]+ }
 
-  @precedence { Escape, bracedText, quotedText }
+  @precedence { Command, Escape, bracedText, quotedText }
 }
 
 @skip { whitespace | LineComment }

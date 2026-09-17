@@ -122,6 +122,7 @@ export {
   bibtexCompletionSource,
   createBibtexEditorExtensions,
   bibtexEditorExtensions,
+  bibtexHighlightStyle,
   bibtexHoverTooltip,
   bibtexLanguage,
   bibtexLinter,

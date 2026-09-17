@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { defaultHighlightStyle, foldable, matchBrackets, StringStream, syntaxTree } from "@codemirror/language";
-import { highlightTree } from "@lezer/highlight";
+import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
 import {
   bibtexCompletionSource,
   bibtexEditorExtensions,
@@ -282,6 +282,51 @@ Normal prose after a literal environment.`
         if (node.type.isError) errors.push({ from: node.from, to: node.to });
       }
     });
+    expect(errors).toEqual([]);
+  });
+
+  it("highlights BibTeX control words and protected nested brace groups", () => {
+    const source = String.raw`@misc{example,
+  url = {\url{https://example.com}},
+  institution = {{ISO/IEC}},
+  author = {Ommer, Bj{\"o}rn}
+}`;
+    const state = EditorState.create({ doc: source, extensions: [bibtexLanguage] });
+    const commands: string[] = [];
+    const nestedValues: string[] = [];
+    const errors: string[] = [];
+    const highlightRanges: Array<{ text: string; style: string }> = [];
+    syntaxTree(state).iterate({
+      enter(node) {
+        if (node.name === "Command") commands.push(source.slice(node.from, node.to));
+        if (node.name === "NestedBracedValue") nestedValues.push(source.slice(node.from, node.to));
+        if (node.type.isError) errors.push(source.slice(node.from, node.to));
+      }
+    });
+    highlightTree(syntaxTree(state), tagHighlighter([
+      { tag: tags.macroName, class: "bib-command" },
+      { tag: tags.special(tags.string), class: "bib-nested" },
+      { tag: tags.string, class: "bib-value" }
+    ]), (from, to, style) => {
+      highlightRanges.push({ text: source.slice(from, to), style });
+    });
+
+    expect(errors).toEqual([]);
+    expect(commands).toEqual(["\\url"]);
+    expect(nestedValues).toEqual(["{https://example.com}", "{ISO/IEC}", "{\\\"o}"]);
+    expect(highlightRanges).toEqual(expect.arrayContaining([
+      { text: "\\url", style: "bib-command" },
+      { text: "{ISO/IEC}", style: "bib-nested" }
+    ]));
+  });
+
+  it("keeps braces inside quoted BibTeX values valid", () => {
+    const source = String.raw`@article{quoted,
+  title = "A {protected} title with {\url{https://example.com}}"
+}`;
+    const state = EditorState.create({ doc: source, extensions: [bibtexLanguage] });
+    const errors: Array<{ from: number; to: number }> = [];
+    syntaxTree(state).iterate({ enter(node) { if (node.type.isError) errors.push({ from: node.from, to: node.to }); } });
     expect(errors).toEqual([]);
   });
 

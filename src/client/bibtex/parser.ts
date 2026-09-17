@@ -1,6 +1,6 @@
 /* Derived from TeXlyre/codemirror-lang-bib (MIT). See LICENSE. */
 
-import { foldInside, foldNodeProp, indentNodeProp, LRLanguage } from "@codemirror/language";
+import { foldInside, foldNodeProp, HighlightStyle, indentNodeProp, LRLanguage } from "@codemirror/language";
 import { styleTags, tags } from "@lezer/highlight";
 import { parser as generatedParser } from "./generatedParser.mjs";
 
@@ -39,6 +39,8 @@ export const parser = LRLanguage.define({
         Concat: tags.operator,
         BracedValue: tags.string,
         QuotedValue: tags.string,
+        NestedBracedValue: tags.special(tags.string),
+        Command: tags.macroName,
         Escape: tags.escape,
         LineComment: tags.lineComment,
         CommentEntry: tags.blockComment,
@@ -52,3 +54,14 @@ export const parser = LRLanguage.define({
     closeBrackets: { brackets: ["{", "\""] }
   }
 });
+
+/**
+ * Keep BibTeX's embedded TeX control words visually distinct from prose and
+ * use a warm accent for protected nested groups. These colors follow the
+ * workspace's existing blue/green palette while preserving the default
+ * CodeMirror highlighting for every other BibTeX token.
+ */
+export const bibtexHighlightStyle = HighlightStyle.define([
+  { tag: tags.macroName, color: "#176b8f" },
+  { tag: tags.special(tags.string), color: "#8a5a16" }
+]);
