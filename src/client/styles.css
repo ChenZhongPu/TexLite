@@ -496,6 +496,7 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .file-entry-main img.file-type-icon { object-fit: contain; }
 .file-entry-main .file-type-icon-pdf { color: #b0444b; }
 .file-entry-main .file-type-icon-image { color: #7b55a5; }
+.file-entry-main .file-type-icon-bib { color: #176b8f; }
 .file-entry-main .file-type-icon-markdown { color: #3d6da8; }
 .file-entry-main .file-type-icon-text { color: #69766f; }
 .file-entry-main .file-type-icon-code { color: #28724e; }

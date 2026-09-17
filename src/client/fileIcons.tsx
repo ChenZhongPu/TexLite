@@ -1,14 +1,14 @@
 import type { LucideIcon } from "lucide-react";
-import { BookOpen, File, FileArchive, FileAudio, FileCode2, FileImage, FileSpreadsheet, FileText, FileType2, FileVideo, NotepadText } from "lucide-react";
+import { BookOpen, File, FileArchive, FileAudio, FileCode2, FileImage, FileSpreadsheet, FileText, FileType2, FileVideo, LibraryBig, NotepadText } from "lucide-react";
 import { appPath } from "./basePath";
 
 /** Semantic groups used by the project file tree. */
-export type FileIconKind = "pdf" | "tex" | "image" | "markdown" | "text" | "code" | "spreadsheet" | "archive" | "audio" | "video" | "file";
+export type FileIconKind = "pdf" | "tex" | "bib" | "image" | "markdown" | "text" | "code" | "spreadsheet" | "archive" | "audio" | "video" | "file";
 
 const imageExtensions = new Set(["avif", "bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp", "eps"]);
 const texExtensions = new Set(["latex", "ltx", "tex"]);
 const codeExtensions = new Set([
-  "aux", "bib", "blg", "bbl", "bst", "c", "cc", "cls", "cpp", "css", "dtx", "go", "h", "hpp", "html", "idx", "ilg", "ind", "ins", "java", "js", "json", "jsx",
+  "aux", "blg", "bbl", "bst", "c", "cc", "cls", "cpp", "css", "dtx", "go", "h", "hpp", "html", "idx", "ilg", "ind", "ins", "java", "js", "json", "jsx",
   "lof", "log", "lot", "lua", "ltx", "nav", "out", "php", "py", "r", "rs", "sh", "snm", "sql", "sty", "tex", "toc", "ts", "tsx", "vrb", "xml", "yaml", "yml"
 ]);
 const textExtensions = new Set(["cfg", "conf", "dat", "env", "ini", "text", "toml", "txt"]);
@@ -31,6 +31,7 @@ export function fileIconKind(filePath: string): FileIconKind {
   if (imageExtensions.has(extension)) return "image";
   if (extension === "md" || extension === "markdown" || extension === "mdown" || extension === "mkdn") return "markdown";
   if (texExtensions.has(extension)) return "tex";
+  if (extension === "bib" || extension === "bibtex") return "bib";
   if (codeExtensions.has(extension)) return "code";
   if (textExtensions.has(extension)) return "text";
   if (spreadsheetExtensions.has(extension)) return "spreadsheet";
@@ -43,6 +44,7 @@ export function fileIconKind(filePath: string): FileIconKind {
 const icons: Record<FileIconKind, LucideIcon> = {
   pdf: FileType2,
   tex: FileCode2,
+  bib: LibraryBig,
   image: FileImage,
   markdown: BookOpen,
   text: NotepadText,
