@@ -307,7 +307,7 @@ export async function captureCompileSnapshot(
   config: Config,
   projectId: string,
   runId: string,
-  settings: { mainFile: string; engine: string; latexmkrc: string | null; extraArgs: string[]; generation?: string }
+  settings: { mainFile: string; engine: string; latexmkrc?: string | null; extraArgs: string[]; generation?: string }
 ): Promise<CompileSnapshot> {
   const root = compileRunRoot(config, projectId, runId);
   const snapshotSource = path.join(root, "source");
@@ -320,7 +320,7 @@ export async function captureCompileSnapshot(
   // The content revision remains independent from the cheap generation. A
   // metadata-only project update should still be able to reuse an identical
   // source snapshot after the generation check misses.
-  const { generation, ...contentSettings } = settings;
+  const { generation, latexmkrc: _legacyLatexmkrc, ...contentSettings } = settings;
   hash.update(JSON.stringify(contentSettings));
   try {
     const entries = (await listProjectFilesAsync(config, projectId)).sort((left, right) => left.path.localeCompare(right.path));
@@ -607,8 +607,7 @@ function compileCacheKey(
   config: Config,
   snapshot: CompileSnapshot,
   mainFile: string,
-  engine: "pdflatex" | "xelatex" | "lualatex",
-  latexmkrc: string | null
+  engine: "pdflatex" | "xelatex" | "lualatex"
 ): string {
   const hash = createHash("sha256");
   hash.update(JSON.stringify({
@@ -616,10 +615,8 @@ function compileCacheKey(
     latexmk: config.latexmk,
     engine,
     mainFile,
-    latexmkrc,
     extraArgs: config.extraArgs
   }));
-  if (latexmkrc) hash.update(fs.readFileSync(path.join(snapshot.sourceDir, latexmkrc)));
   return hash.digest("hex").slice(0, 24);
 }
 
@@ -627,11 +624,10 @@ function prepareCompileCache(
   config: Config,
   snapshot: CompileSnapshot,
   mainFile: string,
-  engine: "pdflatex" | "xelatex" | "lualatex",
-  latexmkrc: string | null
+  engine: "pdflatex" | "xelatex" | "lualatex"
 ): PreparedCompileCache {
   const cacheDirectory = compileCacheTargetRoot(config, snapshot.projectId, mainFile);
-  const key = compileCacheKey(config, snapshot, mainFile, engine, latexmkrc);
+  const key = compileCacheKey(config, snapshot, mainFile, engine);
   const root = path.join(cacheDirectory, key);
   const cacheSource = path.join(root, "source");
   const cacheOutput = path.join(root, "output");
@@ -767,7 +763,8 @@ export async function compileProject(
   snapshot: CompileSnapshot,
   mainFileInput: string,
   engine: "pdflatex" | "xelatex" | "lualatex",
-  latexmkrcInput: string | null,
+  /** Legacy positional argument retained for callers compiled against 0.9.x; it is ignored. */
+  _latexmkrcInput: string | null,
   options: { signal?: AbortSignal } = {}
 ): Promise<CompileResult> {
   const { signal } = options;
@@ -775,16 +772,8 @@ export async function compileProject(
   const mainFile = safeRelativePath(mainFileInput);
   if (!/\.tex$/i.test(mainFile)) throw new Error("The main file must have a .tex extension");
   const startedAt = performance.now();
-  let latexmkrc: string | null = null;
-  if (config.allowProjectLatexmkrc && latexmkrcInput) {
-    latexmkrc = safeRelativePath(latexmkrcInput);
-    const absoluteRc = path.join(snapshot.sourceDir, latexmkrc);
-    if (!fs.existsSync(absoluteRc) || !fs.statSync(absoluteRc).isFile()) {
-      throw new Error(`The configured project latexmkrc does not exist: ${latexmkrc}`);
-    }
-  }
   const cacheStartedAt = performance.now();
-  const cache = prepareCompileCache(config, snapshot, mainFile, engine, latexmkrc);
+  const cache = prepareCompileCache(config, snapshot, mainFile, engine);
   const cacheSyncMs = performance.now() - cacheStartedAt;
   if (signal?.aborted) return cancelledCompileResultForProject({
     cacheSyncMs, latexmkMs: 0, artifactCopyMs: 0, totalMs: performance.now() - startedAt
@@ -795,10 +784,8 @@ export async function compileProject(
   const engineFlag = engine === "xelatex" ? "-xelatex" : engine === "lualatex" ? "-lualatex" : "-pdf";
   const args = [
     engineFlag,
-    // latexmk otherwise reads a .latexmkrc from the compile working
-    // directory automatically.  Project sources may contain one after a ZIP
-    // import or a Git checkout, so only an rc file explicitly selected in the
-    // project settings may be loaded below with -r.
+    // Never load a project-provided latexmkrc. This remains explicit even if a
+    // legacy source directory is encountered during a deployment migration.
     "-norc",
     "-interaction=nonstopmode",
     "-file-line-error",
@@ -807,7 +794,6 @@ export async function compileProject(
     "-no-shell-escape",
     `-outdir=${outDir}`
   ];
-  if (latexmkrc) args.push("-r", latexmkrc);
   args.push(...config.extraArgs, mainFile);
 
   const latexmkStartedAt = performance.now();

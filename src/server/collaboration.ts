@@ -400,6 +400,18 @@ export class CollaborationService {
     }
   }
 
+  /** Close live sessions that entered a project through one bearer link. */
+  disconnectShareLink(projectId: string, shareLinkId: string, reason = "Share link revoked"): void {
+    const room = this.rooms.get(projectId);
+    if (!room) return;
+    for (const connection of [...room.connections]) {
+      if (connection.user.share_link_id !== shareLinkId) continue;
+      sendPermissionRevoked(connection.socket, connection.user.id);
+      connection.socket.close(1008, reason);
+      this.disconnect(room, connection);
+    }
+  }
+
   currentRevision(projectId: string): number | null {
     return this.rooms.get(projectId)?.persistedRevision ?? null;
   }
@@ -1031,8 +1043,15 @@ export class CollaborationService {
       this.disconnect(room, connection);
       return;
     }
-    connection.user = refreshedUser;
-    const current = this.lookupProjectAccess(room.projectId, refreshedUser);
+    // The share-link id is request-scoped and therefore is not stored in the
+    // users table. Preserve it across the database refresh used to re-check
+    // every message; otherwise the first protocol packet from a read-link
+    // session is incorrectly treated as an unauthorised project access.
+    const refreshedAccessUser = connection.user.share_link_id
+      ? { ...refreshedUser, share_link_id: connection.user.share_link_id }
+      : refreshedUser;
+    connection.user = refreshedAccessUser;
+    const current = this.lookupProjectAccess(room.projectId, refreshedAccessUser);
     if (!current) {
       connection.socket.close(1008, "Project access revoked");
       return;
@@ -1623,7 +1642,7 @@ export function maxCollaborativeFileBytes(config: Config): number {
 }
 
 export function isCollaborativeTextFile(filePath: string): boolean {
-  return /(?:\.tex|\.bib|\.bst|\.sty|\.cls|\.txt|\.md|latexmkrc)$/i.test(filePath);
+  return /\.(?:tex|bib|bst|sty|cls|txt|md)$/i.test(filePath);
 }
 
 function collaborativeEntrySignature(entry: FileEntry): string {
@@ -1863,6 +1882,14 @@ function awarenessClientIds(update: Uint8Array): number[] {
     decoding.readVarString(decoder);
   }
   return result;
+}
+
+function sendPermissionRevoked(socket: WebSocket, userId: string): void {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_PERMISSION);
+  encoding.writeVarString(encoder, userId);
+  encoding.writeVarString(encoder, "revoked");
+  send(socket, encoding.toUint8Array(encoder));
 }
 
 function rawData(data: RawData): Uint8Array {

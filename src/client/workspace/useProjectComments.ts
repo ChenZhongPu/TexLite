@@ -16,6 +16,7 @@ interface UseProjectCommentsOptions {
   activeFile: string;
   content: string;
   permission: Project["permission"] | undefined;
+  shareLinkOnly?: boolean;
   revision: string;
   selection: SourceSelection;
   save: () => Promise<boolean>;
@@ -42,7 +43,7 @@ function isAbortError(error: unknown): boolean {
 }
 
 export function useProjectComments({
-  projectId, activeFile, content, permission, revision, selection, save, saveFailureMessage, onError, onAdded, onChanged
+  projectId, activeFile, content, permission, shareLinkOnly, revision, selection, save, saveFailureMessage, onError, onAdded, onChanged
 }: UseProjectCommentsOptions) {
   // `comments` remains strictly scoped to the active file. LatexEditor uses
   // offsets from this list to decorate source, so project-wide results must
@@ -194,7 +195,7 @@ export function useProjectComments({
   };
 
   const openComment = (selectionOverride?: SourceSelection, sourceOverride?: string) => {
-    if (!activeFile) return;
+    if (!activeFile || permission === "read") return;
     setCommentError("");
     // Keep the source revision and selection that the user actually reviewed.
     // Remote edits while the composer is open must never silently retarget it.

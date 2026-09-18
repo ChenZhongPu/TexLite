@@ -15,7 +15,6 @@ import type { WorkspaceLayout } from "./types";
 import { LazyModal } from "../LazyLoadBoundary";
 
 const CitationLibraryDialog = lazy(() => import("../CitationLibraryDialog").then((module) => ({ default: module.CitationLibraryDialog })));
-const GitDialog = lazy(() => import("../GitDialog").then((module) => ({ default: module.GitDialog })));
 const HistoryDialog = lazy(() => import("../HistoryDialog").then((module) => ({ default: module.HistoryDialog })));
 const SelectionHistoryDialog = lazy(() => import("../SelectionHistoryDialog").then((module) => ({ default: module.SelectionHistoryDialog })));
 const ProjectSearchDialog = lazy(() => import("../ProjectNavigationDialogs").then((module) => ({ default: module.ProjectSearchDialog })));
@@ -93,8 +92,6 @@ export interface WorkspaceDialogsProps {
   setSelectionHistoryOpen: (open: boolean) => void;
   historyOpen: boolean;
   setHistoryOpen: (open: boolean) => void;
-  gitOpen: boolean;
-  setGitOpen: (open: boolean) => void;
   save: () => Promise<boolean>;
   permissionDowngrade: PermissionDowngradeNotice | null;
   permissionDowngradeBusy: boolean;
@@ -112,7 +109,7 @@ export function WorkspaceDialogs({
   setDeleteEntry, deleteActiveSessions, removePath, commentOpen, closeComment, commentSelection, selection, commentText,
   setCommentText, commentSubmitting, commentError, addComment, shareOpen, setShareOpen, citationLibraryOpen, setCitationLibraryOpen,
   insertCitationAtCursor, quickOpen, setQuickOpen, projectSearchOpen, setProjectSearchOpen, openFile,
-  jumpToSource, selectionHistoryOpen, setSelectionHistoryOpen, historyOpen, setHistoryOpen, gitOpen, setGitOpen, save, permissionDowngrade,
+  jumpToSource, selectionHistoryOpen, setSelectionHistoryOpen, historyOpen, setHistoryOpen, save, permissionDowngrade,
   permissionDowngradeBusy, dismissPermissionDowngrade, discardPermissionDraft
 }: WorkspaceDialogsProps) {
   const { t } = useTranslation();
@@ -180,7 +177,6 @@ export function WorkspaceDialogs({
     {projectSearchOpen && <Suspense fallback={null}><ProjectSearchDialog open project={project} onOpenChange={setProjectSearchOpen} onJump={(filePath, line, column) => { if (workspaceLayout === "pdf-only") changeWorkspaceLayout("editor-pdf"); jumpToSource(filePath, line, column); }} /></Suspense>}
     {selectionHistoryOpen && <Suspense fallback={null}><SelectionHistoryDialog open onOpenChange={setSelectionHistoryOpen} project={project} filePath={activeFile} selection={selection} currentSource={content} /></Suspense>}
     {historyOpen && <Suspense fallback={null}><HistoryDialog open onOpenChange={setHistoryOpen} project={project} onBeforeMutation={project.permission === "read" ? async () => true : save} /></Suspense>}
-    {project.ownerId === user.id && gitOpen && <Suspense fallback={null}><GitDialog open onOpenChange={setGitOpen} project={project} onBeforeMutation={save} /></Suspense>}
   </>;
 }
 

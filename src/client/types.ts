@@ -7,7 +7,7 @@ export interface SiteConfig {
   /** Server-enforced cap for one citation-library BibTeX entry. */
   maxCitationBibtexBytes: number;
   allowedEngines?: Array<"pdflatex" | "xelatex" | "lualatex">;
-  allowProjectLatexmkrc?: boolean;
+  githubOAuthEnabled: boolean;
   maxUploadSizeMB: number;
   maxCollaborativeFileSizeMB: number;
 }
@@ -17,8 +17,12 @@ export interface User {
   username: string;
   displayName: string;
   role: "admin" | "user";
+  email: string | null;
+  avatarUrl: string | null;
+  githubConnected: boolean;
   disabled: boolean;
   mustChangePassword: boolean;
+  hasPassword: boolean;
   canCreateProjects: boolean;
   createdAt: string;
   ownedProjects?: number;
@@ -34,11 +38,12 @@ export interface Project {
   lastModifiedDisplayName?: string | null;
   name: string;
   mainFile: string;
-  latexmkrc: string | null;
   engine: "pdflatex" | "xelatex" | "lualatex";
   /** A server-validated Lucide icon slug, or null to display the project initial. */
   icon: string | null;
   permission: "read" | "edit" | "owner";
+  /** True when this request is authorized only by a read-only share link. */
+  shareLinkOnly?: boolean;
   tags: ProjectTag[];
   unresolvedCommentCount?: number;
   commentCount?: number;
@@ -127,8 +132,29 @@ export interface HistoryVersion {
 
 export interface HistoryVersionDetail {
   version: HistoryVersion;
-  settings: { mainFile: string; engine: Project["engine"]; latexmkrc: string | null };
+  settings: { mainFile: string; engine: Project["engine"] };
   files: Array<{ path: string; size: number }>;
+}
+
+export interface ProjectInvitation {
+  id: string;
+  projectId?: string;
+  email: string;
+  permission: "read" | "edit";
+  createdAt: string;
+  recipientUsername?: string | null;
+  recipientDisplayName?: string | null;
+  projectName?: string;
+  ownerDisplayName?: string | null;
+  ownerUsername?: string | null;
+}
+
+export interface ProjectShareLink {
+  id: string;
+  permission: "read";
+  createdAt: string;
+  /** An origin-local URL returned by the server. */
+  url: string;
 }
 
 /** A cursor page from the immutable project-snapshot timeline. */

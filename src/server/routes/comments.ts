@@ -9,7 +9,7 @@ import type { DatabaseConnection } from "../db.js";
 import { resolveSourcePath, safeRelativePath } from "../files.js";
 import { apiError, httpError } from "../http.js";
 import type { ProjectMutationCoordinator } from "../projectMutations.js";
-import { accessibleProject } from "../projects.js";
+import { accessibleProject, canComment } from "../projects.js";
 import {
   commentMentionForUser,
   createCommentMentions,
@@ -109,7 +109,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!canComment(db, project, user)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as Record<string, unknown>;
     const createdAt = now();
     const filePath = safeRelativePath(typeof body.path === "string" ? body.path : "");
@@ -155,7 +157,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
       collaboration.signalComments(id);
       return reply.code(201).send({ comment: created });
     }, { preflight: () => {
-      if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+      const currentProject = accessibleProject(db, id, user);
+      if (!currentProject) throw httpError(404, "PROJECT_NOT_FOUND");
+      if (!canComment(db, currentProject, user)) throw httpError(403, "PROJECT_EDIT_FORBIDDEN");
     } });
   });
 
@@ -163,7 +167,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id, commentId } = request.params as { id: string; commentId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!canComment(db, project, user)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     if (!db.prepare("SELECT 1 FROM comments WHERE id = ? AND project_id = ?").get(commentId, id)) {
       return apiError(reply, 404, "COMMENT_NOT_FOUND");
     }
@@ -188,7 +194,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id, commentId } = request.params as { id: string; commentId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!canComment(db, project, user)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const comment = db.prepare("SELECT author_id, resolved, content FROM comments WHERE id = ? AND project_id = ?")
       .get(commentId, id) as { author_id: string | null; resolved: number; content: string } | undefined;
     if (!comment) return apiError(reply, 404, "COMMENT_NOT_FOUND");
@@ -226,7 +234,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id, commentId } = request.params as { id: string; commentId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!canComment(db, project, user)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const comment = db.prepare("SELECT author_id FROM comments WHERE id = ? AND project_id = ?")
       .get(commentId, id) as { author_id: string | null } | undefined;
     if (!comment) return apiError(reply, 404, "COMMENT_NOT_FOUND");
@@ -240,7 +250,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id, commentId, replyId } = request.params as { id: string; commentId: string; replyId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!canComment(db, project, user)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const commentReply = db.prepare(`SELECT reply.author_id, reply.content FROM comment_replies reply
       JOIN comments comment ON comment.id = reply.comment_id
       WHERE reply.id = ? AND reply.comment_id = ? AND comment.project_id = ?`)
@@ -266,7 +278,9 @@ export function registerCommentRoutes(app: FastifyInstance, context: CommentRout
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id, commentId, replyId } = request.params as { id: string; commentId: string; replyId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!canComment(db, project, user)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const commentReply = db.prepare(`SELECT reply.author_id FROM comment_replies reply
       JOIN comments comment ON comment.id = reply.comment_id
       WHERE reply.id = ? AND reply.comment_id = ? AND comment.project_id = ?`)

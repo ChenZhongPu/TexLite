@@ -1,4 +1,4 @@
-import { ArrowLeft, BookMarked, FileClock, GitBranch, Keyboard, LoaderCircle, MessageSquare, PanelLeftClose, PanelLeftOpen, Play, Settings, Users, X } from "lucide-react";
+import { ArrowLeft, BookMarked, FileClock, Keyboard, LoaderCircle, MessageSquare, PanelLeftClose, PanelLeftOpen, Play, Settings, Users, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ActiveSession, CollaborationStatus, SharedCompileState } from "../collaboration";
 import type { EditorPreferences } from "../editorPreferences";
@@ -30,8 +30,6 @@ export interface WorkspaceTopbarProps {
   onCitationLibrary: () => void;
   onSelectionHistory: () => void;
   onHistory: () => void;
-  onGit: () => void;
-  canManageGit: boolean;
   formatting: boolean;
   readOnly: boolean;
   collaborationSynced: boolean;
@@ -55,7 +53,7 @@ export function WorkspaceTopbar({
   site, project, activeFile, saveStateLabel, editorPreferences, activeSessions, collaborationStatus,
   reconnectCollaboration, protocolUpgradeRequired, showEditor, filesCollapsed, toggleFilesPanel, workspaceLayout,
   changeWorkspaceLayout, onBack, onShare, showCitationLibrary, citationLibraryOpen,
-  onCitationLibrary, onSelectionHistory, onHistory, onGit, canManageGit, formatting, readOnly, collaborationSynced,
+  onCitationLibrary, onSelectionHistory, onHistory, formatting, readOnly, collaborationSynced,
   hasSelection,
   onToggleComments, commentsOpen, unresolvedCommentCount, hasActiveFile, onToggleSettings,
   settingsOpen, compileBusy, sharedCompiling, localCompiling, cancelling, compileState, onCompile, onCancelCompile
@@ -71,7 +69,7 @@ export function WorkspaceTopbar({
     <div className="editor-actions">
       {showEditor && <button className={!filesCollapsed ? "active" : ""} onClick={toggleFilesPanel}>{filesCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}{t("common.files")}</button>}
       <WorkspaceLayoutMenu value={workspaceLayout} onChange={changeWorkspaceLayout} />
-      <button onClick={onShare}><Users size={15} />{t("projectSettings.share")}</button>
+      {!project.shareLinkOnly && <button onClick={onShare}><Users size={15} />{t("projectSettings.share")}</button>}
       {showCitationLibrary && <button className={citationLibraryOpen ? "active" : ""} onClick={onCitationLibrary}><BookMarked size={15} />{t("citationLibrary.title")}</button>}
       <div className="history-action" role="group" aria-label={t("history.title")}>
         <div className="history-action-label"><FileClock size={14} /><span>{t("history.title")}</span></div>
@@ -91,7 +89,6 @@ export function WorkspaceTopbar({
         <span>{t("common.comments")}</span>
         {unresolvedCommentCount > 0 && <sup className="comments-action-count">{unresolvedCommentCount}</sup>}
       </button>
-      <button className="git-action" title={canManageGit ? t("git.title") : t("git.ownerOnly")} disabled={!canManageGit} onClick={onGit}><GitBranch size={15} />Git</button>
       <button className={settingsOpen ? "active" : ""} onClick={onToggleSettings}><Settings size={15} />{t("common.settings")}</button>
       {sharedCompiling || localCompiling
         ? <button className="compile cancel-compile" title={t("compileControls.cancel")} onClick={onCancelCompile} disabled={cancelling || formatting || readOnly || !collaborationSynced}>{cancelling ? <LoaderCircle className="spin" size={15} /> : <X size={15} />}{cancelling ? t("compileControls.cancelling") : t("compileControls.cancel")}</button>

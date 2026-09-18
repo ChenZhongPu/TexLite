@@ -7,7 +7,7 @@ import multipart from "@fastify/multipart";
 import staticPlugin from "@fastify/static";
 import websocket from "@fastify/websocket";
 import type { Config } from "./config.js";
-import { pruneExpiredSessions, type DatabaseConnection } from "./db.js";
+import { pruneExpiredOauthStates, pruneExpiredSessions, type DatabaseConnection } from "./db.js";
 import { digestToken, LoginRateLimiter } from "./security.js";
 import { currentUser } from "./auth.js";
 import { pruneTrashDirectory } from "./files.js";
@@ -20,7 +20,6 @@ import {
 } from "./compiler.js";
 import { CollaborationService } from "./collaboration.js";
 import { ProjectMutationCoordinator } from "./projectMutations.js";
-import { ProjectGitService } from "./git.js";
 import { LatexCompletionService } from "./latexCompletion.js";
 import { ProjectHistoryService, type HistoryReason } from "./history.js";
 import { ProjectEditHistoryService } from "./editHistory.js";
@@ -38,7 +37,6 @@ import { registerProjectMemberRoutes } from "./routes/projectMembers.js";
 import { registerProjectFileRoutes } from "./routes/projectFiles.js";
 import { registerProjectReferenceRoutes } from "./routes/projectReferences.js";
 import { registerProjectHistoryRoutes } from "./routes/projectHistory.js";
-import { registerProjectGitRoutes } from "./routes/projectGit.js";
 import { registerProjectCatalogRoutes } from "./routes/projects.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerUserManagementRoutes } from "./routes/users.js";
@@ -144,7 +142,6 @@ export async function buildApp(
     metrics.record("collaboration.persist", durationMs + performance.now() - started);
   });
   const projectMutations = new ProjectMutationCoordinator(collaboration);
-  const projectGit = new ProjectGitService(config, db, options.githubFetch);
   const loginLimiter = new LoginRateLimiter();
   for (const row of db.prepare("SELECT id FROM projects").all() as Array<{ id: string }>) {
     reconcilePublishedCompileRuns(config, db, row.id);
@@ -263,7 +260,7 @@ export async function buildApp(
       eventLoopDelay
     });
     registerCollaborationRoutes(routes, { db, collaboration, metrics });
-    registerAuthRoutes(routes, { config, db, loginLimiter });
+    registerAuthRoutes(routes, { config, db, loginLimiter, githubFetch: options.githubFetch });
     registerCitationRoutes(routes, { db });
     registerUserManagementRoutes(routes, {
       config,
@@ -274,7 +271,7 @@ export async function buildApp(
       projectOutlines
     });
     registerCommentRoutes(routes, { config, db, collaboration, projectMutations });
-    registerProjectMemberRoutes(routes, { db, collaboration, projectMutations });
+    registerProjectMemberRoutes(routes, { config, db, collaboration, projectMutations });
     registerProjectFileRoutes(routes, {
       config,
       db,
@@ -289,7 +286,6 @@ export async function buildApp(
     registerProjectHistoryRoutes(routes, { config, db, history, editHistory, projectMutations, recordHistory,
       clearPendingEdits: (id) => { editRetry.clear(id); failedEdits.delete(id); signalHistory(id); },
       scheduleHistoryRetention: (id) => historyRetention.schedule(id) });
-    registerProjectGitRoutes(routes, { config, db, collaboration, projectMutations, projectGit, recordHistory });
     registerProjectCatalogRoutes(routes, {
       config,
       db,
@@ -340,6 +336,7 @@ export async function buildApp(
   const cleanupExpiredSessions = (): void => {
     try {
       pruneExpiredSessions(db, now());
+      pruneExpiredOauthStates(db, now());
       loginLimiter.prune();
     } catch (error) {
       app.log.error({ err: error }, "Failed to prune expired sessions");

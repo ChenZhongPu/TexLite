@@ -40,7 +40,6 @@ export function ProjectSettings({ onClose, project, projectId, site, files, dict
 }) {
   const { t } = useTranslation();
   const [engine, setEngine] = useState(project.engine);
-  const [rcText, setRcText] = useState("");
   const [name, setName] = useState(project.name);
   const [mainFile, setMainFile] = useState(project.mainFile);
   const [mainFileOptions, setMainFileOptions] = useState<string[] | null>(null);
@@ -62,11 +61,6 @@ export function ProjectSettings({ onClose, project, projectId, site, files, dict
     void reloadTexFmt().catch(texFmtToolStatus.failed);
   };
   useEffect(() => {
-    if (!project.latexmkrc) return setRcText("");
-    void api<{ content: string }>(`/api/projects/${projectId}/file?path=${encodeURIComponent(project.latexmkrc)}`)
-      .then(({ content }) => setRcText(content)).catch((requestError) => setError(errorMessage(requestError)));
-  }, [project.latexmkrc]);
-  useEffect(() => {
     if (settingsTab !== "compiler") return;
     const controller = new AbortController();
     setMainFileOptions(null);
@@ -82,10 +76,8 @@ export function ProjectSettings({ onClose, project, projectId, site, files, dict
   const invalidCurrentMainFile = mainFileOptions !== null && !mainFileOptions.includes(mainFile);
   const saveCompilerSettings = async () => {
     try {
-      const latexmkrc = rcText.trim() && site.allowProjectLatexmkrc !== false ? ".latexmkrc" : null;
-      if (latexmkrc) await api(`/api/projects/${projectId}/file`, { method: "PUT", body: JSON.stringify({ path: latexmkrc, content: rcText }) });
       const result = await api<{ project: Project }>(`/api/projects/${projectId}`, {
-        method: "PATCH", body: JSON.stringify({ name, mainFile, engine, latexmkrc })
+        method: "PATCH", body: JSON.stringify({ name, mainFile, engine })
       });
       onProject(result.project);
     } catch (requestError) { setError(errorMessage(requestError)); }
@@ -174,7 +166,6 @@ export function ProjectSettings({ onClose, project, projectId, site, files, dict
       <label>{t("projects.name")}<input disabled={!canManage} value={name} onChange={(event) => setName(event.target.value)} /></label>
       <label>{t("projectSettings.mainFile")}<select disabled={!canManage || mainFileOptions === null || mainFileOptions.length === 0} value={mainFile} onChange={(event) => setMainFile(event.target.value)}>{invalidCurrentMainFile && <option value={mainFile} disabled>{t("projectSettings.invalidMainFileOption", { path: mainFile })}</option>}{displayedMainFileOptions.map((filePath) => <option value={filePath} key={filePath}>{filePath}</option>)}</select></label>
       <label>{t("projectSettings.engine")}<select disabled={!canManage} value={engine} onChange={(event) => setEngine(event.target.value as Project["engine"])}>{(site.allowedEngines ?? ["pdflatex", "xelatex", "lualatex"]).map((item) => <option key={item}>{item}</option>)}</select></label>
-      <label>{t("projectSettings.latexmkrc")}<textarea className="latexmkrc-editor" rows={10} spellCheck={false} disabled={!canManage || site.allowProjectLatexmkrc === false} value={rcText} placeholder={t("projectSettings.latexmkrcPlaceholder")} onChange={(event) => setRcText(event.target.value)} /></label>
       <div className="settings-actions">{canManage && <button className="settings-save" onClick={() => void saveCompilerSettings()}><Save size={15} />{t("projectSettings.saveCompiler")}</button>}</div>
     </section>}
   </div></>;

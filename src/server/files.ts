@@ -55,7 +55,7 @@ export async function duplicateProjectFiles(config: Config, sourceProjectId: str
     const entries = await fs.promises.readdir(source, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isSymbolicLink()) throw symbolicLinkError(entry.name);
-      if (entry.name === ".git") continue;
+      if (isReservedProjectPath(entry.name)) continue;
       await fs.promises.cp(path.join(source, entry.name), path.join(target, entry.name), {
         recursive: true, errorOnExist: true, force: false, verbatimSymlinks: false
       });
@@ -72,7 +72,7 @@ export function safeRelativePath(input: string): string {
   if (normalized === "." || normalized === ".." || normalized.startsWith("../")) {
     throw httpError(400, "INVALID_PATH");
   }
-  if (normalized.split("/").some((segment) => segment.toLocaleLowerCase() === ".git")) {
+  if (normalized.split("/").some((segment) => isReservedProjectPath(segment))) {
     throw httpError(400, "RESERVED_PATH");
   }
   return normalized;
@@ -94,6 +94,12 @@ export interface ResolveSourcePathOptions {
 
 export function symbolicLinkError(relativePath: string): HttpError {
   return httpError(409, "SYMLINK_FORBIDDEN", { path: relativePath || "source" });
+}
+
+/** Paths with execution/configuration semantics that must never enter a project. */
+export function isReservedProjectPath(input: string): boolean {
+  const name = input.toLocaleLowerCase();
+  return name === ".git" || name === ".latexmkrc" || name === "latexmkrc" || name.endsWith(".latexmkrc");
 }
 
 /**
@@ -144,7 +150,7 @@ export function assertNoSymbolicLinks(root: string, ignoreGitDirectory = false):
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isSymbolicLink()) throw symbolicLinkError(relative);
-      if (ignoreGitDirectory && entry.name === ".git") continue;
+      if (ignoreGitDirectory && (entry.name === ".git" || isReservedProjectPath(entry.name))) continue;
       if (entry.isDirectory()) visit(path.join(directory, entry.name), relative);
     }
   };
@@ -183,7 +189,7 @@ export function listProjectFiles(config: Config, projectId: string): FileEntry[]
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolute = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) throw symbolicLinkError(relative);
-      if (entry.name === ".git") continue;
+      if (isReservedProjectPath(entry.name)) continue;
       if (entry.isDirectory()) {
         result.push({ path: relative, type: "directory" });
         visit(absolute, relative);
@@ -229,7 +235,7 @@ export async function listProjectFilesAsync(config: Config, projectId: string): 
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolute = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) throw symbolicLinkError(relative);
-      if (entry.name === ".git") continue;
+      if (isReservedProjectPath(entry.name)) continue;
       if (entry.isDirectory()) {
         result.push({ path: relative, type: "directory" });
         children.push(visit(absolute, relative));

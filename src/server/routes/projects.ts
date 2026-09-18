@@ -176,11 +176,14 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     const archiveCondition = archivedOnly
       ? "EXISTS (SELECT 1 FROM user_project_archives archive WHERE archive.project_id = p.id AND archive.user_id = :userId)"
       : "NOT EXISTS (SELECT 1 FROM user_project_archives archive WHERE archive.project_id = p.id AND archive.user_id = :userId)";
+    // A read link is an explicit entry point, not a project-membership grant.
+    // Keep link-only projects out of the catalog; they are still available
+    // through GET /share/:token and the project-scoped access checks.
     const from = `FROM projects p JOIN users owner ON owner.id = p.owner_id
       LEFT JOIN users modifier ON modifier.id = p.last_modified_by
       LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = :userId`;
     const conditions = [
-      "(p.owner_id = :userId OR pm.user_id = :userId)",
+      "(p.owner_id = :userId OR pm.user_id IS NOT NULL)",
       archiveCondition
     ];
     const params: Record<string, string | number> = { userId: user.id };
@@ -203,7 +206,9 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     const currentPage = totalPages === 0 ? 1 : Math.min(page, totalPages);
     const rowsParams = { ...params, limit: pageSize, offset: (currentPage - 1) * pageSize };
     const select = `SELECT DISTINCT p.*,
-      CASE WHEN p.owner_id = :userId THEN 'owner' ELSE pm.permission END AS permission,
+      CASE WHEN p.owner_id = :userId THEN 'owner'
+        WHEN pm.user_id IS NOT NULL THEN pm.permission
+        ELSE 'read' END AS permission,
       owner.username AS owner_username, owner.display_name AS owner_display_name,
       modifier.username AS last_modified_username, modifier.display_name AS last_modified_display_name`;
     const rows = db.prepare(`${select} ${from} ${where}
@@ -300,7 +305,7 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     const requestedName = typeof body?.name === "string" && body.name.trim() ? body.name : `${source.name.slice(0, 115)} (1)`;
     const project: ProjectRow = {
       id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(requestedName, 120),
-      main_file: source.main_file, latexmkrc: source.latexmkrc, engine: source.engine, icon: source.icon, created_at: now(), updated_at: now()
+      main_file: source.main_file, latexmkrc: null, engine: source.engine, icon: source.icon, created_at: now(), updated_at: now()
     };
     try {
       // Duplicate the source tree only after flushing the live Yjs room and
@@ -506,9 +511,9 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       }
       const engine = typeof body.engine === "string" && config.allowedEngines.includes(body.engine as typeof currentProject.engine)
         ? body.engine as typeof currentProject.engine : currentProject.engine;
-      const latexmkrc = body.latexmkrc === null || body.latexmkrc === ""
-        ? null
-        : typeof body.latexmkrc === "string" ? safeRelativePath(body.latexmkrc) : currentProject.latexmkrc;
+      if (Object.prototype.hasOwnProperty.call(body, "latexmkrc")) {
+        return apiError(reply, 400, "LATEXMKRC_DISABLED");
+      }
       if (!mainFile.toLocaleLowerCase().endsWith(".tex")) {
         return apiError(reply, 400, "MAIN_FILE_INVALID", { path: mainFile });
       }
@@ -528,24 +533,8 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       if (body.mainFile !== undefined && !await isMainDocumentCandidate(config, id, mainFile)) {
         return apiError(reply, 400, "MAIN_DOCUMENT_INVALID", { path: mainFile });
       }
-      if (latexmkrc && !config.allowProjectLatexmkrc) return apiError(reply, 400, "LATEXMKRC_DISABLED");
-      if (latexmkrc) {
-        const rcAbsolute = resolveSourcePath(config, id, latexmkrc);
-        let rcStat: fs.Stats | null = null;
-        try {
-          rcStat = fs.statSync(rcAbsolute);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return apiError(reply, 400, "LATEXMKRC_NOT_FOUND", { path: latexmkrc });
-          }
-          throw error;
-        }
-        if (!rcStat.isFile()) {
-          return apiError(reply, 400, "LATEXMKRC_INVALID", { path: latexmkrc });
-        }
-      }
-      db.prepare("UPDATE projects SET name = ?, main_file = ?, latexmkrc = ?, engine = ?, updated_at = ?, last_modified_by = ? WHERE id = ?")
-        .run(name, mainFile, latexmkrc, engine, now(), user.id, id);
+      db.prepare("UPDATE projects SET name = ?, main_file = ?, latexmkrc = NULL, engine = ?, updated_at = ?, last_modified_by = ? WHERE id = ?")
+        .run(name, mainFile, engine, now(), user.id, id);
       recordHistory(id, user.id, "settings", []);
       return {
         project: projectJson(

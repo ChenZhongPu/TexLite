@@ -3,7 +3,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ZipFile } from "yazl";
 import type { Config } from "./config.js";
-import { assertNoSourceSymlinks, sourceRoot, symbolicLinkError } from "./files.js";
+import { assertNoSourceSymlinks, isReservedProjectPath, sourceRoot, symbolicLinkError } from "./files.js";
 
 export function createProjectArchive(config: Config, projectId: string): ZipFile {
   const root = sourceRoot(config, projectId);
@@ -17,7 +17,7 @@ export function createProjectArchive(config: Config, projectId: string): ZipFile
       const absolute = path.join(directory, entry.name);
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isSymbolicLink()) throw symbolicLinkError(relative);
-      if (entry.name === ".git") continue;
+      if (isReservedProjectPath(entry.name)) continue;
       if (entry.isDirectory()) addDirectory(absolute, relative);
       else if (entry.isFile()) archive.addFile(absolute, relative);
     }

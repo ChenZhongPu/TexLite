@@ -251,6 +251,40 @@ describe("project collaboration", () => {
     }
   });
 
+  it("opens a project through a read-only link without listing it as a member project", async () => {
+    const reader = await createUser(app, adminCookie, "share-link-reader", "Share Link Reader");
+    const readerCookie = await login(app, "share-link-reader", "reader-password");
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Read link entry point" }
+    });
+    const projectId = created.json().project.id as string;
+    const createdLink = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/share-links`, headers: { cookie: adminCookie }, payload: {}
+    });
+    expect(createdLink.statusCode).toBe(201);
+    const sharePath = new URL(createdLink.json().link.url, "http://localhost").pathname;
+    const visit = await app.inject({ method: "GET", url: sharePath, headers: { cookie: readerCookie } });
+    expect(visit.statusCode).toBe(302);
+    const linkedCookie = `${readerCookie}; ${namedCookie(visit.headers, "texlite_share_token")}`;
+    const direct = await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: linkedCookie } });
+    expect(direct.statusCode).toBe(200);
+    expect(direct.json().project).toMatchObject({ permission: "read", shareLinkOnly: true });
+
+    const catalog = await app.inject({ method: "GET", url: "/api/projects", headers: { cookie: linkedCookie } });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json().projects).not.toContainEqual(expect.objectContaining({ id: projectId }));
+
+    const peer = await TestPeer.connect(app, projectId, linkedCookie, {
+      id: reader.id, username: "share-link-reader", name: "Share Link Reader"
+    });
+    try {
+      expect(peer.connected).toBe(true);
+      expect(peer.doc.getText("source:main.tex").toString()).toContain("\\documentclass");
+    } finally {
+      peer.destroy();
+    }
+  });
+
   it("forces a legacy collaboration handshake to reload instead of accepting an incompatible client", async () => {
     const created = await app.inject({
       method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Protocol migration" }
@@ -1046,6 +1080,14 @@ function sessionCookie(headers: OutgoingHttpHeaders): string {
   const value = headers["set-cookie"];
   const cookie = Array.isArray(value) ? value[0] : value;
   if (typeof cookie !== "string" || !cookie) throw new Error("Expected a Set-Cookie response header");
+  return cookie.split(";")[0];
+}
+
+function namedCookie(headers: OutgoingHttpHeaders, name: string): string {
+  const values = headers["set-cookie"];
+  const cookies = Array.isArray(values) ? values : values ? [values] : [];
+  const cookie = cookies.find((value) => typeof value === "string" && value.startsWith(`${name}=`));
+  if (typeof cookie !== "string") throw new Error(`Expected a ${name} cookie`);
   return cookie.split(";")[0];
 }
 

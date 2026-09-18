@@ -117,4 +117,32 @@ describe("application mounted below the origin root", () => {
       socket.close();
     });
   });
+
+  it("keeps the mounted path in an anonymous read-link login return URL", async () => {
+    const login = await app.inject({
+      method: "POST",
+      url: "/tools/texlite/api/auth/login",
+      payload: { username: "admin", password: "administrator password" }
+    });
+    const cookies = login.headers["set-cookie"];
+    const values = Array.isArray(cookies) ? cookies : [cookies];
+    const sessionCookie = values.find((cookie) => cookie?.startsWith("texlite_session="))?.split(";")[0];
+    expect(sessionCookie).toBeTruthy();
+
+    const created = await app.inject({
+      method: "POST", url: "/tools/texlite/api/projects", headers: { cookie: sessionCookie }, payload: { name: "Mounted read link" }
+    });
+    expect(created.statusCode).toBe(201);
+    const projectId = created.json().project.id as string;
+    const link = await app.inject({
+      method: "POST", url: `/tools/texlite/api/projects/${projectId}/share-links`, headers: { cookie: sessionCookie }, payload: {}
+    });
+    expect(link.statusCode).toBe(201);
+    const sharePath = new URL(link.json().link.url, "http://localhost").pathname;
+    const visit = await app.inject({ method: "GET", url: sharePath });
+    expect(visit.statusCode).toBe(302);
+    const returnLocation = new URL(visit.headers.location as string, "http://localhost");
+    expect(returnLocation.pathname).toBe("/tools/texlite/");
+    expect(returnLocation.searchParams.get("return")).toBe(`/tools/texlite/project/${projectId}`);
+  });
 });

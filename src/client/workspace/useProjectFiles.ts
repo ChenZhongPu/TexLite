@@ -50,7 +50,7 @@ function isTextFile(filePath: string): boolean {
 }
 
 export function isEditableTextFile(filePath: string): boolean {
-  return /(?:\.(?:tex|bib|bst|sty|cls|txt|md)|latexmkrc)$/i.test(filePath);
+  return /\.(?:tex|bib|bst|sty|cls|txt|md)$/i.test(filePath);
 }
 
 function resourcePreviewKind(filePath: string): ResourcePreviewKind {

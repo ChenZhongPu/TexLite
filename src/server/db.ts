@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import type { Config } from "./config.js";
 
@@ -11,11 +12,27 @@ export interface UserRow {
   username: string;
   display_name: string;
   password_hash: string;
+  email: string | null;
+  github_id: string | null;
+  avatar_url: string | null;
   role: UserRole;
   disabled: number;
   must_change_password: number;
   can_create_projects: number;
   created_at: string;
+  /** Request-scoped access granted by an active share-link cookie. */
+  share_link_id?: string | null;
+}
+
+export interface AuthIdentityRow {
+  id: string;
+  user_id: string;
+  issuer: string;
+  subject: string;
+  provider_username: string | null;
+  provider_email: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ProjectRow {
@@ -67,7 +84,11 @@ const migrationsTable = "texlite_schema_migrations";
 const databaseMigrations: readonly DatabaseMigration[] = [
   // Append future migrations below this entry. Never insert before or modify
   // the released baseline: recorded databases will intentionally skip it.
-  { version: 1, name: "baseline_schema_and_legacy_upgrade", apply: applyBaselineMigration }
+  { version: 1, name: "baseline_schema_and_legacy_upgrade", apply: applyBaselineMigration },
+  { version: 2, name: "github_identity_and_project_invitations", apply: applyGithubIdentityMigration },
+  { version: 3, name: "disable_legacy_project_latexmkrc", apply: applyDisableLegacyLatexmkrcMigration },
+  { version: 4, name: "normalized_auth_identities", apply: applyNormalizedAuthIdentitiesMigration },
+  { version: 5, name: "project_share_links", apply: applyProjectShareLinksMigration }
 ];
 
 export function openDatabase(config: Config): DatabaseConnection {
@@ -148,6 +169,9 @@ function applyBaselineMigration(db: DatabaseConnection, context: DatabaseMigrati
       username TEXT NOT NULL UNIQUE COLLATE NOCASE,
       display_name TEXT NOT NULL,
       password_hash TEXT NOT NULL,
+      email TEXT COLLATE NOCASE,
+      github_id TEXT UNIQUE,
+      avatar_url TEXT,
       role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
       disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
       must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
@@ -409,6 +433,32 @@ function applyBaselineMigration(db: DatabaseConnection, context: DatabaseMigrati
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      id TEXT PRIMARY KEY,
+      return_path TEXT NOT NULL DEFAULT '/',
+      redirect_uri TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS oauth_states_expires_at ON oauth_states(expires_at);
+
+    CREATE TABLE IF NOT EXISTS project_invitations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      email TEXT NOT NULL COLLATE NOCASE,
+      permission TEXT NOT NULL CHECK (permission IN ('read', 'edit')),
+      invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'revoked')),
+      created_at TEXT NOT NULL,
+      responded_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS project_invitations_email_status
+      ON project_invitations(email, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS project_invitations_project_status
+      ON project_invitations(project_id, status, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS project_invitations_pending_unique
+      ON project_invitations(project_id, email) WHERE status = 'pending';
   `);
 
   const editColumns = db.prepare("PRAGMA table_info(project_edit_segments)").all() as Array<{ name: string }>;
@@ -449,6 +499,15 @@ function applyBaselineMigration(db: DatabaseConnection, context: DatabaseMigrati
   const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!userColumns.some((column) => column.name === "can_create_projects")) {
     db.exec("ALTER TABLE users ADD COLUMN can_create_projects INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!userColumns.some((column) => column.name === "email")) {
+    db.exec("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE");
+  }
+  if (!userColumns.some((column) => column.name === "github_id")) {
+    db.exec("ALTER TABLE users ADD COLUMN github_id TEXT");
+  }
+  if (!userColumns.some((column) => column.name === "avatar_url")) {
+    db.exec("ALTER TABLE users ADD COLUMN avatar_url TEXT");
   }
   const compileRunColumns = db.prepare("PRAGMA table_info(compile_runs)").all() as Array<{ name: string }>;
   if (!compileRunColumns.some((column) => column.name === "main_file")) {
@@ -521,9 +580,111 @@ function applyBaselineMigration(db: DatabaseConnection, context: DatabaseMigrati
   `);
 }
 
+function applyGithubIdentityMigration(db: DatabaseConnection): void {
+  const userColumns = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!userColumns.some((column) => column.name === "email")) {
+    db.exec("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE");
+  }
+  if (!userColumns.some((column) => column.name === "github_id")) {
+    db.exec("ALTER TABLE users ADD COLUMN github_id TEXT");
+  }
+  if (!userColumns.some((column) => column.name === "avatar_url")) {
+    db.exec("ALTER TABLE users ADD COLUMN avatar_url TEXT");
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS users_github_id_unique ON users(github_id) WHERE github_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS users_email ON users(email COLLATE NOCASE);
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      id TEXT PRIMARY KEY,
+      return_path TEXT NOT NULL DEFAULT '/',
+      redirect_uri TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS oauth_states_expires_at ON oauth_states(expires_at);
+    CREATE TABLE IF NOT EXISTS project_invitations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      email TEXT NOT NULL COLLATE NOCASE,
+      permission TEXT NOT NULL CHECK (permission IN ('read', 'edit')),
+      invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'revoked')),
+      created_at TEXT NOT NULL,
+      responded_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS project_invitations_email_status
+      ON project_invitations(email, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS project_invitations_project_status
+      ON project_invitations(project_id, status, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS project_invitations_pending_unique
+      ON project_invitations(project_id, email) WHERE status = 'pending';
+  `);
+}
+
+function applyDisableLegacyLatexmkrcMigration(db: DatabaseConnection): void {
+  // Keep the nullable column for old databases so the migration remains
+  // non-destructive, but clear all values. New code never reads or writes it.
+  if (tableExists(db, "projects") && missingColumn(db, "projects", "latexmkrc") === false) {
+    db.exec("UPDATE projects SET latexmkrc = NULL WHERE latexmkrc IS NOT NULL");
+  }
+}
+
+function applyNormalizedAuthIdentitiesMigration(db: DatabaseConnection): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auth_identities (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      issuer TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      provider_username TEXT,
+      provider_email TEXT COLLATE NOCASE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (issuer, subject)
+    );
+    CREATE INDEX IF NOT EXISTS auth_identities_user_id ON auth_identities(user_id);
+    CREATE INDEX IF NOT EXISTS auth_identities_email ON auth_identities(provider_email COLLATE NOCASE);
+  `);
+
+  const legacyGithubUsers = db.prepare(`
+    SELECT id, username, email, github_id, created_at
+    FROM users
+    WHERE github_id IS NOT NULL AND TRIM(github_id) <> ''
+  `).all() as Array<{ id: string; username: string; email: string | null; github_id: string; created_at: string }>;
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO auth_identities
+      (id, user_id, issuer, subject, provider_username, provider_email, created_at, updated_at)
+    VALUES (?, ?, 'github', ?, ?, ?, ?, ?)
+  `);
+  for (const user of legacyGithubUsers) {
+    insert.run(randomUUID(), user.id, user.github_id, user.username, user.email, user.created_at, user.created_at);
+  }
+}
+
+function applyProjectShareLinksMigration(db: DatabaseConnection): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_share_links (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      token_ciphertext TEXT NOT NULL,
+      permission TEXT NOT NULL DEFAULT 'read' CHECK (permission = 'read'),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS project_share_links_project_status
+      ON project_share_links(project_id, revoked_at, created_at DESC);
+  `);
+}
+
 /** Remove sessions that can no longer authenticate any request. */
 export function pruneExpiredSessions(db: DatabaseConnection, asOf = new Date().toISOString()): number {
   return db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(asOf).changes;
+}
+
+export function pruneExpiredOauthStates(db: DatabaseConnection, asOf = new Date().toISOString()): number {
+  return db.prepare("DELETE FROM oauth_states WHERE expires_at <= ?").run(asOf).changes;
 }
 
 export function activeAdminCount(db: DatabaseConnection): number {

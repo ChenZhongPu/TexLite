@@ -20,7 +20,8 @@ export interface HistoryManifest {
   settings: {
     mainFile: string;
     engine: ProjectRow["engine"];
-    latexmkrc: string | null;
+    /** Legacy field accepted when reading old snapshots; never written now. */
+    latexmkrc?: string | null;
   };
 }
 
@@ -358,8 +359,8 @@ export class ProjectHistoryService {
       return { restoredPaths: [filePath], manifest };
     }
     this.restoreProjectTree(projectId, manifest);
-    this.db.prepare("UPDATE projects SET main_file = ?, engine = ?, latexmkrc = ? WHERE id = ?")
-      .run(manifest.settings.mainFile, manifest.settings.engine, manifest.settings.latexmkrc, projectId);
+    this.db.prepare("UPDATE projects SET main_file = ?, engine = ?, latexmkrc = NULL WHERE id = ?")
+      .run(manifest.settings.mainFile, manifest.settings.engine, projectId);
     return { restoredPaths: Object.keys(manifest.files).sort(), manifest };
   }
 
@@ -618,7 +619,6 @@ export class ProjectHistoryService {
     fs.mkdirSync(temporary, { recursive: true, mode: 0o700 });
     let liveMoved = false;
     let replacementInstalled = false;
-    let gitMoved = false;
     try {
       for (const [filePath, entry] of Object.entries(manifest.files)) {
         const target = path.join(temporary, safeRelativePath(filePath));
@@ -630,19 +630,11 @@ export class ProjectHistoryService {
       liveMoved = true;
       fs.renameSync(temporary, live);
       replacementInstalled = true;
-      const git = path.join(backup, ".git");
-      if (fs.existsSync(git)) {
-        fs.renameSync(git, path.join(live, ".git"));
-        gitMoved = true;
-      }
       fs.rmSync(backup, { recursive: true, force: true });
     } catch (error) {
-      // A failed restore must leave the original tree, including its Git data,
-      // intact. The replacement is entirely reconstructible from history.
+      // A failed restore must leave the original tree intact. The replacement
+      // is entirely reconstructible from history.
       if (replacementInstalled && fs.existsSync(live)) {
-        if (gitMoved && fs.existsSync(path.join(live, ".git"))) {
-          fs.renameSync(path.join(live, ".git"), path.join(backup, ".git"));
-        }
         fs.rmSync(live, { recursive: true, force: true });
       }
       if (liveMoved && fs.existsSync(backup)) fs.renameSync(backup, live);
@@ -653,7 +645,7 @@ export class ProjectHistoryService {
 }
 
 function settings(project: ProjectRow): HistoryManifest["settings"] {
-  return { mainFile: project.main_file, engine: project.engine, latexmkrc: project.latexmkrc };
+  return { mainFile: project.main_file, engine: project.engine };
 }
 
 function cloneManifest(manifest: HistoryManifest): HistoryManifest {

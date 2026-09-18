@@ -97,6 +97,7 @@ export function commentsSummaryForProject(db: DatabaseConnection, projectId: str
 
 export function projectJson(project: ProjectRow & {
   permission?: string;
+  share_link_only?: number;
   owner_username?: string;
   owner_display_name?: string;
   last_modified_username?: string | null;
@@ -113,10 +114,10 @@ export function projectJson(project: ProjectRow & {
     lastModifiedDisplayName: project.last_modified_display_name,
     name: project.name,
     mainFile: project.main_file,
-    latexmkrc: project.latexmkrc,
     engine: project.engine,
     icon: project.icon,
     permission: project.permission,
+    shareLinkOnly: Boolean(project.share_link_only),
     tags,
     unresolvedCommentCount: commentsSummary?.unresolvedCount ?? 0,
     commentCount: commentsSummary?.totalCount ?? 0,

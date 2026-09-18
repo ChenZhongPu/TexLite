@@ -282,10 +282,9 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       db.exec("BEGIN IMMEDIATE");
       try {
         const mainFile = movedProjectPath(currentProject.main_file, source, destination)!;
-        const latexmkrc = movedProjectPath(currentProject.latexmkrc, source, destination);
         const changedAt = now();
-        db.prepare(`UPDATE projects SET main_file = ?, latexmkrc = ?, updated_at = ?, last_modified_by = ? WHERE id = ?`)
-          .run(mainFile, latexmkrc, changedAt, user.id, id);
+        db.prepare(`UPDATE projects SET main_file = ?, latexmkrc = NULL, updated_at = ?, last_modified_by = ? WHERE id = ?`)
+          .run(mainFile, changedAt, user.id, id);
         const comments = db.prepare("SELECT id, file_path FROM comments WHERE project_id = ?").all(id) as Array<{ id: string; file_path: string }>;
         const updateComment = db.prepare("UPDATE comments SET file_path = ?, updated_at = ? WHERE id = ?");
         for (const comment of comments) {

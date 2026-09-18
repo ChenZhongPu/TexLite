@@ -5,6 +5,8 @@ import { errorMessage } from "../errors";
 import type { SiteConfig, User } from "../types";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { SiteFooter, SiteLogo } from "./SiteChrome";
+import { appPath } from "../basePath";
+import { Github } from "lucide-react";
 
 export function ChangePassword({ site, user, onChanged }: { site: SiteConfig; user: User; onChanged: (user: User) => void }) {
   const { t } = useTranslation();
@@ -17,8 +19,8 @@ export function ChangePassword({ site, user, onChanged }: { site: SiteConfig; us
     if (newPassword !== confirm) return setError(t("auth.mismatch"));
     if (newPassword.length < site.minPasswordLength) return setError(t("auth.passwordMinimum", { count: site.minPasswordLength }));
     try {
-      await api("/api/me/password", { method: "PUT", body: JSON.stringify({ currentPassword, newPassword }) });
-      onChanged({ ...user, mustChangePassword: false });
+      const result = await api<{ user: User }>("/api/me/password", { method: "PUT", body: JSON.stringify({ currentPassword, newPassword }) });
+      onChanged(result.user);
     } catch (e) { setError(errorMessage(e)); }
   };
   return <main className="login-page"><LanguageSwitcher /><form className="login-card" onSubmit={submit}>
@@ -34,6 +36,10 @@ export function Login({ site, onLogin }: { site: SiteConfig; onLogin: (user: Use
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const returnPath = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("return") ?? "";
+  const githubLoginPath = returnPath
+    ? `${appPath("/api/auth/github", site.basePath)}?return=${encodeURIComponent(returnPath)}`
+    : appPath("/api/auth/github", site.basePath);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
@@ -53,6 +59,10 @@ export function Login({ site, onLogin }: { site: SiteConfig; onLogin: (user: Use
       <label>{t("auth.password")}<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
       {error && <p className="error">{error}</p>}
       <button className="primary" type="submit">{t("auth.login")}</button>
+      {site.githubOAuthEnabled && <>
+        <div className="auth-divider"><span>{t("auth.or")}</span></div>
+        <a className="github-login-button" href={githubLoginPath}><Github aria-hidden size={17} />{t("auth.githubLogin")}</a>
+      </>}
       {site.adminEmail && <small className="support">{t("auth.contact", { email: site.adminEmail })}</small>}
     </form><SiteFooter />
   </main>;

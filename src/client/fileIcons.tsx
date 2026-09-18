@@ -24,7 +24,7 @@ const videoExtensions = new Set(["avi", "mkv", "mov", "mp4", "webm"]);
  */
 export function fileIconKind(filePath: string): FileIconKind {
   const basename = filePath.split("/").at(-1)?.toLocaleLowerCase() ?? "";
-  if (basename === ".latexmkrc" || basename === "latexmkrc" || basename === "makefile" || basename === "dockerfile") return "code";
+  if (basename === "makefile" || basename === "dockerfile") return "code";
   if (basename === "readme" || basename.startsWith("readme.")) return "markdown";
   const extension = basename.includes(".") ? basename.slice(basename.lastIndexOf(".") + 1) : "";
   if (extension === "pdf") return "pdf";

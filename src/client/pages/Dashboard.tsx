@@ -2,10 +2,10 @@ import { lazy, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import { ConfirmDialog, Modal } from "../Dialog";
-import type { Project, ProjectListPagination, ProjectTag, SiteConfig, TagColor, User } from "../types";
+import type { Project, ProjectInvitation, ProjectListPagination, ProjectTag, SiteConfig, TagColor, User } from "../types";
 import i18n from "../i18n";
 import { errorMessage } from "../errors";
-import { Activity, AlertTriangle, Archive, ArrowDownUp, ArrowLeft, ArrowRightLeft, AtSign, BookMarked, CalendarDays, ChevronLeft, ChevronRight, FileArchive, FolderOpen, FolderPlus, History, LoaderCircle, MessageSquare, Sparkles, Tags, Upload, Users, X } from "lucide-react";
+import { Activity, AlertTriangle, Archive, ArrowDownUp, ArrowLeft, ArrowRightLeft, AtSign, BookMarked, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, FileArchive, FolderOpen, FolderPlus, History, LoaderCircle, MessageSquare, Sparkles, Tags, Upload, Users, X } from "lucide-react";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { SiteFooter, SiteLogo } from "./SiteChrome";
 import { ProjectListRow } from "./ProjectListRow";
@@ -17,6 +17,7 @@ import { appPath, scopedStorageKey } from "../basePath";
 const SystemMetricsDialog = lazy(() => import("../SystemMetricsDialog").then((module) => ({ default: module.SystemMetricsDialog })));
 const CitationLibraryDialog = lazy(() => import("../CitationLibraryDialog").then((module) => ({ default: module.CitationLibraryDialog })));
 const AdminUsers = lazy(() => import("./AdminUsers").then((module) => ({ default: module.AdminUsers })));
+const UserProfile = lazy(() => import("./UserProfile").then((module) => ({ default: module.UserProfile })));
 const TagManagementDialog = lazy(() => import("./TagManagementDialog").then((module) => ({ default: module.TagManagementDialog })));
 const ProjectIconPickerDialog = lazy(() => import("./ProjectIconPickerDialog").then((module) => ({ default: module.ProjectIconPickerDialog })));
 
@@ -85,6 +86,7 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
   });
   const [hasLoaded, setHasLoaded] = useState(Boolean(initialData));
   const [adminOpen, setAdminOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [citationLibraryOpen, setCitationLibraryOpen] = useState(false);
   const [error, setError] = useState("");
@@ -130,6 +132,8 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
   const [page, setPage] = useState(1);
   const [relativeTimeNow, setRelativeTimeNow] = useState(() => Date.now());
   const [loadedKey, setLoadedKey] = useState("");
+  const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
+  const [invitationBusy, setInvitationBusy] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const loadController = useRef<AbortController | null>(null);
   const requestKey = (archived: boolean, pageNumber: number, search: string, tag: string, order: "updated" | "created") =>
@@ -181,6 +185,11 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [tagFiltersOpen]);
+  useEffect(() => {
+    void api<{ invitations: ProjectInvitation[] }>("/api/invitations")
+      .then((result) => setInvitations(result.invitations))
+      .catch(() => undefined);
+  }, [user.id]);
   const changeView = (next: "grid" | "list") => { setProjectMenuId(null); setView(next); localStorage.setItem(scopedStorageKey("texlite-project-view"), next); };
   const changeSort = (next: "updated" | "created") => { setSort(next); setPage(1); localStorage.setItem(scopedStorageKey("texlite-project-sort"), next); };
   const changeScope = (archived: boolean) => { setShowArchived(archived); setPage(1); };
@@ -225,6 +234,17 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
   const logout = async () => {
     await api("/api/auth/logout", { method: "POST" });
     onUser(null);
+  };
+
+  const respondToInvitation = async (invitation: ProjectInvitation, action: "accept" | "decline") => {
+    if (invitationBusy) return;
+    setInvitationBusy(invitation.id);
+    try {
+      await api(`/api/invitations/${invitation.id}/${action}`, { method: "POST" });
+      setInvitations((current) => current.filter((item) => item.id !== invitation.id));
+      if (action === "accept") void load(showArchived, page, query, tagFilter, sort);
+    } catch (e) { setError(errorMessage(e)); }
+    finally { setInvitationBusy(null); }
   };
 
   const toggleProjectTag = async (tag: ProjectTag) => {
@@ -394,16 +414,23 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
     <header className="topbar">
       <a className="brand-link" href={appPath("/")} aria-label={site.siteName}><span className="site-title">{site.siteName}</span><SiteLogo siteName={site.siteName} /></a>
       <div className="top-actions">
-        {user.role === "admin" && <><button className="ghost" onClick={() => setMetricsOpen(true)}><Activity aria-hidden size={14} />{t("metrics.title")}</button><button className={`ghost${adminOpen ? " top-return-action" : ""}`} onClick={() => { setAdminOpen((current) => !current); setCitationLibraryOpen(false); }}>{adminOpen ? <ArrowLeft aria-hidden size={14} /> : <Users aria-hidden size={14} />}{adminOpen ? t("users.back") : t("users.manage")}</button></>}
-        <button className={`ghost${citationLibraryOpen ? " top-return-action" : ""}`} onClick={() => { setAdminOpen(false); setCitationLibraryOpen((current) => !current); }}>{citationLibraryOpen ? <ArrowLeft aria-hidden size={14} /> : <BookMarked aria-hidden size={14} />}{citationLibraryOpen ? t("users.back") : t("citationLibrary.title")}</button>
-        <LanguageSwitcher compact /><span className="top-user-identity"><strong>{user.displayName}</strong><small>@{user.username}</small></span><button className="ghost" onClick={logout}>{t("auth.logout")}</button>
+        {user.role === "admin" && <><button className="ghost" onClick={() => setMetricsOpen(true)}><Activity aria-hidden size={14} />{t("metrics.title")}</button><button className={`ghost${adminOpen ? " top-return-action" : ""}`} onClick={() => { setAdminOpen((current) => !current); setCitationLibraryOpen(false); setProfileOpen(false); }}>{adminOpen ? <ArrowLeft aria-hidden size={14} /> : <Users aria-hidden size={14} />}{adminOpen ? t("users.back") : t("users.manage")}</button></>}
+        <button className={`ghost${citationLibraryOpen ? " top-return-action" : ""}`} onClick={() => { setAdminOpen(false); setProfileOpen(false); setCitationLibraryOpen((current) => !current); }}>{citationLibraryOpen ? <ArrowLeft aria-hidden size={14} /> : <BookMarked aria-hidden size={14} />}{citationLibraryOpen ? t("users.back") : t("citationLibrary.title")}</button>
+        <LanguageSwitcher compact /><button type="button" className="ghost top-user-identity" onClick={() => { setAdminOpen(false); setCitationLibraryOpen(false); setProfileOpen(true); }} aria-label={t("profile.open")}><strong>{user.displayName}</strong><small>@{user.username}</small></button><button className="ghost" onClick={logout}>{t("auth.logout")}</button>
       </div>
     </header>
-    {adminOpen ? <main className="dashboard"><LazyPage onClose={() => setAdminOpen(false)}><AdminUsers currentUser={user} minPasswordLength={site.minPasswordLength} /></LazyPage></main> : citationLibraryOpen ? <main className="dashboard citation-library-page-shell">
+    {adminOpen ? <main className="dashboard"><LazyPage onClose={() => setAdminOpen(false)}><AdminUsers currentUser={user} minPasswordLength={site.minPasswordLength} /></LazyPage></main> : profileOpen ? <main className="dashboard"><LazyPage onClose={() => setProfileOpen(false)}><UserProfile site={site} user={user} onUser={onUser} onBack={() => setProfileOpen(false)} /></LazyPage></main> : citationLibraryOpen ? <main className="dashboard citation-library-page-shell">
       <LazyPage onClose={() => setCitationLibraryOpen(false)}><CitationLibraryDialog page open onOpenChange={setCitationLibraryOpen} onBack={() => setCitationLibraryOpen(false)} currentUserId={user.id} maxBibtexBytes={site.maxCitationBibtexBytes} /></LazyPage>
     </main> : <main className="dashboard">
       <div className="section-title"><div><h1><FolderOpen aria-hidden size={25} />{t("projects.title")}</h1><p className="muted">{user.canCreateProjects ? t("projects.subtitle") : t("projects.restricted")}</p></div><div className="section-actions"><button onClick={() => setTagManagerOpen(true)}><Tags aria-hidden size={15} />{t("tags.manage")}</button>{user.canCreateProjects && <><button onClick={() => { setImportError(""); setImportOpen(true); }}><Upload aria-hidden size={15} />{t("projects.upload")}</button><button className="primary" onClick={() => { setCreateError(""); setCreateOpen(true); }}><FolderPlus aria-hidden size={15} />{t("projects.new")}</button></>}</div></div>
       {error && <p className="error">{error}</p>}
+      {invitations.length > 0 && <section className="invitation-panel" aria-labelledby="pending-invitations-title">
+        <div className="invitation-panel-heading"><div><h2 id="pending-invitations-title">{t("invitations.title")}</h2><p className="muted">{t("invitations.description")}</p></div><span className="invitation-count">{invitations.length}</span></div>
+        <div className="invitation-list">{invitations.map((invitation) => <article className="invitation-card" key={invitation.id}>
+          <div className="invitation-card-main"><span className="invitation-project-mark"><FolderOpen aria-hidden size={19} /></span><div className="invitation-card-copy"><div className="invitation-card-title"><strong>{invitation.projectName ?? t("invitations.project")}</strong><span className="invitation-permission">{invitation.permission === "edit" ? t("common.readWrite") : t("common.readOnly")}</span></div><small><Users aria-hidden size={12} />{t("invitations.from", { owner: invitation.ownerDisplayName ?? invitation.ownerUsername ?? t("projects.owner") })}</small><small className="invitation-created"><Clock3 aria-hidden size={12} />{formatTime(invitation.createdAt)}</small></div></div>
+          <div className="invitation-actions"><button className="invitation-decline" disabled={invitationBusy === invitation.id} onClick={() => void respondToInvitation(invitation, "decline")}><X aria-hidden size={14} />{t("invitations.decline")}</button><button className="primary" disabled={invitationBusy === invitation.id} onClick={() => void respondToInvitation(invitation, "accept")}><Check aria-hidden size={14} />{invitationBusy === invitation.id ? t("common.loading") : t("invitations.accept")}</button></div>
+        </article>)}</div>
+      </section>}
       <div className="project-catalog-layout">
         <aside ref={tagFilterSidebar} className={`project-tag-sidebar${tagFilter ? " has-active-filter" : ""}`}>
           <button

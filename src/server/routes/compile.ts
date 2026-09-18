@@ -492,7 +492,6 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
                 candidate = await captureCompileSnapshot(config, id, runId, {
                   mainFile,
                   engine: project.engine,
-                  latexmkrc: project.latexmkrc,
                   extraArgs: config.extraArgs,
                   generation: generationKey
                 });
@@ -577,7 +576,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           broadcast();
           let compiled;
           try {
-            compiled = await compileProject(config, snapshot, mainFile, project.engine, project.latexmkrc, { signal });
+            compiled = await compileProject(config, snapshot, mainFile, project.engine, null, { signal });
             refreshSnapshotStale();
             if (compiled.ok && compiled.pdfPath) {
               throwIfCompileCancelled(signal);
@@ -823,7 +822,7 @@ async function openReadStream(stream: fs.ReadStream): Promise<fs.ReadStream> {
 }
 
 function compileRequestGeneration(
-  project: { main_file: string; engine: string; latexmkrc: string | null },
+  project: { main_file: string; engine: string },
   persistedRevision: number | null,
   sourceGeneration: number,
   extraArgs: readonly string[]
@@ -831,7 +830,6 @@ function compileRequestGeneration(
   return JSON.stringify({
     mainFile: project.main_file,
     engine: project.engine,
-    latexmkrc: project.latexmkrc,
     persistedRevision,
     sourceGeneration,
     extraArgs

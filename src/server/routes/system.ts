@@ -36,7 +36,7 @@ export function registerSystemRoutes(app: FastifyInstance, context: SystemRouteC
     maxUploadSizeMB: Math.floor(config.maxUploadBytes / 1024 / 1024),
     maxCollaborativeFileSizeMB: Math.floor(maxCollaborativeFileBytes(config) / 1024 / 1024),
     allowedEngines: config.allowedEngines,
-    allowProjectLatexmkrc: config.allowProjectLatexmkrc
+    githubOAuthEnabled: Boolean(config.githubOAuth)
   }));
 
   app.get("/api/health", async () => ({ ok: true, pid: process.pid, latexmk: config.latexmk }));

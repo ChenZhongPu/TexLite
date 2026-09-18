@@ -143,17 +143,16 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
     editHistory: {
       maxStorageMB: CONFIG_DEFAULTS.editHistoryMaxStorageMB
     },
-    git: {
-      binary: CONFIG_DEFAULTS.git,
-      operationTimeoutSeconds: CONFIG_DEFAULTS.gitOperationTimeoutSeconds,
-      githubApiBaseUrl: CONFIG_DEFAULTS.githubApiBaseUrl
+    githubOAuth: {
+      clientId: process.env.TEXLITE_GITHUB_CLIENT_ID ?? "",
+      clientSecret: process.env.TEXLITE_GITHUB_CLIENT_SECRET ?? "",
+      ...(process.env.TEXLITE_GITHUB_REDIRECT_URI ? { redirectUri: process.env.TEXLITE_GITHUB_REDIRECT_URI } : {})
     },
     latex: {
       latexmk: CONFIG_DEFAULTS.latexmk,
       defaultEngine: CONFIG_DEFAULTS.defaultEngine,
       allowedEngines: CONFIG_DEFAULTS.allowedEngines,
       extraArgs: CONFIG_DEFAULTS.extraArgs,
-      allowProjectLatexmkrc: CONFIG_DEFAULTS.allowProjectLatexmkrc,
       compileTimeoutSeconds: CONFIG_DEFAULTS.compileTimeoutSeconds,
       maxCompileJobs: CONFIG_DEFAULTS.maxCompileJobs
     }
@@ -203,9 +202,9 @@ async function initialize(options: CliOptions): Promise<void> {
     if (!password) throw new Error("Non-interactive initialization requires TEXLITE_INIT_PASSWORD to be set.");
     const timestamp = new Date().toISOString();
     db.prepare(`INSERT INTO users
-      (id, username, display_name, password_hash, role, disabled, must_change_password, can_create_projects, created_at)
-      VALUES (?, ?, ?, ?, 'admin', 0, 0, 1, ?)`)
-      .run(randomUUID(), username, displayName, await hashPassword(password), timestamp);
+      (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+      VALUES (?, ?, ?, ?, ?, NULL, NULL, 'admin', 0, 0, 1, ?)`)
+      .run(randomUUID(), username, displayName, await hashPassword(password), config.adminEmail.trim().toLocaleLowerCase("en-US") || null, timestamp);
     output(`Administrator ${username} created. Configuration file: ${config.configPath}`);
     output(`Data directory: ${config.dataDir}`);
   } finally {
@@ -313,7 +312,7 @@ async function printConfig(options: CliOptions): Promise<void> {
     historyMaxVersions: config.historyMaxVersions,
     historyMaxStorageBytes: config.historyMaxStorageBytes,
     editHistoryMaxStorageBytes: config.editHistoryMaxStorageBytes,
-    git: config.git
+    githubOAuthEnabled: Boolean(config.githubOAuth)
   }, null, 2));
 }
 

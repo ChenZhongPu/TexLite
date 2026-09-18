@@ -257,7 +257,7 @@ console.log(JSON.stringify({ count, cwd: process.cwd() }));
     expect(fs.readdirSync(cacheDirectory)).toHaveLength(2);
   });
 
-  it("ignores ambient latexmkrc files unless the project setting selects one", async () => {
+  it("ignores ambient and configured latexmkrc files", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-compiler-rc-"));
     temporaryRoots.push(root);
     const config = testConfig(root);
@@ -300,8 +300,8 @@ console.log(JSON.stringify({ count, cwd: process.cwd() }));
     expect(configuredResult.ok, configuredResult.log).toBe(true);
     const configuredArgs = JSON.parse(fs.readFileSync(path.join(withConfiguredRc.outputDir, ".args"), "utf8")) as string[];
     expect(configuredArgs.filter((argument) => argument === "-norc")).toHaveLength(1);
-    expect(configuredArgs.filter((argument) => argument === "-r")).toHaveLength(1);
-    expect(configuredArgs).toContain(".latexmkrc");
+    expect(configuredArgs).not.toContain("-r");
+    expect(configuredArgs).not.toContain(".latexmkrc");
   });
 
   it("coordinates different root documents independently", async () => {

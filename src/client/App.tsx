@@ -9,7 +9,7 @@ import {
 import { loadPdfPreview, loadProjectWorkspace, preloadWorkspace, type WorkspacePreload } from "./workspacePreload";
 import { ChangePassword, Login } from "./pages/AuthPages";
 import { LazyPage } from "./LazyLoadBoundary";
-import { appPath } from "./basePath";
+import { appPath, currentBasePath } from "./basePath";
 
 const loadDashboard = () => import("./pages/Dashboard");
 const Dashboard = lazy(() => loadDashboard().then((module) => ({ default: module.Dashboard })));
@@ -32,22 +32,26 @@ export function App() {
   const [workspacePreload, setWorkspacePreload] = useState<WorkspacePreload | null>(null);
   const [dashboardCache, setDashboardCache] = useState<{ userId: string; projects: Project[]; tags: ProjectTag[]; pagination: ProjectListPagination } | null>(null);
   const routeCurrentProjectToLogin = () => {
-    const returnProjectId = projectIdFromPath(window.location.pathname);
+    const basePath = site?.basePath ?? currentBasePath();
+    const returnProjectId = projectIdFromPath(window.location.pathname, basePath);
     if (!returnProjectId) return;
     const state: TexLiteHistoryState = { texliteRoute: "dashboard" };
-    window.history.replaceState(state, "", projectLoginPath(returnProjectId, mentionIdFromSearch(window.location.search)));
+    window.history.replaceState(state, "", projectLoginPath(returnProjectId, mentionIdFromSearch(window.location.search), basePath));
     setProjectId(null);
     setProjectMentionId(null);
     setWorkspacePreload(null);
   };
   const completeAuthentication = (authenticatedUser: User) => {
     const canOpenWorkspace = !authenticatedUser.mustChangePassword;
-    const returnProjectId = projectIdFromReturn(window.location.search);
-    const returnMentionId = mentionIdFromReturn(window.location.search);
+    // The server's public config is authoritative when a reverse proxy or a
+    // cached shell leaves the HTML base-path metadata stale.
+    const basePath = site?.basePath ?? currentBasePath();
+    const returnProjectId = projectIdFromReturn(window.location.search, basePath);
+    const returnMentionId = mentionIdFromReturn(window.location.search, basePath);
     let targetProjectId: string | null = null;
     if (returnProjectId) {
       const state: TexLiteHistoryState = { texliteRoute: "project", projectId: returnProjectId, fromDashboard: false };
-      window.history.replaceState(state, "", projectPath(returnProjectId, returnMentionId));
+      window.history.replaceState(state, "", projectPath(returnProjectId, returnMentionId, basePath));
       setProjectId(returnProjectId);
       setProjectMentionId(returnMentionId);
       targetProjectId = returnProjectId;
@@ -56,9 +60,9 @@ export function App() {
       window.history.replaceState(state, "", appPath("/"));
       setProjectId(null);
       setProjectMentionId(null);
-    } else if (projectIdFromPath(window.location.pathname)) {
+    } else if (projectIdFromPath(window.location.pathname, basePath)) {
       // Authenticated deep links mount the workspace immediately below.
-      targetProjectId = projectIdFromPath(window.location.pathname);
+      targetProjectId = projectIdFromPath(window.location.pathname, basePath);
     }
     if (canOpenWorkspace && targetProjectId) {
       preloadRoute(loadProjectWorkspace);

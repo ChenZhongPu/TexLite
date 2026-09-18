@@ -2,14 +2,19 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { DatabaseConnection, UserRow } from "./db.js";
 import { apiError } from "./http.js";
 import { digestToken } from "./security.js";
+import { activeShareLinkForToken } from "./shareLinks.js";
 
 export interface PublicUser {
   id: string;
   username: string;
   displayName: string;
+  email: string | null;
+  avatarUrl: string | null;
+  githubConnected: boolean;
   role: "admin" | "user";
   disabled: boolean;
   mustChangePassword: boolean;
+  hasPassword: boolean;
   canCreateProjects: boolean;
   createdAt: string;
 }
@@ -19,12 +24,22 @@ export function publicUser(user: UserRow): PublicUser {
     id: user.id,
     username: user.username,
     displayName: user.display_name,
+    email: user.email ?? null,
+    avatarUrl: user.avatar_url ?? null,
+    githubConnected: Boolean(user.github_id),
     role: user.role,
     disabled: Boolean(user.disabled),
     mustChangePassword: Boolean(user.must_change_password),
+    hasPassword: Boolean(user.password_hash),
     canCreateProjects: Boolean(user.can_create_projects) || user.role === "admin",
     createdAt: user.created_at
   };
+}
+
+/** GitHub returns verified mailbox identities; all invitation comparisons use
+ * the normalized lowercase form so case differences cannot bypass matching. */
+export function normalizeEmail(value: string): string {
+  return value.trim().toLocaleLowerCase("en-US");
 }
 
 const requestUserCache = new WeakMap<FastifyRequest, UserRow | null>();
@@ -47,7 +62,12 @@ export function currentUser(request: FastifyRequest, db: DatabaseConnection): Us
     JOIN users u ON u.id = s.user_id
     WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0
   `).get(digestToken(token), new Date().toISOString()) as UserRow | undefined;
-  const user = row ?? null;
+  const shareToken = request.cookies.texlite_share_token;
+  const shareLink = shareToken ? activeShareLinkForToken(db, shareToken) : null;
+  // A share URL never authenticates an anonymous request by itself. Once a
+  // normal account is signed in, the active link is carried as request-scoped
+  // context so project authorization can grant only that link's project.
+  const user = row && shareLink ? { ...row, share_link_id: shareLink.id } : row ?? null;
   requestUserCache.set(request, user);
   return user;
 }

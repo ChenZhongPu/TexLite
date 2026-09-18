@@ -84,7 +84,13 @@ describe("database migrations", () => {
       expect(migrated.prepare("SELECT main_file FROM compile_runs WHERE id = 'run-1'").get())
         .toEqual({ main_file: "main.tex" });
       expect(migrated.prepare("SELECT version, name FROM texlite_schema_migrations").all())
-        .toEqual([{ version: 1, name: "baseline_schema_and_legacy_upgrade" }]);
+        .toEqual([
+          { version: 1, name: "baseline_schema_and_legacy_upgrade" },
+          { version: 2, name: "github_identity_and_project_invitations" },
+          { version: 3, name: "disable_legacy_project_latexmkrc" },
+          { version: 4, name: "normalized_auth_identities" },
+          { version: 5, name: "project_share_links" }
+        ]);
 
       // The old untracked migration copied this tag at every startup. Once
       // the baseline has been recorded, a deliberate deletion stays deleted.
@@ -94,7 +100,13 @@ describe("database migrations", () => {
       expect(migrated.prepare("SELECT COUNT(*) AS count FROM user_tags WHERE id = 'tag-1'").get())
         .toEqual({ count: 0 });
       expect(migrated.prepare("SELECT version, name FROM texlite_schema_migrations").all())
-        .toEqual([{ version: 1, name: "baseline_schema_and_legacy_upgrade" }]);
+        .toEqual([
+          { version: 1, name: "baseline_schema_and_legacy_upgrade" },
+          { version: 2, name: "github_identity_and_project_invitations" },
+          { version: 3, name: "disable_legacy_project_latexmkrc" },
+          { version: 4, name: "normalized_auth_identities" },
+          { version: 5, name: "project_share_links" }
+        ]);
 
       migrated.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
         .run("expired-session", "user-1", "2025-01-03T00:00:00.000Z", "2025-01-01T00:00:00.000Z");
@@ -133,13 +145,41 @@ describe("database migrations", () => {
 
       database = openDatabase(config);
       expect(database.prepare("SELECT COUNT(*) AS count FROM user_tags").get()).toEqual({ count: 0 });
-      expect(database.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }]);
+      expect(database.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
       expect(database.prepare("SELECT last_modified_by FROM projects WHERE id = 'project-1'").get())
         .toEqual({ last_modified_by: null });
       expect(database.prepare("SELECT main_file FROM compile_runs WHERE id = 'run-1'").get())
         .toEqual({ main_file: "" });
       expect(database.prepare("SELECT can_create_projects FROM users WHERE id = 'user-1'").get())
         .toEqual({ can_create_projects: 0 });
+    } finally {
+      database.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("backfills legacy GitHub identities without changing the local account or sessions", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-github-identity-migration-"));
+    const databasePath = path.join(root, "texlite.db");
+    const config = migrationConfig(root, databasePath);
+    let database = openDatabase(config);
+    try {
+      database.prepare(`INSERT INTO users
+        (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+        VALUES (?, ?, ?, '', ?, ?, NULL, 'user', 0, 0, 1, ?)`)
+        .run("github-user-1", "legacy-handle", "Legacy Name", "legacy@example.test", "github-123", "2026-01-01T00:00:00.000Z");
+      database.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
+        .run("legacy-session", "github-user-1", "2027-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+      database.exec("DROP TABLE auth_identities");
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (4, 5)").run();
+      database.close();
+
+      database = openDatabase(config);
+      expect(database.prepare("SELECT id, username, display_name, email, github_id FROM users WHERE id = 'github-user-1'").get())
+        .toEqual({ id: "github-user-1", username: "legacy-handle", display_name: "Legacy Name", email: "legacy@example.test", github_id: "github-123" });
+      expect(database.prepare("SELECT issuer, subject, user_id, provider_username, provider_email FROM auth_identities").get())
+        .toEqual({ issuer: "github", subject: "github-123", user_id: "github-user-1", provider_username: "legacy-handle", provider_email: "legacy@example.test" });
+      expect(database.prepare("SELECT id FROM sessions WHERE id = 'legacy-session'").get()).toEqual({ id: "legacy-session" });
     } finally {
       database.close();
       fs.rmSync(root, { recursive: true, force: true });
@@ -188,7 +228,7 @@ describe("database migrations", () => {
 
       const migrated = openDatabase(config);
       try {
-        expect(migrated.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }]);
+        expect(migrated.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
       } finally {
         migrated.close();
       }
@@ -205,13 +245,13 @@ describe("database migrations", () => {
       CREATE TABLE texlite_schema_migrations (
         version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
       );
-      INSERT INTO texlite_schema_migrations VALUES (2, 'future_schema', '2026-01-01T00:00:00.000Z');
+      INSERT INTO texlite_schema_migrations VALUES (6, 'future_schema', '2026-01-01T00:00:00.000Z');
     `);
     database.close();
 
     try {
       expect(() => openDatabase(migrationConfig(root, databasePath)))
-        .toThrow(/version 2 is newer than this TexLite release/);
+        .toThrow(/version 6 is newer than this TexLite release/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

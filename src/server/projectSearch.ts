@@ -20,7 +20,7 @@ export interface ProjectSearchMatch {
   matchEnd: number;
 }
 
-const textExtension = /(?:\.(?:tex|bib|sty|cls|txt|md)|latexmkrc)$/i;
+const textExtension = /\.(?:tex|bib|sty|cls|txt|md)$/i;
 const maxFiles = 500;
 const maxFileBytes = 3 * 1024 * 1024;
 const maxTotalBytes = 24 * 1024 * 1024;

@@ -131,7 +131,6 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [pendingCommentFocus, setPendingCommentFocus] = useState<Comment | null>(null);
   const [filesCollapsed, setFilesCollapsed] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [gitOpen, setGitOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectionHistoryOpen, setSelectionHistoryOpen] = useState(false);
   const [citationLibraryOpen, setCitationLibraryOpen] = useState(false);
@@ -977,6 +976,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     activeFile,
     content,
     permission: project?.permission,
+    shareLinkOnly: project?.shareLinkOnly,
     revision: commentsRevision,
     selection,
     save,
@@ -1281,7 +1281,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       toggleFilesPanel={toggleFilesPanel} workspaceLayout={workspaceLayout} changeWorkspaceLayout={changeWorkspaceLayout}
       onBack={onBack} onShare={() => setShareOpen(true)} showCitationLibrary={showEditor && /\.bib$/i.test(activeFile)}
       citationLibraryOpen={citationLibraryOpen} onCitationLibrary={() => setCitationLibraryOpen(true)}
-      onSelectionHistory={() => setSelectionHistoryOpen(true)} onHistory={() => setHistoryOpen(true)} onGit={() => setGitOpen(true)} canManageGit={project.ownerId === user.id}
+      onSelectionHistory={() => setSelectionHistoryOpen(true)} onHistory={() => setHistoryOpen(true)}
       formatting={formatting} readOnly={readOnly} collaborationSynced={collaborationSynced}
       hasSelection={Boolean(selection.selectedText.trim())}
       onToggleComments={() => setSidePanel(sidePanel === "comments" ? null : "comments")}
@@ -1408,7 +1408,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       quickOpen={quickOpen} setQuickOpen={setQuickOpen} projectSearchOpen={projectSearchOpen}
       setProjectSearchOpen={setProjectSearchOpen} openFile={openFile} jumpToSource={jumpToSource}
       selectionHistoryOpen={selectionHistoryOpen} setSelectionHistoryOpen={setSelectionHistoryOpen}
-      historyOpen={historyOpen} setHistoryOpen={setHistoryOpen} gitOpen={gitOpen} setGitOpen={setGitOpen}
+      historyOpen={historyOpen} setHistoryOpen={setHistoryOpen}
       save={save} permissionDowngrade={permissionDowngrade} permissionDowngradeBusy={permissionDowngradeBusy}
       dismissPermissionDowngrade={dismissPermissionDowngrade} discardPermissionDraft={discardPermissionDraft}
     />

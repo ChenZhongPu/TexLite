@@ -5,11 +5,11 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SWUFE-DB-Group/TexLite.git"
+    "url": "git+https://github.com/ChenZhongPu/TexLite.git"
   },
-  "homepage": "https://github.com/SWUFE-DB-Group/TexLite",
+  "homepage": "https://github.com/ChenZhongPu/TexLite",
   "bugs": {
-    "url": "https://github.com/SWUFE-DB-Group/TexLite/issues"
+    "url": "https://github.com/ChenZhongPu/TexLite/issues"
   },
   "keywords": [
     "latex",
@@ -23,10 +23,6 @@
   "files": [
     "dist",
     "README.md",
-    "README.zh-CN.md",
-    "OPERATIONS.md",
-    "DESIGN.md",
-    "NPM_TESTING.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "preview-1.png",

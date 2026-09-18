@@ -109,7 +109,7 @@ function requiredToolDefinitions(config: Config): EnvironmentToolDefinition[] {
 function hostToolDefinitions(config: Config): EnvironmentToolDefinition[] {
   return [
     ...requiredToolDefinitions(config),
-    ...optionalToolDefinitions(config.git, Math.min(config.gitOperationTimeoutMs, commandProbeTimeoutMs))
+    ...optionalToolDefinitions()
   ];
 }
 
@@ -121,13 +121,12 @@ function hostRequirementToolDefinitions(): EnvironmentToolDefinition[] {
       id: `engine:${command}`, name: command, command, requirement: "one-of" as const,
       requirementGroup: "latex-engine", purpose: "Supported LaTeX engine"
     })),
-    ...optionalToolDefinitions("git", commandProbeTimeoutMs)
+    ...optionalToolDefinitions()
   ];
 }
 
-function optionalToolDefinitions(gitCommand: string, gitTimeoutMs: number): EnvironmentToolDefinition[] {
+function optionalToolDefinitions(): EnvironmentToolDefinition[] {
   return [
-    gitToolDefinition(gitCommand, gitTimeoutMs),
     { id: "texcount", name: "TeXcount", command: "texcount", requirement: "optional", purpose: "Word and character statistics", versionArgs: ["-version"] },
     { id: "bibtex", name: "BibTeX", command: "bibtex", requirement: "optional", purpose: "BibTeX bibliography builds" },
     { id: "biber", name: "Biber", command: "biber", requirement: "optional", purpose: "Biber bibliography builds" },

@@ -29,6 +29,14 @@ function sessionCookie(headers: OutgoingHttpHeaders): string {
   return cookie.split(";")[0];
 }
 
+function namedCookie(headers: OutgoingHttpHeaders, name: string): string {
+  const values = headers["set-cookie"];
+  const cookies = Array.isArray(values) ? values : values ? [values] : [];
+  const cookie = cookies.find((value) => typeof value === "string" && value.startsWith(`${name}=`));
+  if (typeof cookie !== "string") throw new Error(`Expected a ${name} cookie`);
+  return cookie.split(";")[0];
+}
+
 describe("texLite application", () => {
   const execFileAsync = promisify(execFile);
   let root: string;
@@ -47,7 +55,14 @@ describe("texLite application", () => {
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], extraArgs: [], allowProjectLatexmkrc: true,
       maxUploadBytes: 50 * 1024 * 1024, pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
       historyMaxVersions: 200, historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024
-      , git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com"
+      , git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com",
+      githubOAuth: {
+        clientId: "oauth-test-client", clientSecret: "oauth-test-secret",
+        redirectUri: "http://localhost:3001/auth/github/callback",
+        authorizeUrl: "https://github.com/login/oauth/authorize",
+        tokenUrl: "https://github.com/login/oauth/access_token",
+        apiUrl: "https://api.github.com"
+      }
     };
     fs.mkdirSync(path.join(config.clientDir, "assets"), { recursive: true });
     fs.writeFileSync(path.join(config.clientDir, "index.html"), "<!doctype html><div id=\"root\"></div>");
@@ -59,6 +74,16 @@ describe("texLite application", () => {
       .run(randomUUID(), await hashPassword("administrator password"), new Date().toISOString());
     const githubFetch: typeof fetch = async (input, init) => {
       const url = String(input);
+      if (url === "https://github.com/login/oauth/access_token" && init?.method === "POST") {
+        return Response.json({ access_token: "oauth-test-access-token" });
+      }
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (authorization === "Bearer oauth-test-access-token" && url.endsWith("/user")) {
+        return Response.json({ id: 90210, login: "oauth-invitee", name: "OAuth Invitee", avatar_url: "https://avatars.example.test/invitee" });
+      }
+      if (authorization === "Bearer oauth-test-access-token" && url.endsWith("/user/emails")) {
+        return Response.json([{ email: "invitee@example.test", primary: true, verified: true }]);
+      }
       if (url.endsWith("/user") && init?.method === "GET") {
         return Response.json({ login: "texlite-owner" });
       }
@@ -94,9 +119,102 @@ describe("texLite application", () => {
     expect(unauthenticated.json()).toMatchObject({ code: "AUTH_REQUIRED" });
     const publicConfig = await app.inject({ method: "GET", url: "/api/config" });
     expect(publicConfig.json()).toMatchObject({
-      siteName: "Test texLite", adminEmail: "admin@example.test", minPasswordLength: MIN_PASSWORD_LENGTH,
+      siteName: "Test texLite", adminEmail: "admin@example.test", minPasswordLength: MIN_PASSWORD_LENGTH, githubOAuthEnabled: true,
       maxCitationBibtexBytes: MAX_CITATION_BIBTEX_BYTES
     });
+  });
+
+  it("registers with GitHub and requires invitation acceptance", async () => {
+    const authorization = await app.inject({ method: "GET", url: "/api/auth/github?return=%2Fdashboard" });
+    expect(authorization.statusCode).toBe(302);
+    const authorizeUrl = new URL(authorization.headers.location as string);
+    expect(authorizeUrl.origin + authorizeUrl.pathname).toBe("https://github.com/login/oauth/authorize");
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("oauth-test-client");
+    const state = authorizeUrl.searchParams.get("state");
+    expect(state).toBeTruthy();
+    const oauthCookie = namedCookie(authorization.headers, "texlite_oauth_state");
+
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/github/callback?code=oauth-test-code&state=${encodeURIComponent(state ?? "")}`,
+      headers: { cookie: oauthCookie }
+    });
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe("/dashboard");
+    const oauthUserCookie = namedCookie(callback.headers, "texlite_session");
+    const me = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: oauthUserCookie } });
+    expect(me.json().user).toMatchObject({ username: "oauth-invitee", email: "invitee@example.test", githubConnected: true, hasPassword: false });
+    expect(db.prepare("SELECT issuer, subject, user_id, provider_username FROM auth_identities WHERE issuer = 'github'").get())
+      .toMatchObject({ issuer: "github", subject: "90210", user_id: me.json().user.id, provider_username: "oauth-invitee" });
+
+    const displayNameUpdate = await app.inject({ method: "PATCH", url: "/api/me", headers: { cookie: oauthUserCookie }, payload: { displayName: "Local OAuth Name" } });
+    expect(displayNameUpdate.statusCode).toBe(200);
+    expect(displayNameUpdate.json().user).toMatchObject({ displayName: "Local OAuth Name" });
+    const passwordUpdate = await app.inject({ method: "PUT", url: "/api/me/password", headers: { cookie: oauthUserCookie }, payload: { newPassword: "oauth-password" } });
+    expect(passwordUpdate.statusCode).toBe(200);
+    expect(passwordUpdate.json().user).toMatchObject({ hasPassword: true, mustChangePassword: false });
+    const passwordLogin = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: "@oauth-invitee", password: "oauth-password" } });
+    expect(passwordLogin.statusCode).toBe(200);
+
+    const project = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Invitation project" } });
+    const projectId = project.json().project.id as string;
+    const invitation = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie },
+      payload: { email: "invitee@example.test", permission: "edit" }
+    });
+    expect(invitation.statusCode).toBe(201);
+    const invitationId = invitation.json().invitation.id as string;
+    const pending = await app.inject({ method: "GET", url: "/api/invitations", headers: { cookie: oauthUserCookie } });
+    expect(pending.json().invitations).toHaveLength(1);
+    expect(pending.json().invitations[0]).toMatchObject({ id: invitationId, projectId, permission: "edit" });
+    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(404);
+
+    const accepted = await app.inject({ method: "POST", url: `/api/invitations/${invitationId}/accept`, headers: { cookie: oauthUserCookie } });
+    expect(accepted.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/invitations/${invitationId}/accept`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(404);
+
+    const shareReader = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: "share-link-reader", displayName: "Share Link Reader", password: "share-reader-password" }
+    });
+    const shareReaderLogin = await app.inject({
+      method: "POST", url: "/api/auth/login",
+      payload: { username: "share-link-reader", password: "share-reader-password" }
+    });
+    const shareReaderCookie = sessionCookie(shareReaderLogin.headers);
+    const shareLinkResponse = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/share-links`, headers: { cookie }, payload: {}
+    });
+    expect(shareLinkResponse.statusCode).toBe(201);
+    expect(shareLinkResponse.json().link).toMatchObject({ permission: "read" });
+    const sharePath = new URL(shareLinkResponse.json().link.url, "http://localhost").pathname;
+    const shareVisit = await app.inject({ method: "GET", url: sharePath, headers: { cookie: shareReaderCookie } });
+    expect(shareVisit.statusCode).toBe(302);
+    const shareCookie = namedCookie(shareVisit.headers, "texlite_share_token");
+    const linkedCookie = `${shareReaderCookie}; ${shareCookie}`;
+    const linkedProject = await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: linkedCookie } });
+    expect(linkedProject.statusCode).toBe(200);
+    expect(linkedProject.json().project).toMatchObject({ permission: "read", shareLinkOnly: true });
+    expect((await app.inject({ method: "GET", url: "/api/projects", headers: { cookie: linkedCookie } })).json().projects)
+      .not.toContainEqual(expect.objectContaining({ id: projectId }));
+    expect((await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/file`, headers: { cookie: linkedCookie },
+      payload: { path: "main.tex", content: "read link cannot edit" }
+    })).statusCode).toBe(403);
+    expect((await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/comments`, headers: { cookie: linkedCookie },
+      payload: { path: "main.tex", startOffset: 0, endOffset: 0, content: "read link cannot comment" }
+    })).statusCode).toBe(403);
+
+    const linkId = shareLinkResponse.json().link.id as string;
+    expect((await app.inject({
+      method: "DELETE", url: `/api/projects/${projectId}/share-links/${linkId}`, headers: { cookie }
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: sharePath, headers: { cookie: shareReaderCookie } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: linkedCookie } })).statusCode).toBe(404);
+    // Revoking a link does not remove a user who joined through an invitation.
+    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
   });
 
   it("keeps the app shell fresh and caches fingerprinted browser runtimes", async () => {
@@ -184,7 +302,8 @@ It works.
     const saved = await app.inject({ method: "PUT", url: `/api/projects/${project.id}/file`, headers: { cookie }, payload: { path: "main.tex", content: source } });
     expect(saved.statusCode).toBe(200);
     const savedRc = await app.inject({ method: "PUT", url: `/api/projects/${project.id}/file`, headers: { cookie }, payload: { path: ".latexmkrc", content: "$silent = 1;\n" } });
-    expect(savedRc.statusCode).toBe(200);
+    expect(savedRc.statusCode).toBe(400);
+    expect(savedRc.json()).toMatchObject({ code: "RESERVED_PATH" });
     await app.inject({
       method: "PUT", url: `/api/projects/${project.id}/file`, headers: { cookie },
       payload: { path: "paper.sty", content: String.raw`\ProvidesPackage{paper}
@@ -242,9 +361,9 @@ It works.
     expect(alternateCompletions.json().index.citations).toEqual([
       expect.objectContaining({ label: "appendix2026", source: "appendix-refs.bib" })
     ]);
-    const configured = await app.inject({ method: "PATCH", url: `/api/projects/${project.id}`, headers: { cookie }, payload: { engine: "pdflatex", latexmkrc: ".latexmkrc" } });
+    const configured = await app.inject({ method: "PATCH", url: `/api/projects/${project.id}`, headers: { cookie }, payload: { engine: "pdflatex" } });
     expect(configured.statusCode).toBe(200);
-    expect(configured.json().project.latexmkrc).toBe(".latexmkrc");
+    expect(configured.json().project.engine).toBe("pdflatex");
     const emptyDictionary = await app.inject({ method: "GET", url: `/api/projects/${project.id}/dictionary`, headers: { cookie } });
     expect(emptyDictionary.statusCode).toBe(200);
     expect(emptyDictionary.json()).toEqual({ words: [] });
@@ -847,8 +966,10 @@ Copied source.
 `;
     await app.inject({ method: "PUT", url: `/api/projects/${source.id}/file`, headers: { cookie }, payload: { path: "main.tex", content: sourceContent } });
     await app.inject({ method: "PUT", url: `/api/projects/${source.id}/file`, headers: { cookie }, payload: { path: "assets/data.txt", content: "resource" } });
-    await app.inject({ method: "PUT", url: `/api/projects/${source.id}/file`, headers: { cookie }, payload: { path: ".latexmkrc", content: "$silent = 1;\n" } });
-    await app.inject({ method: "PATCH", url: `/api/projects/${source.id}`, headers: { cookie }, payload: { latexmkrc: ".latexmkrc", engine: "xelatex" } });
+    const rejectedRc = await app.inject({ method: "PUT", url: `/api/projects/${source.id}/file`, headers: { cookie }, payload: { path: ".latexmkrc", content: "$silent = 1;\n" } });
+    expect(rejectedRc.statusCode).toBe(400);
+    const configured = await app.inject({ method: "PATCH", url: `/api/projects/${source.id}`, headers: { cookie }, payload: { engine: "xelatex" } });
+    expect(configured.statusCode).toBe(200);
     await app.inject({ method: "PATCH", url: `/api/projects/${source.id}/icon`, headers: { cookie }, payload: { icon: "file-text" } });
     await app.inject({
       method: "POST", url: `/api/projects/${source.id}/comments`, headers: { cookie },
@@ -858,7 +979,7 @@ Copied source.
     const duplicated = await app.inject({ method: "POST", url: `/api/projects/${source.id}/duplicate`, headers: { cookie }, payload: {} });
     expect(duplicated.statusCode, duplicated.body).toBe(201);
     const copy = duplicated.json().project;
-    expect(copy).toMatchObject({ name: "Duplicate source (1)", ownerUsername: "admin", mainFile: "main.tex", latexmkrc: ".latexmkrc", engine: "xelatex", icon: "file-text" });
+    expect(copy).toMatchObject({ name: "Duplicate source (1)", ownerUsername: "admin", mainFile: "main.tex", engine: "xelatex", icon: "file-text" });
     expect(copy.id).not.toBe(source.id);
     const copiedMain = await app.inject({ method: "GET", url: `/api/projects/${copy.id}/file?path=main.tex`, headers: { cookie } });
     expect(copiedMain.json().content).toBe(sourceContent);
@@ -1045,7 +1166,21 @@ Another UniqueTerm appears here.
     expect((await app.inject({ method: "GET", url: "/api/health/metrics", headers: { cookie: userCookie } })).statusCode).toBe(403);
   });
 
-  it("manages an owner-only encrypted GitHub backup with commit, diff, checkout and push", async () => {
+  it("does not expose the removed Git integration", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "No Git project" } });
+    const projectId = created.json().project.id as string;
+    for (const request of [
+      { method: "GET", url: `/api/projects/${projectId}/git` },
+      { method: "GET", url: `/api/projects/${projectId}/git/history` },
+      { method: "POST", url: `/api/projects/${projectId}/git/commit` },
+      { method: "POST", url: `/api/projects/${projectId}/git/push` }
+    ] as const) {
+      const response = await app.inject({ ...request, headers: { cookie } });
+      expect(response.statusCode).toBe(404);
+    }
+  });
+
+  it.skip("manages an owner-only encrypted GitHub backup with commit, diff, checkout and push", async () => {
     const created = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Git backup paper" } });
     const projectId = created.json().project.id as string;
     const initialStatus = await app.inject({ method: "GET", url: `/api/projects/${projectId}/git`, headers: { cookie } });
@@ -1672,11 +1807,6 @@ Second version.
       method: "PUT", url: `/api/projects/${project.id}/members/${recipient.id}`, headers: { cookie }, payload: { permission: "read" }
     });
     const historyCount = (db.prepare("SELECT COUNT(*) AS count FROM project_history_versions WHERE project_id = ?").get(project.id) as { count: number }).count;
-    const timestamp = new Date().toISOString();
-    db.prepare(`INSERT INTO project_git_settings
-      (project_id, token_ciphertext, github_login, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`)
-      .run(project.id, "former-owner-token", "former-owner", timestamp, timestamp);
-
     // Add a comment to the project
     await app.inject({
       method: "POST", url: `/api/projects/${project.id}/comments`, headers: { cookie },
@@ -1694,9 +1824,6 @@ Second version.
     expect(db.prepare("SELECT permission FROM project_members WHERE project_id = ? AND user_id = ?").get(project.id, formerOwnerId)).toEqual({ permission: "edit" });
     expect(db.prepare("SELECT permission FROM project_members WHERE project_id = ? AND user_id = ?").get(project.id, recipient.id)).toBeUndefined();
     expect((db.prepare("SELECT COUNT(*) AS count FROM project_history_versions WHERE project_id = ?").get(project.id) as { count: number }).count).toBe(historyCount);
-    expect(db.prepare("SELECT token_ciphertext, github_login FROM project_git_settings WHERE project_id = ?").get(project.id)).toEqual({
-      token_ciphertext: null, github_login: null
-    });
     expect((await app.inject({
       method: "PUT", url: `/api/projects/${project.id}/owner`, headers: { cookie }, payload: { userId: formerOwnerId }
     })).statusCode).toBe(403);
@@ -1915,13 +2042,13 @@ Second version.
     expect(updateMissing.statusCode).toBe(400);
     expect(updateMissing.json()).toMatchObject({ code: "MAIN_FILE_NOT_FOUND" });
 
-    // 6. Changing latexmkrc to a directory fails with 400 LATEXMKRC_INVALID
+    // 6. Project-level latexmkrc configuration is disabled.
     const updateRcDir = await app.inject({
       method: "PATCH", url: `/api/projects/${project.id}`, headers: { cookie },
       payload: { latexmkrc: "chapters" }
     });
     expect(updateRcDir.statusCode).toBe(400);
-    expect(updateRcDir.json()).toMatchObject({ code: "LATEXMKRC_INVALID" });
+    expect(updateRcDir.json()).toMatchObject({ code: "LATEXMKRC_DISABLED" });
   });
 
   it("uses a fragmentary tex file as the main-document fallback only when it is the sole tex file", async () => {

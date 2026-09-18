@@ -21,17 +21,16 @@
   "editHistory": {
     "maxStorageMB": 32
   },
-  "git": {
-    "binary": "git",
-    "operationTimeoutSeconds": 120,
-    "githubApiBaseUrl": "https://api.github.com"
+  "githubOAuth": {
+    "clientId": "",
+    "clientSecret": "",
+    "redirectUri": "http://localhost:3001/auth/github/callback"
   },
   "latex": {
     "latexmk": "latexmk",
     "defaultEngine": "xelatex",
     "allowedEngines": ["pdflatex", "xelatex", "lualatex"],
     "extraArgs": [],
-    "allowProjectLatexmkrc": true,
     "compileTimeoutSeconds": 600,
     "maxCompileJobs": 10
   }

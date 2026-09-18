@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Config } from "../src/server/config.js";
-import { assertEnvironment, assertGitAvailable, hostRequirementsSatisfied, inspectHostEnvironment, inspectHostRequirements, type EnvironmentTool } from "../src/server/environment.js";
+import { assertEnvironment, hostRequirementsSatisfied, inspectHostEnvironment, inspectHostRequirements, type EnvironmentTool } from "../src/server/environment.js";
 
 function testConfig(): Config {
   const root = path.join(os.tmpdir(), "texlite-environment-test");
@@ -19,7 +19,7 @@ function testConfig(): Config {
 }
 
 describe("startup environment checks", () => {
-  it("requires LaTeX commands but treats Git as an on-demand dependency", async () => {
+  it("requires LaTeX commands and does not require Git", async () => {
     const config = testConfig();
     const available = await assertEnvironment({ ...config, git: "/definitely/missing/texlite-git" });
     expect(available).toHaveLength(2);
@@ -27,14 +27,11 @@ describe("startup environment checks", () => {
     expect(available[0].version).toMatch(/^v\d+/);
     await expect(assertEnvironment({ ...config, latexmk: "/definitely/missing/texlite-latexmk" }))
       .rejects.toThrow("Initialization/startup has been stopped");
-    await expect(assertGitAvailable({ ...config, git: "/definitely/missing/texlite-git" }))
-      .rejects.toMatchObject({ code: "GIT_UNAVAILABLE", statusCode: 503 });
   });
 
   it("reports optional host tools without making them startup requirements", async () => {
     const tools = await inspectHostEnvironment({ ...testConfig(), git: "/definitely/missing/texlite-git" });
     expect(tools.find((tool) => tool.id === "node")).toMatchObject({ requirement: "required", status: "installed" });
-    expect(tools.find((tool) => tool.id === "git")).toMatchObject({ requirement: "optional", status: "missing" });
     expect(tools.find((tool) => tool.id === "texcount")).toMatchObject({ requirement: "optional", purpose: "Word and character statistics" });
     expect(tools.find((tool) => tool.id === "harper-ls")).toMatchObject({ requirement: "optional" });
   });

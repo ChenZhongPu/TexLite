@@ -3,13 +3,13 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const developmentRoot = path.join(repositoryRoot, ".texlite-dev");
 const developmentEnvironment = {
   ...process.env,
-  // Always override inherited deployment settings. Running the development
-  // server must never attach to the user's normal configuration or database.
-  TEXLITE_CONFIG: path.join(developmentRoot, "texlite.config.json"),
-  TEXLITE_DATA_DIR: path.join(developmentRoot, "data"),
+  // Keep source-checkout data visible and reproducible. Running the
+  // development server must never attach to a user's deployment settings,
+  // but its config and database should live in this checkout.
+  TEXLITE_CONFIG: path.join(repositoryRoot, "texlite.config.json"),
+  TEXLITE_DATA_DIR: path.join(repositoryRoot, "data"),
   TEXLITE_PORT: "3001",
   TEXLITE_DEV_SERVER_PORT: "3001"
 };

@@ -1,145 +1,27 @@
-# TexLite
+# TexLite（Fork）
 
-A lightweight self-hosted alternative to Overleaf for _small, trusted_ research
-teams. Use your existing LaTeX distribution, with no heavyweight service stack.
+本仓库是 [TexLite 上游项目](https://github.com/SWUFE-DB-Group/TexLite) 的 fork，
+fork 仓库地址为 [ChenZhongPu/TexLite](https://github.com/ChenZhongPu/TexLite)。
 
-[![CI](https://github.com/SWUFE-DB-Group/TexLite/actions/workflows/ci.yml/badge.svg)](https://github.com/SWUFE-DB-Group/TexLite/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/texlite?logo=npm&label=npm)](https://www.npmjs.com/package/texlite)
-[![Docker Hub](https://img.shields.io/docker/v/zhongpu/texlite?logo=docker&label=Docker%20Hub)](https://hub.docker.com/r/zhongpu/texlite)
+本 fork 将 TexLite 从面向私有小团队的部署，调整为支持公网部署和开放注册的平台。
 
-**Documentation:** English (this file) · [Operations](OPERATIONS.md) · [Design](DESIGN.md) · [简体中文](README.zh-CN.md)
+## 本 fork 的改动
 
-**Website:** [TexLite GitHub Pages](https://swufe-db-group.github.io/TexLite/)
+- **开放用户系统**：支持 GitHub OAuth 登录、分页用户管理、用户个人信息和密码自助管理，
+  并使用带身份提供方的账号唯一标识。
+- **项目权限**：注册用户默认可以创建项目。邀请通过邮箱发出，同时展示匹配到的用户名；
+  被邀请者必须明确接受后，才会成为项目成员。
+- **项目分享**：项目所有者可以生成和撤销只读链接。只有链接权限的用户必须通过链接打开项目，
+  不会出现在项目列表中，也不能批注或使用 `@` 提及；写权限必须通过明确加入项目获得。撤销链接
+  不会移除已经加入项目的成员。
+- **协作功能**：已加入项目的用户继续支持成员权限、批注、提及和协作者状态展示。
+- **安全调整**：不再支持项目中的 `latexmkrc` 文件。
+- **移除功能**：去掉 Git 集成功能。
 
-> [!TIP]
-> **Feedback:** If you use TexLite, please share your experience in our short questionnaires: [Google Form](https://docs.google.com/forms/d/e/1FAIpQLSfc40WWMJpXsYm0FsSadZ-FBu6gdcPZVnoMulcQdkJxIoJtCA/viewform?usp=dialog) or [Feishu questionnaire](https://swufe-dbg.feishu.cn/share/base/form/shrcnqKcPJwCCXXF6Vu52AfSy1d). Your feedback helps guide future improvements.
+安装、部署和开发配置不在本 README 中重复说明，基础内容请参考
+[上游项目](https://github.com/SWUFE-DB-Group/TexLite)。
 
-![TexLite workspace](preview-1.png)
-![TexLite project view](preview-2.png)
+## 许可证
 
-## Why TexLite
-
-- **Own the writing environment.** Use the host's TeX installation and keep
-  sources, history, and compiled output in one local data directory.
-- **Collaborate without a large stack.** The default deployment is one Node.js
-  process, SQLite, and local files—plus real-time editing and source-level
-  comments for a small trusted team.
-
-## A practical distinction from Overleaf
-
-[Overleaf](https://www.overleaf.com/about/features-overview) is a strong choice
-when its hosted product or broader ecosystem is the right fit. TexLite addresses
-a narrower self-hosted use case:
-
-- A shared hosted service can queue, slow down, or time out at usage peaks.
-- Overleaf's open-source [Community Edition](https://github.com/overleaf/overleaf)
-  follows a more involved [Docker deployment path](https://docs.overleaf.com/on-premises/getting-started/what-is-the-overleaf-toolkit), and
-  several functionalities, such as source comments, are [Server Pro features](https://docs.overleaf.com/on-premises/user-and-project-management/roles-and-permissions).
-  _If you do not mind a heftier Docker image, [we have one ready too](#docker-deployment) :)_
-
-Self-hosting does not make every document compile faster: that still depends on
-the host and the document. It does give the team control over capacity, TeX
-updates, data location, and the collaboration workflow.
-
-For a desktop-first, individual workflow, start with
-[VS Code + LaTeX Workshop](https://github.com/James-Yu/LaTeX-Workshop) or
-[TeXstudio](https://texstudio.org/) instead. TexLite is purpose-built for
-shared browser writing, not a replacement for a personal IDE.
-
-## What the writing workflow includes
-
-- Projects with folders, ZIP import/export, tags, sharing, ownership transfer,
-  archiving, and a private per-user citation library.
-- CodeMirror editing with LaTeX/BibTeX highlighting, folding, completion,
-  optional Vim mode, formatting, spelling/grammar assistance, search/replace,
-  and source/PDF SyncTeX navigation.
-- Yjs-based collaborative source editing, active-session presence, comments
-  anchored to source text, replies, resolution, and permissions that let
-  reviewers comment without changing source.
-- `latexmk` compilation with selectable engines, project settings, structured
-  diagnostics, cached successful PDFs, downloadable artifacts, and optional
-  project-level `latexmkrc`.
-- Per-project history and owner-only Git/GitHub backup. Git is optional and is
-  checked only when its integration is used.
-
-## Quick start
-
-Install Node.js 24 or newer, `latexmk`, and at least one TeX engine such as
-`pdflatex`, `xelatex`, or `lualatex`. Git is needed only for the optional
-Git/GitHub integration.
-
-After installation, `texlite requirements` checks the relevant host software
-and versions before initialization.
-
-```bash
-npm install --global texlite
-texlite requirements
-texlite init
-texlite start
-texlite status
-```
-
-Open <http://127.0.0.1:3000>. `texlite init` creates the configuration and the
-first administrator; public registration is deliberately unavailable.
-To mount TexLite below an existing domain path such as `/texlite`, configure
-`server.basePath` and follow the [reverse-proxy guide](OPERATIONS.md#reverse-proxy-subpath).
-
-For upgrades and routine management:
-
-```bash
-npm update --global texlite
-texlite restart
-texlite logs
-```
-
-`texlite serve` runs in the foreground for debugging, Docker, or systemd.
-`start`, `stop`, `restart`, `status`, and `logs` use the PM2 runtime bundled
-with the npm package. Run `texlite help` for the complete command list.
-
-<a id="docker-deployment"></a>
-
-### Docker deployment
-
-If the host does not have—or you do not want to maintain—Node.js, TeX Live,
-Git, and Harper locally, use the heavier
-[TexLite-Docker](https://github.com/SWUFE-DB-Group/TexLite-Docker) deployment.
-Its published image bundles those runtime dependencies for you.
-
-```bash
-git clone https://github.com/SWUFE-DB-Group/TexLite-Docker.git
-cd texlite-docker
-cp deployment.example.json deployment.json
-# Edit deployment.json before the first start.
-./scripts/compose.sh pull
-./scripts/compose.sh up -d
-# Open <http://127.0.0.1:3040>
-```
-
-See the [TexLite-Docker README](https://github.com/SWUFE-DB-Group/TexLite-Docker#readme)
-for its user-facing configuration and operations guide.
-
-## Documentation map
-
-| Need                                                                                                                               | Read                                                       |
-| ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Installation, configuration paths, effective defaults, environment overrides, service management, backups, and security boundaries | [Operations guide](OPERATIONS.md)                          |
-| Collaboration, source persistence, compilation isolation, history, and design trade-offs                                           | [Design](DESIGN.md)                                        |
-| Testing an npm package before publication                                                                                          | [NPM testing guide](NPM_TESTING.md)                        |
-| Complete configuration starting point                                                                                              | [texlite.config.example.json](texlite.config.example.json) |
-
-## Scope and security
-
-TexLite is a single-host application for trusted users. It is not a compiler
-sandbox: LaTeX and an enabled project `latexmkrc` can execute powerful local
-behaviour.
-For secure small-team access without exposing the service directly, consider
-[Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve).
-If the host is behind NAT and public access is required, you may also consider
-[rathole](https://github.com/rapiz1/rathole) or [frp](https://github.com/fatedier/frp);
-configure authentication and TLS before exposing TexLite to the public Internet.
-
-## License
-
-TexLite is licensed under the GNU Affero General Public License v3.0; see
-[LICENSE](LICENSE). For proprietary modifications or commercial terms that
-differ from AGPL-3.0, contact the copyright holder.
+TexLite 使用 GNU Affero General Public License v3.0，详见
+[LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

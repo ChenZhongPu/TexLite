@@ -35,12 +35,27 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
 
   app.get("/api/admin/users", async (request, reply) => {
     if (!requireAdmin(request, reply, db)) return;
+    const query = request.query as { page?: unknown; pageSize?: unknown; search?: unknown };
+    const page = positivePage(query.page, 1);
+    const pageSize = boundedPageSize(query.pageSize, 20);
+    const search = typeof query.search === "string" ? query.search.trim().slice(0, 100) : "";
+    const pattern = `%${search.replace(/[\\%_]/g, "\\$&")}%`;
+    const where = search ? "WHERE u.username LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\' OR COALESCE(u.email, '') LIKE ? ESCAPE '\\'" : "";
+    const countParams = search ? [pattern, pattern, pattern] : [];
+    const totalRow = db.prepare(`SELECT COUNT(*) AS count FROM users u ${where}`).get(...countParams) as { count: number };
+    const total = Number(totalRow.count) || 0;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+    const actualPage = totalPages === 0 ? 1 : Math.min(page, totalPages);
     const users = db.prepare(`
       SELECT u.*,
         (SELECT COUNT(*) FROM projects p WHERE p.owner_id = u.id) AS owned_projects
-      FROM users u ORDER BY u.created_at
-    `).all() as unknown as Array<UserRow & { owned_projects: number }>;
-    return { users: users.map((user) => ({ ...publicUser(user), ownedProjects: user.owned_projects })) };
+      FROM users u ${where} ORDER BY u.created_at DESC, u.id DESC LIMIT ? OFFSET ?
+    `).all(...countParams, pageSize, (actualPage - 1) * pageSize) as unknown as Array<UserRow & { owned_projects: number }>;
+    return {
+      users: users.map((user) => ({ ...publicUser(user), ownedProjects: user.owned_projects })),
+      pagination: { page: actualPage, pageSize, total, totalPages },
+      search
+    };
   });
 
   app.post("/api/admin/users", async (request, reply) => {
@@ -53,12 +68,12 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
     const role = body?.role === "admin" ? "admin" : "user";
     const user: UserRow = {
       id: randomUUID(), username, display_name: displayName,
-      password_hash: await hashPassword(password), role, disabled: 0,
+      password_hash: await hashPassword(password), email: null, github_id: null, avatar_url: null, role, disabled: 0,
       must_change_password: 0, can_create_projects: body?.canCreateProjects === true ? 1 : 0, created_at: now()
     };
     db.prepare(`INSERT INTO users
-      (id, username, display_name, password_hash, role, disabled, must_change_password, can_create_projects, created_at)
-      VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)`)
+      (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+      VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, 0, 0, ?, ?)`)
       .run(user.id, user.username, user.display_name, user.password_hash, user.role, user.can_create_projects, user.created_at);
     return reply.code(201).send({ user: publicUser(user) });
   });
@@ -131,8 +146,6 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
       if (body.deleteProjects) {
         db.prepare("DELETE FROM projects WHERE owner_id = ?").run(id);
     } else {
-        db.prepare("UPDATE project_git_settings SET token_ciphertext = NULL, github_login = NULL, updated_at = ? WHERE project_id IN (SELECT id FROM projects WHERE owner_id = ?)")
-          .run(now(), id);
         db.prepare("DELETE FROM project_members WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE owner_id = ?)")
           .run(admin.id, id);
         db.prepare("UPDATE projects SET owner_id = ?, last_modified_by = ?, updated_at = ? WHERE owner_id = ?")
@@ -168,4 +181,15 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
     const rows = db.prepare("SELECT id, username, display_name AS displayName FROM users WHERE disabled = 0 ORDER BY username").all();
     return { users: rows };
   });
+}
+
+function positivePage(value: unknown, fallback: number): number {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return fallback;
+  return Math.max(1, Math.min(100_000, Number.parseInt(value, 10) || fallback));
+}
+
+function boundedPageSize(value: unknown, fallback: number): number {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return [20, 50, 100].includes(parsed) ? parsed : fallback;
 }
