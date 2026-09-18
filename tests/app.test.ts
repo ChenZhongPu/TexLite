@@ -170,6 +170,9 @@ describe("texLite application", () => {
     expect(accepted.statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: `/api/invitations/${invitationId}/accept`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(404);
+    const memberDirectory = await app.inject({ method: "GET", url: `/api/projects/${projectId}/members`, headers: { cookie: oauthUserCookie } });
+    expect(memberDirectory.statusCode).toBe(200);
+    expect(memberDirectory.json().members).toContainEqual(expect.objectContaining({ username: "oauth-invitee", email: "invitee@example.test" }));
 
     const shareReader = await app.inject({
       method: "POST", url: "/api/admin/users", headers: { cookie },
@@ -195,6 +198,10 @@ describe("texLite application", () => {
     expect(linkedProject.json().project).toMatchObject({ permission: "read", shareLinkOnly: true });
     expect((await app.inject({ method: "GET", url: "/api/projects", headers: { cookie: linkedCookie } })).json().projects)
       .not.toContainEqual(expect.objectContaining({ id: projectId }));
+    const linkedMembers = await app.inject({ method: "GET", url: `/api/projects/${projectId}/members`, headers: { cookie: linkedCookie } });
+    expect(linkedMembers.statusCode).toBe(403);
+    expect(linkedMembers.json()).toMatchObject({ code: "PROJECT_MEMBERS_FORBIDDEN" });
+    expect(linkedMembers.json()).not.toHaveProperty("members");
     expect((await app.inject({
       method: "PUT", url: `/api/projects/${projectId}/file`, headers: { cookie: linkedCookie },
       payload: { path: "main.tex", content: "read link cannot edit" }

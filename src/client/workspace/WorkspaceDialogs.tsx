@@ -171,7 +171,7 @@ export function WorkspaceDialogs({
       </label>
       {commentSelection.selectedText && <blockquote className="selection-preview">{commentSelection.selectedText}</blockquote>}
     </Modal>
-    <ShareDialog open={shareOpen} onOpenChange={setShareOpen} project={project} projectId={projectId} />
+    {!project.shareLinkOnly && <ShareDialog open={shareOpen} onOpenChange={setShareOpen} project={project} projectId={projectId} />}
     {citationLibraryOpen && <LazyModal title={t("citationLibrary.title")} onClose={() => setCitationLibraryOpen(false)}><CitationLibraryDialog open onOpenChange={setCitationLibraryOpen} currentFile={activeFile} currentSource={content} readOnly={readOnly} currentUserId={user.id} maxBibtexBytes={maxCitationBibtexBytes} onInsert={insertCitationAtCursor} /></LazyModal>}
     {quickOpen && <Suspense fallback={null}><QuickOpenDialog open files={files} onOpenChange={setQuickOpen} onOpenFile={(filePath) => { const entry = files.find((file) => file.path === filePath); if (entry) openFile(entry); }} /></Suspense>}
     {projectSearchOpen && <Suspense fallback={null}><ProjectSearchDialog open project={project} onOpenChange={setProjectSearchOpen} onJump={(filePath, line, column) => { if (workspaceLayout === "pdf-only") changeWorkspaceLayout("editor-pdf"); jumpToSource(filePath, line, column); }} /></Suspense>}

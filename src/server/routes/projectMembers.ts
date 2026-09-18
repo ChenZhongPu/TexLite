@@ -108,7 +108,11 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const project = accessibleProject(db, id, user);
+    if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    // A share link grants document read access, not access to the project's
+    // collaborator directory or the email addresses used for invitations.
+    if (project.share_link_only) return apiError(reply, 403, "PROJECT_MEMBERS_FORBIDDEN");
     const members = db.prepare(`SELECT pm.user_id AS id, u.username, u.email, u.display_name AS displayName, pm.permission
       FROM project_members pm JOIN users u ON u.id = pm.user_id WHERE pm.project_id = ? ORDER BY u.username`).all(id);
     return { members };
