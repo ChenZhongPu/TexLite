@@ -168,7 +168,9 @@ describe("texLite application", () => {
 
     const accepted = await app.inject({ method: "POST", url: `/api/invitations/${invitationId}/accept`, headers: { cookie: oauthUserCookie } });
     expect(accepted.statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
+    const acceptedProject = await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } });
+    expect(acceptedProject.statusCode).toBe(200);
+    expect(acceptedProject.json().project).toMatchObject({ lastModifiedUsername: "admin", lastModifiedDisplayName: "Administrator" });
     expect((await app.inject({ method: "POST", url: `/api/invitations/${invitationId}/accept`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(404);
     const memberDirectory = await app.inject({ method: "GET", url: `/api/projects/${projectId}/members`, headers: { cookie: oauthUserCookie } });
     expect(memberDirectory.statusCode).toBe(200);

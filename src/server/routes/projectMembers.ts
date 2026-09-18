@@ -86,7 +86,8 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
         .run(invitation.project_id, user.id, invitation.permission, changedAt);
       db.prepare("UPDATE project_invitations SET status = 'accepted', responded_at = ? WHERE id = ? AND status = 'pending'")
         .run(changedAt, invitation.id);
-      touchProject(db, invitation.project_id, user.id);
+      // Accepting a membership invitation changes access only; it must not
+      // attribute a document modification to the newly added collaborator.
     })();
     collaboration.notifyPermissionChanged(invitation.project_id, user.id, invitation.permission);
     return { ok: true, projectId: invitation.project_id };
