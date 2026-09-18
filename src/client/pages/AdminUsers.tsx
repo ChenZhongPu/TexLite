@@ -1,11 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
 import { ConfirmDialog, Modal } from "../Dialog";
 import { errorMessage } from "../errors";
 import type { SiteConfig, User } from "../types";
 import {
-  ChevronLeft, ChevronRight, Dices, FolderCheck, FolderX, KeyRound, LoaderCircle, Search, ShieldCheck, ShieldOff, Trash2,
+  ChevronLeft, ChevronRight, Dices, FolderCheck, FolderX, KeyRound, LoaderCircle, MoreHorizontal, Search, ShieldCheck, ShieldOff, Trash2,
   UserCheck, UserPlus, UserX, Users, X
 } from "lucide-react";
 
@@ -20,6 +20,65 @@ type RestrictedUserSetting = "disable" | "demote" | "denyProjectCreation";
 interface PendingUserSetting {
   target: User;
   setting: RestrictedUserSetting;
+}
+
+function AdminUserActionMenu({
+  target,
+  currentUserId,
+  menuOpen,
+  onToggleMenu,
+  onCloseMenu,
+  onToggle,
+  onToggleRole,
+  onToggleProjectCreation,
+  onResetPassword,
+  onDelete
+}: {
+  target: User;
+  currentUserId: string;
+  menuOpen: boolean;
+  onToggleMenu: () => void;
+  onCloseMenu: () => void;
+  onToggle: () => void;
+  onToggleRole: () => void;
+  onToggleProjectCreation: () => void;
+  onResetPassword: () => void;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation();
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeWhenOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) onCloseMenu();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCloseMenu();
+    };
+    document.addEventListener("pointerdown", closeWhenOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeWhenOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen, onCloseMenu]);
+  const select = (action: () => void) => {
+    onCloseMenu();
+    action();
+  };
+  return <div ref={root} className="project-action-menu-root project-action-menu-list admin-user-actions-root" onClick={(event) => event.stopPropagation()}>
+    <button type="button" className="project-action-menu-trigger" aria-label={t("users.actions")} aria-expanded={menuOpen} onClick={onToggleMenu}>
+      <MoreHorizontal aria-hidden size={19} />
+    </button>
+    {menuOpen && <div className="project-action-menu admin-user-actions-menu" role="menu" aria-label={t("users.actions")}>
+      <button type="button" role="menuitem" disabled={target.id === currentUserId} onClick={() => select(onToggle)}>{target.disabled ? <UserCheck aria-hidden size={15} /> : <UserX aria-hidden size={15} />}{target.disabled ? t("users.enable") : t("users.disable")}</button>
+      <button type="button" role="menuitem" disabled={target.id === currentUserId} onClick={() => select(onToggleRole)}>{target.role === "admin" ? <ShieldOff aria-hidden size={15} /> : <ShieldCheck aria-hidden size={15} />}{target.role === "admin" ? t("users.demote") : t("users.promote")}</button>
+      <button type="button" role="menuitem" disabled={target.role === "admin"} onClick={() => select(onToggleProjectCreation)}>{target.canCreateProjects ? <FolderX aria-hidden size={15} /> : <FolderCheck aria-hidden size={15} />}{target.canCreateProjects ? t("users.denyCreate") : t("users.allowCreate")}</button>
+      <button type="button" role="menuitem" onClick={() => select(onResetPassword)}><KeyRound aria-hidden size={15} />{t("users.resetPassword")}</button>
+      <div className="project-action-menu-separator" aria-hidden="true" />
+      <button type="button" role="menuitem" className="danger" disabled={target.id === currentUserId} onClick={() => select(onDelete)}><Trash2 aria-hidden size={15} />{t("common.delete")}</button>
+    </div>}
+  </div>;
 }
 
 export function AdminUsers({ currentUser, minPasswordLength }: { currentUser: User; minPasswordLength: SiteConfig["minPasswordLength"] }) {
@@ -37,6 +96,7 @@ export function AdminUsers({ currentUser, minPasswordLength }: { currentUser: Us
   const [pendingSetting, setPendingSetting] = useState<PendingUserSetting | null>(null);
   const [pendingSettingBusy, setPendingSettingBusy] = useState(false);
   const [pendingSettingError, setPendingSettingError] = useState("");
+  const [openUserMenuId, setOpenUserMenuId] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -137,13 +197,9 @@ export function AdminUsers({ currentUser, minPasswordLength }: { currentUser: Us
     <div className="section-title"><div><h1><Users aria-hidden size={25} />{t("users.manage")}</h1><p className="muted">{t("users.onlyAdmin")}</p></div><button className="primary icon-button" onClick={() => setCreateOpen(true)}><UserPlus aria-hidden size={15} />{t("users.add")}</button></div>
     {error && <p className="error">{error}</p>}
     <form className="admin-user-search" onSubmit={submitSearch}><Search aria-hidden size={16} /><input type="search" value={searchInput} placeholder={t("users.searchPlaceholder")} onChange={(event) => setSearchInput(event.target.value)} /><button type="submit">{t("common.search")}</button></form>
-    <div className="table-card"><table><thead><tr><th>{t("common.user")}</th><th>{t("users.email")}</th><th>{t("users.role")}</th><th>{t("users.createProjects")}</th><th>{t("users.ownedProjects")}</th><th>{t("users.status")}</th><th>{t("users.actions")}</th></tr></thead>
-      <tbody>{users.map((target) => <tr key={target.id}><td><strong>{target.displayName}</strong><small>@{target.username}</small></td><td><span>{target.email ?? "—"}</span>{target.githubConnected && <small>{t("users.githubConnected")}</small>}</td><td>{target.role === "admin" ? t("common.admin") : t("common.user")}</td><td>{target.canCreateProjects ? t("users.allow") : t("users.deny")}</td><td>{target.ownedProjects}</td><td>{target.disabled ? t("common.disabled") : t("common.normal")}</td><td>
-        <button className="icon-button" disabled={target.id === currentUser.id} onClick={() => toggle(target)}>{target.disabled ? <UserCheck aria-hidden size={13} /> : <UserX aria-hidden size={13} />}{target.disabled ? t("users.enable") : t("users.disable")}</button>
-        <button className="icon-button" disabled={target.id === currentUser.id} onClick={() => toggleRole(target)}>{target.role === "admin" ? <ShieldOff aria-hidden size={13} /> : <ShieldCheck aria-hidden size={13} />}{target.role === "admin" ? t("users.demote") : t("users.promote")}</button>
-        <button className="icon-button" disabled={target.role === "admin"} onClick={() => toggleProjectCreation(target)}>{target.canCreateProjects ? <FolderX aria-hidden size={13} /> : <FolderCheck aria-hidden size={13} />}{target.canCreateProjects ? t("users.denyCreate") : t("users.allowCreate")}</button>
-        <button className="icon-button" onClick={() => { setResetTarget(target); setResetValue(""); }}><KeyRound aria-hidden size={13} />{t("users.resetPassword")}</button>
-        <button className="icon-button danger-text" disabled={target.id === currentUser.id} onClick={() => { setDeleteTarget(target); setDeleteProjects(false); setDeleteError(""); }}><Trash2 aria-hidden size={13} />{t("common.delete")}</button>
+    <div className="table-card admin-users-table-card"><table className={`admin-users-table${openUserMenuId ? " admin-users-menu-active" : ""}`}><thead><tr><th>{t("common.user")}</th><th>{t("users.email")}</th><th>{t("users.role")}</th><th>{t("users.createProjects")}</th><th>{t("users.ownedProjects")}</th><th>{t("users.status")}</th><th>{t("users.actions")}</th></tr></thead>
+      <tbody>{users.map((target) => <tr className={openUserMenuId === target.id ? "admin-user-row-menu-open" : undefined} key={target.id}><td><strong>{target.displayName}</strong><small>@{target.username}</small></td><td><span>{target.email ?? "—"}</span>{target.githubConnected && <small>{t("users.githubConnected")}</small>}</td><td>{target.role === "admin" ? t("common.admin") : t("common.user")}</td><td>{target.canCreateProjects ? t("users.allow") : t("users.deny")}</td><td>{target.ownedProjects}</td><td>{target.disabled ? t("common.disabled") : t("common.normal")}</td><td>
+        <AdminUserActionMenu target={target} currentUserId={currentUser.id} menuOpen={openUserMenuId === target.id} onToggleMenu={() => setOpenUserMenuId((current) => current === target.id ? null : target.id)} onCloseMenu={() => setOpenUserMenuId((current) => current === target.id ? null : current)} onToggle={() => { void toggle(target); }} onToggleRole={() => { void toggleRole(target); }} onToggleProjectCreation={() => { void toggleProjectCreation(target); }} onResetPassword={() => { setResetTarget(target); setResetValue(""); }} onDelete={() => { setDeleteTarget(target); setDeleteProjects(false); setDeleteError(""); }} />
       </td></tr>)}</tbody></table></div>
     <div className="pagination-bar"><label>{t("users.pageSize")}<select value={pageSize} onChange={(event) => { const next = Number(event.target.value); setPageSize(next); void load(1, search, next); }}><option value={20}>20</option><option value={50}>50</option><option value={100}>100</option></select></label><span>{t("users.pageOf", { page: pagination.page, totalPages: pagination.totalPages || 1, count: pagination.total })}</span><button className="icon-button" disabled={pagination.page <= 1} onClick={() => void load(pagination.page - 1)}><ChevronLeft size={14} />{t("users.previousPage")}</button><button className="icon-button" disabled={pagination.totalPages === 0 || pagination.page >= pagination.totalPages} onClick={() => void load(pagination.page + 1)}>{t("users.nextPage")}<ChevronRight size={14} /></button></div>
     <Modal open={createOpen} title={t("users.add")} description={t("users.addDescription")} onOpenChange={setCreateOpen} footer={<><button className="icon-button" onClick={() => setCreateOpen(false)}><X aria-hidden size={14} />{t("common.cancel")}</button><button className="primary icon-button" disabled={createForm.password.length < minPasswordLength} onClick={() => void create()}><UserPlus aria-hidden size={14} />{t("users.createUser")}</button></>}>
