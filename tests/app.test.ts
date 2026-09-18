@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import type { OutgoingHttpHeaders } from "node:http";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -14,9 +14,6 @@ import { openDatabase, type DatabaseConnection } from "../src/server/db.js";
 import { MAX_CITATION_BIBTEX_BYTES } from "../src/server/limits.js";
 import { hashPassword, MIN_PASSWORD_LENGTH } from "../src/server/security.js";
 import { sourceRoot } from "../src/server/files.js";
-
-const hostHarperAvailable = spawnSync("harper-cli", ["--version"], { stdio: "ignore" }).status === 0;
-const hostHarperIt = hostHarperAvailable ? it : it.skip;
 
 function citationPayload(citationKey: string, title: string, bibtex: string, extras: Record<string, unknown> = {}): Record<string, unknown> {
   return { bibtex, citationKey, entryType: "article", title, authors: null, year: "2026", ...extras };
@@ -251,7 +248,7 @@ describe("texLite application", () => {
     expect(stale.json()).toMatchObject({ code: "AUTH_REQUIRED" });
   });
 
-  hostHarperIt("runs authenticated spellcheck through the optional host service", async () => {
+  it("runs authenticated spellcheck through the bundled Harper.js service", async () => {
     const created = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Server spellcheck" } });
     const response = await app.inject({
       method: "POST", url: `/api/projects/${created.json().project.id}/spellcheck`, headers: { cookie },

@@ -1,5 +1,14 @@
 # Third-party notices
 
+## Harper.js
+
+TexLite uses the bundled [Harper.js](https://github.com/Automattic/harper)
+WebAssembly linter for server-side spelling and grammar checks. Its
+documentation is available at
+[writewithharper.com/docs/harperjs/introduction](https://writewithharper.com/docs/harperjs/introduction).
+Harper.js is distributed under the Apache License 2.0; the dependency retains
+its upstream license and copyright information.
+
 ## TeXlyre/codemirror-lang-bib
 
 TexLite's internal BibTeX CodeMirror language module derives from

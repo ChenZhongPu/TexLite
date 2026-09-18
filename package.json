@@ -81,6 +81,7 @@
     "bibtex-tidy": "1.14.0",
     "diff-match-patch": "^1.0.5",
     "fastify": "^5.4.0",
+    "harper.js": "^2.10.0",
     "i18next": "^25.3.2",
     "i18next-browser-languagedetector": "^8.2.0",
     "katex": "^0.18.4",

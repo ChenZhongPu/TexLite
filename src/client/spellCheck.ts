@@ -91,12 +91,12 @@ function resolveLintSpan(source: string, lint: RawHarperLint, scalarOffsetsMap: 
   const valid = (candidate: Span): boolean => candidate.from >= 0 && candidate.to > candidate.from && candidate.to <= source.length;
   const matches = (candidate: Span): boolean => valid(candidate) && source.slice(candidate.from, candidate.to) === lint.problem;
 
-  // `harper-cli` reports Unicode scalar positions. The server-side mask keeps
-  // that coordinate system intact even when it hides an astral character.
+  // Harper.js returns UTF-16 offsets. The server-side mask preserves the
+  // original coordinate system even when it hides an astral character.
   if (matches(scalar)) return scalar;
-  // Retain a narrow compatibility fallback for a CLI release that may report
-  // UTF-16 offsets, but never accept an unverified range. A mismatch means
-  // Harper linted masked LaTeX syntax rather than source prose.
+  // Retain a narrow scalar-offset fallback for older server responses, but
+  // never accept an unverified range. A mismatch means Harper linted masked
+  // LaTeX syntax rather than source prose.
   if (matches(direct)) return direct;
   return null;
 }

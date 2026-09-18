@@ -1,10 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HarperLintSupersededError as ServerHarperLintSupersededError,
   HarperService,
-  HarperUnavailableError,
-  parseHarperCliOutput
+  type RawHarperLint as ServerRawHarperLint
 } from "../src/server/harper";
 import { maskLatexSource } from "../src/server/latexSpellMask";
 import { HarperLintSupersededError, lintLatex, mapLatexLints, type RawHarperLint } from "../src/client/spellCheck";
@@ -28,7 +26,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** A deterministic CLI substitute for testing scheduler behaviour. */
+/** A deterministic Harper.js substitute for testing scheduler behaviour. */
 class DelayedHarperService extends HarperService {
   readonly firstLintStarted = deferred();
   private readonly releaseFirstLint = deferred();
@@ -42,14 +40,13 @@ class DelayedHarperService extends HarperService {
     this.releaseFirstLint.resolve();
   }
 
-  protected override async runCommand(args: string[], _timeoutMs: number, _outputLimit: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
-    if (args[0] === "--version") return { code: 0, stdout: "harper-cli test", stderr: "" };
+  protected override async runLint(_source: string, _filePath: string): Promise<ServerRawHarperLint[]> {
     this.lintRuns += 1;
     if (this.lintRuns === 1) {
       this.firstLintStarted.resolve();
       await this.releaseFirstLint.promise;
     }
-    return { code: 0, stdout: "[]", stderr: "" };
+    return [];
   }
 }
 
@@ -72,7 +69,7 @@ describe("Harper writing checks", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("linearly masks complex LaTeX syntax while preserving prose and Unicode scalar offsets", () => {
+  it("linearly masks complex LaTeX syntax while preserving prose and UTF-16 offsets", () => {
     const source = String.raw`\documentclass{article}
 \usepackage[final]{acl}
 \section{A mispeled heading}
@@ -93,7 +90,7 @@ mispeled
 https://example.invalid/mispeled`;
     const masked = maskLatexSource(source);
 
-    expect([...masked]).toHaveLength([...source].length);
+    expect(masked).toHaveLength(source.length);
     expect(masked).toContain("A mispeled heading");
     expect(masked).toContain("Visible mispeled prose.");
     for (const syntax of ["article", "acl", "final", "comment mispeled", "missingCitation", "sec:mispeled", "rqblue", "colorbar", "llll", "\\node", "https://example.invalid/mispeled"]) {
@@ -209,7 +206,7 @@ Final prose.`;
       expect(masked).not.toContain(hidden);
     }
     for (const prose of ["Visible misspeled prose.", "More misspeled prose.", "Final prose."]) expect(masked).toContain(prose);
-    expect([...masked]).toHaveLength([...source].length);
+    expect(masked).toHaveLength(source.length);
   });
 
   it("does not backtrack on repeated LaTeX line-break options or unmatched math", () => {
@@ -402,51 +399,21 @@ Visible wrng prose.`;
     expect(issue).toMatchObject({ word: "Their", kind: "grammar", from: 7, to: 12, suggestions: ["They're"] });
   });
 
-  it("keeps Harper scalar positions aligned after an astral character in masked LaTeX", async () => {
+  it("keeps Harper positions aligned after an astral character in masked LaTeX", async () => {
     const source = "% ignored 😀 misspeled comment\nVisible wrng prose.";
     const masked = maskLatexSource(source);
     const { start, end } = scalarOffset(source, "wrng");
 
-    expect([...masked]).toHaveLength([...source].length);
+    expect(masked).toHaveLength(source.length);
     expect(masked).not.toContain("misspeled comment");
     const [issue] = await mapLatexLints(source, [], [{ start, end, problem: "wrng", kind: "Spelling", message: "Issue", suggestions: [] }]);
     expect(issue).toMatchObject({ word: "wrng", from: source.indexOf("wrng") });
   });
 
-  it("parses Harper CLI JSON and retains directly applicable replacements", () => {
-    const output = JSON.stringify([{
-      file: "document.tex",
-      lints: [
-        {
-          kind: "Spelling", message: "Did you mean to spell `wrng` this way?", matched_text: "wrng",
-          span: { char_start: 4, char_end: 8 },
-          suggestions: ["Replace with: “wrong”", "Replace with: “wrong”", "Ignore this issue"]
-        },
-        { kind: "Spelling", span: { char_start: "bad", char_end: 8 } }
-      ]
-    }]);
-
-    expect(parseHarperCliOutput(output)).toEqual([{
-      start: 4, end: 8, problem: "wrng", kind: "Spelling",
-      message: "Did you mean to spell `wrng` this way?", suggestions: ["wrong"]
-    }]);
-  });
-
-  it("treats a missing optional host command as a recoverable service error", async () => {
-    const harper = new HarperService("texlite-test-missing-harper-command");
-    try {
-      await expect(harper.lint("A misspeled sentence.", "main.tex")).rejects.toBeInstanceOf(HarperUnavailableError);
-    } finally {
-      await harper.dispose();
-    }
-  });
 });
 
-const hostHarperAvailable = spawnSync("harper-cli", ["--version"], { stdio: "ignore" }).status === 0;
-const nativeHarperIt = hostHarperAvailable ? it : it.skip;
-
-describe("optional host Harper integration", () => {
-  nativeHarperIt("uses Harper's native TeX parser for comments, citations, math, and TikZ", async () => {
+describe("bundled Harper.js integration", () => {
+  it("uses Harper.js with masked LaTeX source for comments, citations, math, and TikZ", async () => {
     const harper = new HarperService();
     const source = String.raw`\section{Title}
 This sentence has wrng prose.

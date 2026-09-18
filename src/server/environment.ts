@@ -130,9 +130,7 @@ function optionalToolDefinitions(): EnvironmentToolDefinition[] {
     { id: "texcount", name: "TeXcount", command: "texcount", requirement: "optional", purpose: "Word and character statistics", versionArgs: ["-version"] },
     { id: "bibtex", name: "BibTeX", command: "bibtex", requirement: "optional", purpose: "BibTeX bibliography builds" },
     { id: "biber", name: "Biber", command: "biber", requirement: "optional", purpose: "Biber bibliography builds" },
-    { id: "makeindex", name: "MakeIndex", command: "makeindex", requirement: "optional", purpose: "Index generation", versionArgs: [] },
-    { id: "harper-cli", name: "Harper CLI", command: "harper-cli", requirement: "optional", purpose: "TexLite spelling and grammar checks" },
-    { id: "harper-ls", name: "Harper language server", command: "harper-ls", requirement: "optional", purpose: "External editor integration (not used by TexLite)" }
+    { id: "makeindex", name: "MakeIndex", command: "makeindex", requirement: "optional", purpose: "Index generation", versionArgs: [] }
   ];
 }
 

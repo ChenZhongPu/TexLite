@@ -279,7 +279,7 @@
     "editorAppearance": "编辑器外观", "editorAppearanceDescription": "这些偏好仅作用于当前浏览器中的当前用户和项目；项目词典是共享的。",
     "browserTools": "格式化工具", "toolStatus": { "loading": "加载中", "working": "运行正常", "error": "错误" }, "reloadTool": "重新加载",
     "saveAppearance": "保存外观设置", "saveCompiler": "保存编译器设置",
-    "writingCheckDescription": "TexLite 使用宿主机上可选的 Harper CLI。若其不可用，将自动改用浏览器内置拼写检查。拼写问题使用红色波浪线，语法问题使用黄色波浪线；右键问题可以查看修改建议。",
+    "writingCheckDescription": "TexLite 使用内置的 Harper.js 进行服务端写作检查。若其不可用，将自动改用浏览器内置拼写检查。拼写问题使用红色波浪线，语法问题使用黄色波浪线；右键问题可以查看修改建议。",
     "projectConfiguration": "项目配置", "fontFamily": "英文字体", "fontSize": "字体大小", "lineHeight": "行间距",
     "dictionary": "项目词典", "dictionaryDescription": "添加到这里的词会在 Harper 返回本项目诊断后被忽略；具有编辑权限的用户可以维护此列表。", "dictionaryPlaceholder": "添加自定义词", "addWord": "添加词", "dictionaryEmpty": "暂未添加自定义词。",
     "showTooltips": "显示界面悬停提示", "showTooltipsDescription": "显示项目工作区控件的悬停提示；不影响右键写作建议。",
@@ -338,7 +338,7 @@
     "denyProjectCreationTitle": "移除项目创建权限", "denyProjectCreationDescription": "确定移除 @{{username}} 创建新项目的权限吗？其已有项目访问权限不受影响。", "denyProjectCreationConfirm": "移除权限"
   },
   "compileControls": { "cancel": "取消编译", "cancelling": "正在取消…", "cancelled": "编译已取消。" },
-  "footer": { "tagline": "面向小型研究团队的自托管 LaTeX 协作平台", "copyright": "© {{year}}" },
+  "footer": { "tagline": "LaTeX 协作平台", "copyright": "© {{year}}", "modifiedFromPrefix": "基于 ", "modifiedFromSuffix": " 修改" },
   "completions": {
     "section": "章节", "subsection": "小节", "bold": "粗体", "emphasis": "强调", "citation": "引用文献", "reference": "交叉引用",
     "label": "标签", "image": "插入图片", "unordered": "无序列表", "ordered": "有序列表", "equation": "公式", "figure": "图片环境",

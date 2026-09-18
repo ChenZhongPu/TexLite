@@ -393,7 +393,7 @@ export function ignoredLatexRanges(source: string): Span[] {
   return mergeOrderedRanges(ranges);
 }
 
-/** Replace syntax with spaces while retaining Unicode-scalar offsets and line breaks. */
+/** Replace syntax with spaces while retaining UTF-16 offsets and line breaks. */
 export function maskLatexSource(source: string): string {
   const ranges = ignoredLatexRanges(source);
   const chars: string[] = [];
@@ -403,9 +403,9 @@ export function maskLatexSource(source: string): string {
     while (rangeIndex < ranges.length && ranges[rangeIndex].to <= offset) rangeIndex += 1;
     const range = ranges[rangeIndex];
     const masked = range && range.from <= offset && offset < range.to && character !== "\n" && character !== "\r";
-    // `harper-cli` reports Unicode scalar positions. One space for every
-    // source scalar keeps diagnostics aligned after masked astral characters.
-    chars.push(masked ? " " : character);
+    // Harper.js reports UTF-16 positions. Preserve the source code-unit width
+    // when masking astral characters so diagnostics remain aligned.
+    chars.push(masked ? " ".repeat(character.length) : character);
     offset += character.length;
   }
   return chars.join("");

@@ -112,7 +112,7 @@ export function useSpellCheck({ active, projectId, activeFile, content, dictiona
 
   useEffect(() => {
     if (!failure || !active) return;
-    // Host Harper is a best-effort service. Keep the browser spellchecker fallback
+    // Server-side Harper.js is a best-effort service. Keep the browser spellchecker fallback
     // active immediately, but retry in the background so one temporary
     // network/worker failure does not become a permanent state. Going back
     // online retries at once; the timer is deliberately long enough not to

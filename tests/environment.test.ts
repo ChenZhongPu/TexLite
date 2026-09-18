@@ -33,7 +33,7 @@ describe("startup environment checks", () => {
     const tools = await inspectHostEnvironment({ ...testConfig(), git: "/definitely/missing/texlite-git" });
     expect(tools.find((tool) => tool.id === "node")).toMatchObject({ requirement: "required", status: "installed" });
     expect(tools.find((tool) => tool.id === "texcount")).toMatchObject({ requirement: "optional", purpose: "Word and character statistics" });
-    expect(tools.find((tool) => tool.id === "harper-ls")).toMatchObject({ requirement: "optional" });
+    expect(tools.some((tool) => tool.id === "harper-cli" || tool.id === "harper-ls")).toBe(false);
   });
 
   it("can inspect default host requirements without reading configuration", async () => {

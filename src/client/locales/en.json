@@ -290,7 +290,7 @@
     "editorAppearance": "Editor appearance", "editorAppearanceDescription": "These preferences are private to this user and project on this browser. The project dictionary is shared.",
     "browserTools": "Formatting tools", "toolStatus": { "loading": "Loading", "working": "Working", "error": "Error" }, "reloadTool": "Reload",
     "saveAppearance": "Save appearance", "saveCompiler": "Save compiler settings",
-    "writingCheckDescription": "TexLite uses the optional host-installed Harper CLI. If it is unavailable, the browser spellchecker takes over. Spelling issues use a red wavy underline; grammar issues use yellow. Right-click an issue for suggestions.",
+    "writingCheckDescription": "TexLite uses the bundled Harper.js linter on the server. If it is unavailable, the browser spellchecker takes over. Spelling issues use a red wavy underline; grammar issues use yellow. Right-click an issue for suggestions.",
     "projectConfiguration": "Project configuration", "fontFamily": "English font", "fontSize": "Font size", "lineHeight": "Line spacing",
     "dictionary": "Project dictionary", "dictionaryDescription": "Words added here are ignored after Harper returns this project's spelling diagnostics. Editors can maintain this list.", "dictionaryPlaceholder": "Add a custom word", "addWord": "Add word", "dictionaryEmpty": "No custom words yet.",
     "showTooltips": "Show interface tooltips", "showTooltipsDescription": "Show hover hints for workspace controls. This does not affect right-click writing suggestions.",
@@ -350,7 +350,7 @@
     "denyProjectCreationTitle": "Remove project creation", "denyProjectCreationDescription": "Remove @{{username}}’s permission to create new projects? Their existing project access is unchanged.", "denyProjectCreationConfirm": "Remove permission"
   },
   "compileControls": { "cancel": "Cancel compile", "cancelling": "Cancelling…", "cancelled": "Compilation cancelled." },
-  "footer": { "tagline": "Self-hosted LaTeX collaboration for small research teams", "copyright": "© {{year}}" },
+  "footer": { "tagline": "LaTeX collaboration platform", "copyright": "© {{year}}", "modifiedFromPrefix": "Modified from ", "modifiedFromSuffix": "" },
   "completions": {
     "section": "Section", "subsection": "Subsection", "bold": "Bold", "emphasis": "Emphasis", "citation": "Citation",
     "reference": "Cross-reference", "label": "Label", "image": "Image", "unordered": "Unordered list", "ordered": "Ordered list",

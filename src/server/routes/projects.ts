@@ -448,9 +448,9 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       if (error instanceof HarperLintSupersededError) {
         return apiError(reply, 409, "SPELLCHECK_SUPERSEDED");
       }
-      // A missing optional command is an expected fallback condition. Keep it
-      // out of normal logs while preserving diagnostics for an actual failure.
-      if (error instanceof HarperUnavailableError) request.log.debug({ projectId: id }, "Host Harper CLI unavailable; using browser fallback");
+      // Harper.js initialization failures are an expected fallback condition.
+      // Keep them out of normal logs while preserving diagnostics otherwise.
+      if (error instanceof HarperUnavailableError) request.log.debug({ projectId: id }, "Harper.js unavailable; using browser fallback");
       else request.log.error({ err: error, projectId: id }, "Harper writing check failed");
       return apiError(reply, 503, "HARPER_UNAVAILABLE");
     }

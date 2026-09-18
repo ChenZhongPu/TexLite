@@ -382,7 +382,7 @@ export function formatDoctorReport(report: DoctorReport, colors = false): string
     formatHostSoftwareTable(report.hostTools, colors),
     "",
     hostRequirementNote(report.hostTools, "start TexLite"),
-    "Harper CLI is used by TexLite; harper-ls is reported for host diagnostics and external editor integrations."
+    "Harper.js is bundled and runs in-process; no host Harper installation is required."
   ].join("\n");
 }
 
@@ -397,7 +397,7 @@ export function formatRequirementsReport(report: RequirementsReport, colors = fa
     "",
     hostRequirementNote(report.hostTools, "compile with TexLite"),
     "This command does not read a TexLite configuration, data directory, database, or administrator state.",
-    "Harper CLI is used by TexLite; harper-ls is reported for host diagnostics and external editor integrations."
+    "Harper.js is bundled and runs in-process; no host Harper installation is required."
   ].join("\n");
 }
 

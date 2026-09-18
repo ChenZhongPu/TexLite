@@ -100,9 +100,9 @@ export async function buildApp(
   const projectOutlines = new ProjectOutlineService(config);
   const harper = new HarperService();
   const texcount = new TexcountService();
-  // Probe the optional host Harper CLI without delaying startup. Its absence is
-  // supported: the browser spellchecker remains the writing-check fallback.
-  void harper.preload().catch((error) => app.log.info({ err: error }, "Optional Harper CLI is unavailable"));
+  // Warm the bundled Harper.js WASM linter without delaying startup. If its
+  // runtime cannot initialize, the browser spellchecker remains the fallback.
+  void harper.preload().catch((error) => app.log.info({ err: error }, "Bundled Harper.js is unavailable"));
   const failedSnapshots = new Set<string>();
   const failedEdits = new Map<string, "retrying" | "incomplete">();
   const signalHistory = (id: string) => collaboration.setHistoryWarning(id, failedSnapshots.has(id) || failedEdits.has(id));
