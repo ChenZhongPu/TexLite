@@ -31,7 +31,7 @@
     "defaultEngine": "xelatex",
     "allowedEngines": ["pdflatex", "xelatex", "lualatex"],
     "extraArgs": [],
-    "compileTimeoutSeconds": 600,
+    "compileTimeoutSeconds": 120,
     "maxCompileJobs": 10
   }
 }

@@ -27,7 +27,7 @@ export const CONFIG_DEFAULTS = {
   dataDir: defaultDataDirectory(),
   clientDir: packageClientDirectory(),
   sessionDays: 14,
-  compileTimeoutSeconds: 600,
+  compileTimeoutSeconds: 120,
   maxCompileJobs: 10,
   latexmk: "latexmk",
   defaultEngine: "xelatex" as LatexEngine,

@@ -71,7 +71,7 @@ describe("configuration", () => {
     const config = loadConfig();
     expect(config).toMatchObject({
       siteName: "TexLite", host: "127.0.0.1", port: 3000, basePath: "/", sessionDays: 14,
-      compileTimeoutMs: 600_000, maxCompileJobs: 10, defaultEngine: "xelatex",
+      compileTimeoutMs: 120_000, maxCompileJobs: 10, defaultEngine: "xelatex",
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], maxUploadBytes: 50 * 1024 * 1024,
       pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
       historyMaxVersions: 0, historyMaxStorageBytes: 128 * 1024 * 1024,
