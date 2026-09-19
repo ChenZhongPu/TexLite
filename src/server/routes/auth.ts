@@ -61,7 +61,7 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
     const returnPath = safeReturnPath(query.return, config.basePath);
     const state = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
-    const redirectUri = oauthRedirectUri(config, request, oauth);
+    const redirectUri = oauth.redirectUri;
     db.prepare("INSERT INTO oauth_states (id, return_path, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(digestToken(state), returnPath, redirectUri, expiresAt, now());
     reply.setCookie("texlite_oauth_state", state, {
@@ -319,12 +319,6 @@ function setSessionCookie(
 
 function requestIsSecure(request: { protocol: string }): boolean {
   return request.protocol === "https";
-}
-
-function oauthRedirectUri(config: Config, request: { protocol: string; headers: Record<string, string | string[] | undefined> }, oauth: GithubOAuthConfig): string {
-  if (oauth.redirectUri) return oauth.redirectUri;
-  const host = typeof request.headers.host === "string" ? request.headers.host : "127.0.0.1";
-  return new URL(`${basePathHref(config.basePath)}auth/github/callback`, `${request.protocol || "http"}://${host}`).toString();
 }
 
 function safeReturnPath(value: unknown, basePath = "/"): string {

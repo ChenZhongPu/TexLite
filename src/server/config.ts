@@ -12,7 +12,7 @@ export type PdfLoadingStrategy = typeof PDF_LOADING_STRATEGIES[number];
 export interface GithubOAuthConfig {
   clientId: string;
   clientSecret: string;
-  redirectUri?: string;
+  redirectUri: string;
   authorizeUrl: string;
   tokenUrl: string;
   apiUrl: string;
@@ -30,7 +30,7 @@ export const CONFIG_DEFAULTS = {
   trustedProxyIps: ["127.0.0.1", "::1"] as string[],
   dataDir: defaultDataDirectory(),
   clientDir: packageClientDirectory(),
-  sessionDays: 14,
+  sessionDays: 7,
   compileTimeoutSeconds: 120,
   maxCompileJobs: 10,
   latexmk: "latexmk",
@@ -42,7 +42,7 @@ export const CONFIG_DEFAULTS = {
   pdfLoadingStrategy: "auto" as PdfLoadingStrategy,
   pdfRangeThresholdMB: 5,
   historyMaxVersions: 0,
-  historyMaxStorageMB: 128,
+  historyMaxStorageMB: 64,
   editHistoryMaxStorageMB: 32,
   githubOAuth: null as GithubOAuthConfig | null,
   // Retained only so old Config fixtures and old config files can be read
@@ -234,6 +234,7 @@ export function validateConfig(config: Config): void {
     optionalString(config.githubOAuth.clientId, "githubOAuth.clientId", { min: 1, max: 256 });
     optionalString(config.githubOAuth.clientSecret, "githubOAuth.clientSecret", { min: 1, max: 512 });
     optionalString(config.githubOAuth.redirectUri, "githubOAuth.redirectUri", { min: 1, max: 2_048 });
+    validateUrl("githubOAuth.redirectUri", config.githubOAuth.redirectUri);
     validateUrl("githubOAuth.authorizeUrl", config.githubOAuth.authorizeUrl);
     validateUrl("githubOAuth.tokenUrl", config.githubOAuth.tokenUrl);
     validateUrl("githubOAuth.apiUrl", config.githubOAuth.apiUrl);
@@ -372,7 +373,7 @@ function validateFileConfig(config: FileConfig): void {
   const githubOAuth = optionalSection(config.githubOAuth, "githubOAuth");
   optionalString(githubOAuth?.clientId, "githubOAuth.clientId", { min: 0, max: 256 });
   optionalString(githubOAuth?.clientSecret, "githubOAuth.clientSecret", { min: 0, max: 512 });
-  optionalString(githubOAuth?.redirectUri, "githubOAuth.redirectUri", { min: 1, max: 2_048 });
+  optionalString(githubOAuth?.redirectUri, "githubOAuth.redirectUri", { min: 0, max: 2_048 });
   optionalString(githubOAuth?.authorizeUrl, "githubOAuth.authorizeUrl", { min: 1, max: 2_048 });
   optionalString(githubOAuth?.tokenUrl, "githubOAuth.tokenUrl", { min: 1, max: 2_048 });
   optionalString(githubOAuth?.apiUrl, "githubOAuth.apiUrl", { min: 1, max: 2_048 });
@@ -429,7 +430,8 @@ function resolveGithubOAuth(fileConfig: FileConfig): GithubOAuthConfig | null {
   if (!clientId || !clientSecret) {
     throw configurationError("githubOAuth", "clientId and clientSecret must be configured together");
   }
-  const redirectUri = process.env.TEXLITE_GITHUB_REDIRECT_URI?.trim() || section?.redirectUri?.trim() || undefined;
+  const redirectUri = process.env.TEXLITE_GITHUB_REDIRECT_URI?.trim() || section?.redirectUri?.trim() || "";
+  if (!redirectUri) throw configurationError("githubOAuth.redirectUri", "must be configured when GitHub OAuth is enabled");
   return {
     clientId,
     clientSecret,

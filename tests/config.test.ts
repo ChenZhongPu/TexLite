@@ -12,7 +12,8 @@ describe("configuration", () => {
     "TEXLITE_PDF_LOADING_STRATEGY", "TEXLITE_PDF_RANGE_THRESHOLD_MB",
     "TEXLITE_HISTORY_MAX_VERSIONS", "TEXLITE_HISTORY_MAX_STORAGE_MB",
     "TEXLITE_EDIT_HISTORY_MAX_STORAGE_MB",
-    "TEXLITE_GIT", "TEXLITE_GIT_TIMEOUT", "TEXLITE_GITHUB_API_URL"
+    "TEXLITE_GIT", "TEXLITE_GIT_TIMEOUT", "TEXLITE_GITHUB_API_URL",
+    "TEXLITE_GITHUB_CLIENT_ID", "TEXLITE_GITHUB_CLIENT_SECRET", "TEXLITE_GITHUB_REDIRECT_URI"
   ] as const;
   const originalEnvironment = new Map(envKeys.map((key) => [key, process.env[key]]));
   let root = "";
@@ -71,15 +72,43 @@ describe("configuration", () => {
     delete process.env.TEXLITE_SITE_NAME;
     const config = loadConfig();
     expect(config).toMatchObject({
-      siteName: "TexLite", host: "127.0.0.1", port: 3000, basePath: "/", sessionDays: 14,
+      siteName: "TexLite", host: "127.0.0.1", port: 3000, basePath: "/", sessionDays: 7,
       trustedProxyIps: ["127.0.0.1", "::1"],
       compileTimeoutMs: 120_000, maxCompileJobs: 10, defaultEngine: "xelatex",
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], maxUploadBytes: 50 * 1024 * 1024,
       pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
-      historyMaxVersions: 0, historyMaxStorageBytes: 128 * 1024 * 1024,
+      historyMaxVersions: 0, historyMaxStorageBytes: 64 * 1024 * 1024,
       editHistoryMaxStorageBytes: 32 * 1024 * 1024,
       git: "git", gitOperationTimeoutMs: 120_000, githubApiBaseUrl: "https://api.github.com"
     });
+  });
+
+  it("requires an explicit redirect URI when GitHub OAuth is enabled", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-github-redirect-"));
+    const configPath = path.join(root, "texlite.config.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      storage: { dataDir: path.join(root, "data") },
+      githubOAuth: { clientId: "client", clientSecret: "secret" }
+    }));
+    process.env.TEXLITE_CONFIG = configPath;
+    delete process.env.TEXLITE_GITHUB_CLIENT_ID;
+    delete process.env.TEXLITE_GITHUB_CLIENT_SECRET;
+    delete process.env.TEXLITE_GITHUB_REDIRECT_URI;
+    expect(() => loadConfig()).toThrow(/githubOAuth\.redirectUri.*configured/);
+  });
+
+  it("allows an empty redirect URI placeholder while GitHub OAuth is disabled", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-github-placeholder-"));
+    const configPath = path.join(root, "texlite.config.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      storage: { dataDir: path.join(root, "data") },
+      githubOAuth: { clientId: "", clientSecret: "", redirectUri: "" }
+    }));
+    process.env.TEXLITE_CONFIG = configPath;
+    delete process.env.TEXLITE_GITHUB_CLIENT_ID;
+    delete process.env.TEXLITE_GITHUB_CLIENT_SECRET;
+    delete process.env.TEXLITE_GITHUB_REDIRECT_URI;
+    expect(loadConfig().githubOAuth).toBeNull();
   });
 
   it("rejects invalid limits instead of silently restoring a default", () => {
