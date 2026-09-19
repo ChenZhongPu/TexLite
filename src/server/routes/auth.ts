@@ -294,17 +294,14 @@ function setSessionCookie(
   });
 }
 
-function requestIsSecure(request: { protocol: string; headers: Record<string, string | string[] | undefined> }): boolean {
-  const forwarded = request.headers["x-forwarded-proto"];
-  return request.protocol === "https" || forwarded === "https" || (Array.isArray(forwarded) && forwarded.includes("https"));
+function requestIsSecure(request: { protocol: string }): boolean {
+  return request.protocol === "https";
 }
 
 function oauthRedirectUri(config: Config, request: { protocol: string; headers: Record<string, string | string[] | undefined> }, oauth: GithubOAuthConfig): string {
   if (oauth.redirectUri) return oauth.redirectUri;
-  const forwardedProto = request.headers["x-forwarded-proto"];
-  const protocol = typeof forwardedProto === "string" ? forwardedProto.split(",")[0]?.trim() : request.protocol;
   const host = typeof request.headers.host === "string" ? request.headers.host : "127.0.0.1";
-  return new URL(`${basePathHref(config.basePath)}auth/github/callback`, `${protocol || "http"}://${host}`).toString();
+  return new URL(`${basePathHref(config.basePath)}auth/github/callback`, `${request.protocol || "http"}://${host}`).toString();
 }
 
 function safeReturnPath(value: unknown, basePath = "/"): string {

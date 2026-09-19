@@ -361,7 +361,6 @@ function isEmail(value: string): boolean {
   return value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-function requestIsSecure(request: { protocol: string; headers: Record<string, string | string[] | undefined> }): boolean {
-  const forwarded = request.headers["x-forwarded-proto"];
-  return request.protocol === "https" || forwarded === "https" || (Array.isArray(forwarded) && forwarded.includes("https"));
+function requestIsSecure(request: { protocol: string }): boolean {
+  return request.protocol === "https";
 }

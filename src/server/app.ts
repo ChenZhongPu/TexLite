@@ -82,9 +82,13 @@ export async function buildApp(
   db: DatabaseConnection,
   options: { logger?: boolean; githubFetch?: typeof fetch } = {}
 ): Promise<FastifyInstance> {
+  const trustedProxyIps = config.trustedProxyIps ?? [];
   const app = Fastify({
     logger: options.logger ?? true,
-    bodyLimit: Math.max(12 * 1024 * 1024, config.maxUploadBytes + 1024 * 1024)
+    bodyLimit: Math.max(12 * 1024 * 1024, config.maxUploadBytes + 1024 * 1024),
+    // Do not accept X-Forwarded-* headers from direct clients. The nearest
+    // peer must be an explicitly configured reverse proxy first.
+    trustProxy: trustedProxyIps.length > 0 ? trustedProxyIps : false
   });
   const queue = new CompileQueue(config.maxCompileJobs);
   const compileCoordinator = new ProjectCompileCoordinator(queue);

@@ -47,6 +47,7 @@ describe("texLite application", () => {
     config = {
       configPath: path.join(root, "config.json"), siteName: "Test texLite", adminEmail: "admin@example.test",
       host: "127.0.0.1", port: 3000, basePath: "/", dataDir: root, databasePath: path.join(root, "texlite.db"),
+      trustedProxyIps: ["10.0.0.2"],
       projectsDir: path.join(root, "projects"), clientDir: path.join(root, "client"), sessionDays: 1,
       compileTimeoutMs: 30_000, maxCompileJobs: 1, latexmk: "latexmk", defaultEngine: "pdflatex",
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], extraArgs: [], allowProjectLatexmkrc: true,
@@ -2368,6 +2369,30 @@ Second version.
     });
     expect(lockedRes.statusCode).toBe(429);
     expect(lockedRes.json().code).toBe("AUTH_RATE_LIMITED");
+  });
+
+  it("uses a trusted proxy's forwarded client address for local-login rate limits", async () => {
+    const testUsername = "forwarded-ratelimit-target";
+    await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: testUsername, displayName: "Forwarded Rate Limit Target", password: "correct-password-123" }
+    });
+
+    const fromClient = (clientIp: string, password: string) => app.inject({
+      method: "POST", url: "/api/auth/login", remoteAddress: "10.0.0.2",
+      headers: { "x-forwarded-for": clientIp },
+      payload: { username: testUsername, password }
+    });
+
+    for (let i = 0; i < 5; i++) {
+      const response = await fromClient("198.51.100.10", "wrong-password");
+      expect(response.statusCode).toBe(i === 4 ? 429 : 401);
+    }
+
+    // This request reaches the same reverse proxy but originates from a
+    // separate client. It must not inherit the first client's lockout.
+    const otherClient = await fromClient("198.51.100.11", "correct-password-123");
+    expect(otherClient.statusCode).toBe(200);
   });
 
   it("returns HTTP 400 for safeRelativePath and short password validation errors", async () => {

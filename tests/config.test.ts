@@ -33,7 +33,7 @@ describe("configuration", () => {
     fs.writeFileSync(configPath, JSON.stringify({
       siteName: "Lab TeX",
       adminEmail: "latex@example.test",
-      server: { basePath: "/tools/texlite/" },
+      server: { basePath: "/tools/texlite/", trustedProxyIps: ["10.42.0.0/16", "::1"] },
       storage: { dataDir: "data" },
       uploads: { maxFileSizeMB: 25 },
       pdf: { loadingStrategy: "range", rangeThresholdMB: 7 },
@@ -46,6 +46,7 @@ describe("configuration", () => {
     const config = loadConfig();
     expect(config.siteName).toBe("Lab TeX");
     expect(config.basePath).toBe("/tools/texlite");
+    expect(config.trustedProxyIps).toEqual(["10.42.0.0/16", "::1"]);
     expect(config.dataDir).toBe(path.join(root, "data"));
     expect(config.defaultEngine).toBe("lualatex");
     expect(config.allowedEngines).toEqual(["lualatex"]);
@@ -71,6 +72,7 @@ describe("configuration", () => {
     const config = loadConfig();
     expect(config).toMatchObject({
       siteName: "TexLite", host: "127.0.0.1", port: 3000, basePath: "/", sessionDays: 14,
+      trustedProxyIps: ["127.0.0.1", "::1"],
       compileTimeoutMs: 120_000, maxCompileJobs: 10, defaultEngine: "xelatex",
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], maxUploadBytes: 50 * 1024 * 1024,
       pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
@@ -134,6 +136,19 @@ describe("configuration", () => {
     expect(() => loadConfig()).toThrow(/server\.basePath/);
     process.env.TEXLITE_BASE_PATH = "/lab/texlite/";
     expect(loadConfig().basePath).toBe("/lab/texlite");
+  });
+
+  it("validates trusted reverse-proxy address lists", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-trusted-proxy-"));
+    const configPath = path.join(root, "texlite.config.json");
+    process.env.TEXLITE_CONFIG = configPath;
+    process.env.TEXLITE_DATA_DIR = path.join(root, "data");
+    fs.writeFileSync(configPath, JSON.stringify({ server: { trustedProxyIps: "127.0.0.1" } }));
+    expect(() => loadConfig()).toThrow(/server\.trustedProxyIps.*list/);
+    fs.writeFileSync(configPath, JSON.stringify({ server: { trustedProxyIps: ["not-an-address"] } }));
+    expect(() => loadConfig()).toThrow(/server\.trustedProxyIps.*IP addresses or CIDR/);
+    fs.writeFileSync(configPath, JSON.stringify({ server: { trustedProxyIps: ["127.0.0.1", " 127.0.0.1 "] } }));
+    expect(() => loadConfig()).toThrow(/server\.trustedProxyIps.*duplicate/);
   });
 
   it("reads a development base path without validating server storage", () => {

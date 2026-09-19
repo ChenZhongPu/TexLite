@@ -129,7 +129,12 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
     siteName,
     adminEmail,
     sessionDays: CONFIG_DEFAULTS.sessionDays,
-    server: { host: process.env.TEXLITE_HOST?.trim() || CONFIG_DEFAULTS.host, port: initialPort, basePath: CONFIG_DEFAULTS.basePath },
+    server: {
+      host: process.env.TEXLITE_HOST?.trim() || CONFIG_DEFAULTS.host,
+      port: initialPort,
+      basePath: CONFIG_DEFAULTS.basePath,
+      trustedProxyIps: CONFIG_DEFAULTS.trustedProxyIps
+    },
     storage: { dataDir: configuredDataDirectory || dataDirectory },
     uploads: { maxFileSizeMB: CONFIG_DEFAULTS.maxFileSizeMB },
     pdf: {

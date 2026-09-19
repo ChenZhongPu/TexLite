@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isIP } from "node:net";
 import path from "node:path";
 import { defaultDataDirectory, packageClientDirectory, resolveConfigPath } from "./runtimePaths.js";
 import { normalizeBasePath, ROOT_BASE_PATH } from "../shared/basePath.js";
@@ -24,6 +25,9 @@ export const CONFIG_DEFAULTS = {
   host: "127.0.0.1",
   port: 3000,
   basePath: ROOT_BASE_PATH,
+  // The default listener is local-only, so a local reverse proxy is safe to
+  // trust for client-address and protocol forwarding headers.
+  trustedProxyIps: ["127.0.0.1", "::1"] as string[],
   dataDir: defaultDataDirectory(),
   clientDir: packageClientDirectory(),
   sessionDays: 14,
@@ -68,6 +72,8 @@ export interface Config {
   host: string;
   port: number;
   basePath: string;
+  /** Direct reverse-proxy IPs/CIDRs allowed to supply forwarding headers. */
+  trustedProxyIps?: string[];
   dataDir: string;
   databasePath: string;
   projectsDir: string;
@@ -162,6 +168,7 @@ export function loadConfig(configPathOverride?: string): Config {
     fileConfig.git?.operationTimeoutSeconds, CONFIG_DEFAULTS.gitOperationTimeoutSeconds, CONFIG_LIMITS.gitOperationTimeoutSeconds
   );
   const basePath = resolveBasePath(fileConfig);
+  const trustedProxyIps = resolveTrustedProxyIps(fileConfig);
   const githubOAuth = resolveGithubOAuth(fileConfig);
 
   const config: Config = {
@@ -171,6 +178,7 @@ export function loadConfig(configPathOverride?: string): Config {
     host: stringSetting("server.host", process.env.TEXLITE_HOST, fileConfig.server?.host, CONFIG_DEFAULTS.host, { min: 1, max: 255 }),
     port: integerSetting("server.port", process.env.TEXLITE_PORT, fileConfig.server?.port, CONFIG_DEFAULTS.port, CONFIG_LIMITS.port),
     basePath,
+    trustedProxyIps,
     dataDir,
     databasePath: path.join(dataDir, "texlite.db"),
     projectsDir: path.join(dataDir, "projects"),
@@ -263,7 +271,7 @@ interface FileConfig {
   siteName?: string;
   adminEmail?: string;
   sessionDays?: number;
-  server?: { host?: string; port?: number; basePath?: string };
+  server?: { host?: string; port?: number; basePath?: string; trustedProxyIps?: string[] };
   storage?: { dataDir?: string };
   latex?: {
     latexmk?: string;
@@ -304,6 +312,13 @@ function resolveBasePath(fileConfig: FileConfig): string {
   return basePath;
 }
 
+function resolveTrustedProxyIps(fileConfig: FileConfig): string[] {
+  const configured = fileConfig.server?.trustedProxyIps;
+  return configured === undefined
+    ? [...CONFIG_DEFAULTS.trustedProxyIps]
+    : configured.map((address) => address.trim());
+}
+
 function isEngine(value: unknown): value is LatexEngine {
   return typeof value === "string" && (LATEX_ENGINES as readonly string[]).includes(value);
 }
@@ -334,6 +349,7 @@ function validateFileConfig(config: FileConfig): void {
   optionalString(server?.host, "server.host", { min: 1, max: 255 });
   optionalInteger(server?.port, "server.port", CONFIG_LIMITS.port);
   optionalString(server?.basePath, "server.basePath", { min: 1, max: 1_024 });
+  optionalTrustedProxyIps(server?.trustedProxyIps, "server.trustedProxyIps");
   const storage = optionalSection(config.storage, "storage");
   optionalString(storage?.dataDir, "storage.dataDir", { min: 1, max: 4_096 });
   const uploads = optionalSection(config.uploads, "uploads");
@@ -443,6 +459,29 @@ function optionalInteger(value: unknown, name: string, limits: readonly [number,
     throw configurationError(name, `must be an integer from ${limits[0]} to ${limits[1]}; received ${displayValue(value)}`);
   }
   validateInteger(name, value, limits);
+}
+
+function optionalTrustedProxyIps(value: unknown, name: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > 32 || value.some((item) => typeof item !== "string" || !isProxyAddress(item.trim()))) {
+    throw configurationError(name, "must be a list of at most 32 proxy IP addresses or CIDR ranges");
+  }
+  const addresses = value.map((item) => item.trim());
+  if (new Set(addresses).size !== addresses.length) {
+    throw configurationError(name, "must not contain duplicate proxy addresses");
+  }
+}
+
+function isProxyAddress(value: string): boolean {
+  if (!value || value.length > 255) return false;
+  const [address, prefix, ...rest] = value.split("/");
+  if (rest.length > 0 || !address) return false;
+  const family = isIP(address);
+  if (!family) return false;
+  if (prefix === undefined) return true;
+  if (!/^\d+$/.test(prefix)) return false;
+  const prefixLength = Number(prefix);
+  return prefixLength <= (family === 4 ? 32 : 128);
 }
 
 function integerSetting(
