@@ -275,7 +275,7 @@ export async function buildApp(
       projectOutlines
     });
     registerCommentRoutes(routes, { config, db, collaboration, projectMutations });
-    registerProjectMemberRoutes(routes, { config, db, collaboration, projectMutations });
+    registerProjectMemberRoutes(routes, { config, db, collaboration });
     registerProjectFileRoutes(routes, {
       config,
       db,

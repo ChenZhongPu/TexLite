@@ -191,10 +191,9 @@ async function fetchGithubProfile(githubFetch: typeof fetch, oauth: GithubOAuthC
   }
   // GitHub may legitimately return no verified address: the user can hide
   // private email addresses or have no verified address at all. Authentication
-  // should still succeed; email-based invitations simply cannot target that
-  // account until an address is available.
-  let email: string | null = typeof profile.email === "string" && profile.email.trim()
-    ? normalizeEmail(profile.email) : null;
+  // still succeeds without one. Only a verified address may link an OAuth
+  // identity to an existing local account.
+  let email: string | null = null;
   try {
     const emailResponse = await githubFetch(`${oauth.apiUrl}/user/emails`, { method: "GET", headers });
     if (emailResponse.ok) {
@@ -204,8 +203,9 @@ async function fetchGithubProfile(githubFetch: typeof fetch, oauth: GithubOAuthC
       if (selected && typeof selected.email === "string") email = normalizeEmail(selected.email);
     }
   } catch {
-    // Keep the public profile email, if any; otherwise leave the account
-    // without an email and let the user use a read-only share link.
+    // A public profile address is not enough to link two accounts safely.
+    // Leave the account without an email when GitHub's verified-email endpoint
+    // is unavailable.
   }
   return {
     id: String(profile.id),
@@ -228,8 +228,31 @@ function upsertGithubUser(db: DatabaseConnection, profile: GithubProfile): UserR
     // migration normally makes this path unnecessary.
     if (!user) user = db.prepare("SELECT * FROM users WHERE github_id = ?").get(profile.id) as UserRow | undefined;
 
+    // A verified mailbox is an optional but unique account key. A new OAuth
+    // identity that presents an existing address belongs to that TexLite user,
+    // allowing one account to accumulate identities from multiple providers.
+    let linkedByEmail = false;
+    if (!user && profile.email) {
+      user = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(profile.email) as UserRow | undefined;
+      linkedByEmail = Boolean(user);
+    }
+
+    // An already-bound identity must never be moved to a different account if
+    // the provider reports a changed email address.
+    if (profile.email) {
+      const emailOwner = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(profile.email) as { id: string } | undefined;
+      if (emailOwner && emailOwner.id !== user?.id) throw new ValidationError("EMAIL_ALREADY_IN_USE");
+    }
+
     const timestamp = now();
     if (user) {
+      if (linkedByEmail) {
+        const githubIdentity = db.prepare(`SELECT subject FROM auth_identities
+          WHERE user_id = ? AND issuer = ?`).get(user.id, GITHUB_ISSUER) as { subject: string } | undefined;
+        if ((githubIdentity && githubIdentity.subject !== profile.id) || (user.github_id && user.github_id !== profile.id)) {
+          throw new ValidationError("OAUTH_IDENTITY_ALREADY_LINKED");
+        }
+      }
       // Keep a locally chosen display name and local username. GitHub's name
       // and login are provider attributes, not application identity fields.
       db.prepare("UPDATE users SET github_id = ?, email = ?, avatar_url = ? WHERE id = ?")

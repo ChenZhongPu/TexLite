@@ -88,7 +88,8 @@ const databaseMigrations: readonly DatabaseMigration[] = [
   { version: 2, name: "github_identity_and_project_invitations", apply: applyGithubIdentityMigration },
   { version: 3, name: "disable_legacy_project_latexmkrc", apply: applyDisableLegacyLatexmkrcMigration },
   { version: 4, name: "normalized_auth_identities", apply: applyNormalizedAuthIdentitiesMigration },
-  { version: 5, name: "project_share_links", apply: applyProjectShareLinksMigration }
+  { version: 5, name: "project_share_links", apply: applyProjectShareLinksMigration },
+  { version: 6, name: "unique_user_emails_and_user_bound_invitations", apply: applyUniqueUserEmailsAndUserBoundInvitationsMigration }
 ];
 
 export function openDatabase(config: Config): DatabaseConnection {
@@ -675,6 +676,73 @@ function applyProjectShareLinksMigration(db: DatabaseConnection): void {
     );
     CREATE INDEX IF NOT EXISTS project_share_links_project_status
       ON project_share_links(project_id, revoked_at, created_at DESC);
+  `);
+}
+
+/**
+ * Email remains optional: SQLite's partial unique index permits any number of
+ * accounts without one, while making every non-null mailbox an unambiguous
+ * account lookup key. Invitations remain email-addressed, but additionally
+ * retain a known recipient ID so their identity survives provider changes.
+ */
+function applyUniqueUserEmailsAndUserBoundInvitationsMigration(db: DatabaseConnection): void {
+  // Older releases never write blank addresses, but treating historical blank
+  // values as absent keeps the optional-email invariant explicit.
+  db.prepare("UPDATE users SET email = NULL WHERE email IS NOT NULL AND TRIM(email) = ''").run();
+  const duplicateEmail = db.prepare(`SELECT email FROM users
+    WHERE email IS NOT NULL
+    GROUP BY email COLLATE NOCASE
+    HAVING COUNT(*) > 1
+    LIMIT 1`).get() as { email: string } | undefined;
+  if (duplicateEmail) {
+    // Do not silently detach an address from an account: that could change
+    // both sign-in behavior and who is entitled to a pending invitation.
+    throw new Error("Cannot migrate database: duplicate non-empty user email addresses must be resolved before enforcing unique emails.");
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS users_email;
+    DROP INDEX IF EXISTS users_email_unique;
+    CREATE UNIQUE INDEX users_email_unique
+      ON users(email COLLATE NOCASE) WHERE email IS NOT NULL;
+
+    CREATE TABLE project_invitations_new (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      recipient_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      email TEXT NOT NULL COLLATE NOCASE,
+      permission TEXT NOT NULL CHECK (permission IN ('read', 'edit')),
+      invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'revoked')),
+      created_at TEXT NOT NULL,
+      responded_at TEXT
+    );
+
+    INSERT INTO project_invitations_new
+      (id, project_id, recipient_user_id, email, permission, invited_by, status, created_at, responded_at)
+    SELECT invitation.id, invitation.project_id,
+      (SELECT user.id FROM users user
+        WHERE user.email = invitation.email COLLATE NOCASE
+        LIMIT 1),
+      invitation.email, invitation.permission, invitation.invited_by,
+      invitation.status, invitation.created_at, invitation.responded_at
+    FROM project_invitations invitation;
+
+    DROP TABLE project_invitations;
+    ALTER TABLE project_invitations_new RENAME TO project_invitations;
+
+    CREATE INDEX project_invitations_recipient_status
+      ON project_invitations(recipient_user_id, status, created_at DESC);
+    CREATE INDEX project_invitations_email_status
+      ON project_invitations(email, status, created_at DESC);
+    CREATE INDEX project_invitations_project_status
+      ON project_invitations(project_id, status, created_at DESC);
+    CREATE UNIQUE INDEX project_invitations_pending_recipient_unique
+      ON project_invitations(project_id, recipient_user_id)
+      WHERE status = 'pending' AND recipient_user_id IS NOT NULL;
+    CREATE UNIQUE INDEX project_invitations_pending_email_unique
+      ON project_invitations(project_id, email)
+      WHERE status = 'pending' AND recipient_user_id IS NULL AND email IS NOT NULL;
   `);
 }
 

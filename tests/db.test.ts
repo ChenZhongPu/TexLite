@@ -89,7 +89,8 @@ describe("database migrations", () => {
           { version: 2, name: "github_identity_and_project_invitations" },
           { version: 3, name: "disable_legacy_project_latexmkrc" },
           { version: 4, name: "normalized_auth_identities" },
-          { version: 5, name: "project_share_links" }
+          { version: 5, name: "project_share_links" },
+          { version: 6, name: "unique_user_emails_and_user_bound_invitations" }
         ]);
 
       // The old untracked migration copied this tag at every startup. Once
@@ -105,7 +106,8 @@ describe("database migrations", () => {
           { version: 2, name: "github_identity_and_project_invitations" },
           { version: 3, name: "disable_legacy_project_latexmkrc" },
           { version: 4, name: "normalized_auth_identities" },
-          { version: 5, name: "project_share_links" }
+          { version: 5, name: "project_share_links" },
+          { version: 6, name: "unique_user_emails_and_user_bound_invitations" }
         ]);
 
       migrated.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
@@ -145,7 +147,7 @@ describe("database migrations", () => {
 
       database = openDatabase(config);
       expect(database.prepare("SELECT COUNT(*) AS count FROM user_tags").get()).toEqual({ count: 0 });
-      expect(database.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+      expect(database.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
       expect(database.prepare("SELECT last_modified_by FROM projects WHERE id = 'project-1'").get())
         .toEqual({ last_modified_by: null });
       expect(database.prepare("SELECT main_file FROM compile_runs WHERE id = 'run-1'").get())
@@ -171,7 +173,7 @@ describe("database migrations", () => {
       database.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
         .run("legacy-session", "github-user-1", "2027-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
       database.exec("DROP TABLE auth_identities");
-      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (4, 5)").run();
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (4, 5, 6)").run();
       database.close();
 
       database = openDatabase(config);
@@ -182,6 +184,80 @@ describe("database migrations", () => {
       expect(database.prepare("SELECT id FROM sessions WHERE id = 'legacy-session'").get()).toEqual({ id: "legacy-session" });
     } finally {
       database.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("makes optional emails unique and binds existing email invitations to a user", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-email-invitation-migration-"));
+    const databasePath = path.join(root, "texlite.db");
+    const config = migrationConfig(root, databasePath);
+    let database = openDatabase(config);
+    try {
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      database.prepare(`INSERT INTO users
+        (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+        VALUES (?, ?, ?, '', ?, NULL, NULL, 'user', 0, 0, 1, ?)`).run("owner", "owner", "Owner", "owner@example.test", createdAt);
+      database.prepare(`INSERT INTO users
+        (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+        VALUES (?, ?, ?, '', ?, NULL, NULL, 'user', 0, 0, 1, ?)`).run("invitee", "invitee", "Invitee", "invitee@example.test", createdAt);
+      database.prepare(`INSERT INTO users
+        (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+        VALUES (?, ?, ?, '', NULL, NULL, NULL, 'user', 0, 0, 1, ?)`).run("email-less", "email-less", "Email-less", createdAt);
+      database.prepare(`INSERT INTO projects
+        (id, owner_id, last_modified_by, name, main_file, engine, created_at, updated_at)
+        VALUES ('project', 'owner', NULL, 'Project', 'main.tex', 'xelatex', ?, ?)`).run(createdAt, createdAt);
+      database.prepare(`INSERT INTO project_invitations
+        (id, project_id, recipient_user_id, email, permission, invited_by, status, created_at, responded_at)
+        VALUES ('invitation', 'project', NULL, 'invitee@example.test', 'read', 'owner', 'pending', ?, NULL)`).run(createdAt);
+      // Re-run only v6 over rows shaped like the preceding release. The
+      // migration must preserve the invitation while backfilling its account.
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version = 6").run();
+      database.close();
+
+      database = openDatabase(config);
+      expect(database.prepare("SELECT recipient_user_id, email FROM project_invitations WHERE id = 'invitation'").get())
+        .toEqual({ recipient_user_id: "invitee", email: "invitee@example.test" });
+      expect((database.prepare("PRAGMA table_info(project_invitations)").all() as Array<{ name: string; notnull: number }>)
+        .find((column) => column.name === "recipient_user_id")?.notnull).toBe(0);
+      expect((database.prepare("PRAGMA table_info(project_invitations)").all() as Array<{ name: string; notnull: number }>)
+        .find((column) => column.name === "email")?.notnull).toBe(1);
+      expect(() => database.prepare("UPDATE users SET email = ? WHERE id = ?")
+        .run("INVITEE@example.test", "email-less")).toThrow(/UNIQUE constraint failed/);
+    } finally {
+      database.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not silently discard duplicate emails while enforcing uniqueness", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-duplicate-email-migration-"));
+    const databasePath = path.join(root, "texlite.db");
+    const config = migrationConfig(root, databasePath);
+    const database = openDatabase(config);
+    let closed = false;
+    try {
+      database.exec("DROP INDEX users_email_unique");
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version = 6").run();
+      const insert = database.prepare(`INSERT INTO users
+        (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
+        VALUES (?, ?, ?, '', ?, NULL, NULL, 'user', 0, 0, 1, '2026-01-01T00:00:00.000Z')`);
+      insert.run("duplicate-one", "duplicate-one", "Duplicate One", "duplicate@example.test");
+      insert.run("duplicate-two", "duplicate-two", "Duplicate Two", "DUPLICATE@example.test");
+      database.close();
+      closed = true;
+
+      expect(() => openDatabase(config)).toThrow(/duplicate non-empty user email addresses/);
+      const inspection = new Database(databasePath);
+      try {
+        expect(inspection.prepare("SELECT COUNT(*) AS count FROM users WHERE email = ? COLLATE NOCASE").get("duplicate@example.test"))
+          .toEqual({ count: 2 });
+        expect(inspection.prepare("SELECT version FROM texlite_schema_migrations WHERE version = 6").get()).toBeUndefined();
+      } finally {
+        inspection.close();
+      }
+    } finally {
+      if (!closed) database.close();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -228,7 +304,7 @@ describe("database migrations", () => {
 
       const migrated = openDatabase(config);
       try {
-        expect(migrated.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+        expect(migrated.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
       } finally {
         migrated.close();
       }
@@ -245,13 +321,13 @@ describe("database migrations", () => {
       CREATE TABLE texlite_schema_migrations (
         version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
       );
-      INSERT INTO texlite_schema_migrations VALUES (6, 'future_schema', '2026-01-01T00:00:00.000Z');
+      INSERT INTO texlite_schema_migrations VALUES (7, 'future_schema', '2026-01-01T00:00:00.000Z');
     `);
     database.close();
 
     try {
       expect(() => openDatabase(migrationConfig(root, databasePath)))
-        .toThrow(/version 6 is newer than this TexLite release/);
+        .toThrow(/version 7 is newer than this TexLite release/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

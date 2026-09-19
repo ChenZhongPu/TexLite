@@ -8,7 +8,7 @@
   "auth": {
     "tagline": "轻量 LaTeX 写作环境", "username": "用户名", "password": "密码", "login": "登录",
     "contact": "需要账号？请联系 {{email}}", "firstLogin": "首次登录，请修改初始密码", "currentPassword": "当前密码",
-    "newPassword": "新密码", "confirmPassword": "确认新密码", "updatePassword": "更新密码", "mismatch": "两次输入的新密码不一致", "passwordMinimum": "至少 {{count}} 位", "sessionExpired": "登录状态已过期，请重新登录。", "logout": "退出", "or": "或", "githubLogin": "使用 GitHub 登录", "githubEmailRequired": "GitHub 没有提供已验证的邮箱地址。", "oauthNotConfigured": "服务器尚未配置 GitHub 登录。"
+    "newPassword": "新密码", "confirmPassword": "确认新密码", "updatePassword": "更新密码", "mismatch": "两次输入的新密码不一致", "passwordMinimum": "至少 {{count}} 位", "sessionExpired": "登录状态已过期，请重新登录。", "logout": "退出", "or": "或", "githubLogin": "使用 GitHub 登录", "emailAlreadyInUse": "该邮箱地址已关联到另一个账户。", "oauthIdentityAlreadyLinked": "该账户已经关联了另一个 GitHub 登录身份。", "oauthNotConfigured": "服务器尚未配置 GitHub 登录。"
   },
   "profile": {
     "title": "账户设置", "open": "打开账户设置", "back": "返回项目", "description": "管理你的显示信息和登录方式。",
@@ -29,8 +29,6 @@
     "owner": "所有者", "created": "创建时间", "modified": "最后修改", "mentionsColumn": "消息", "actions": "操作", "openProject": "打开“{{project}}”", "projectActions": "“{{project}}”的操作", "relativeHoursPast": "{{hours}}小时前", "relativeHoursMinutesPast": "{{hours}}小时{{minutes}}分钟前", "relativeHoursFuture": "{{hours}}小时后", "relativeHoursMinutesFuture": "{{hours}}小时{{minutes}}分钟后", "relativeDaysPast": "{{days}}天前", "relativeDaysHoursPast": "{{days}}天{{hours}}小时前", "relativeDaysFuture": "{{days}}天后", "relativeDaysHoursFuture": "{{days}}天{{hours}}小时后", "modifiedBy": "最后修改人", "byUser": "由 {{user}} 修改", "modifiedByUser": "{{time}} · 由 {{user}} 修改", "deletedUser": "已删除用户",
     "comments": "批注", "unresolvedComments": "{{count}} 条未解决批注", "unresolvedCommentsTooltip": "{{unresolved}} 条未解决批注 / 共 {{total}} 条", "allResolved": "全部已解决 ({{count}})", "allCommentsResolvedTooltip": "全部 {{count}} 条批注已解决", "noComments": "暂无批注", "unresolvedCount": "{{count}} 条待解决", "unreadMentions": "{{count}} 条消息", "unreadMentionsTooltip": "{{count}} 条未读消息",
     "filterTags": "按标签过滤", "rename": "重命名", "renameTitle": "重命名项目", "duplicate": "复制项目", "duplicating": "正在复制…", "duplicateTitle": "复制项目", "duplicateDescription": "创建“{{project}}”的独立副本。会复制文件和项目设置，但不会复制成员、批注、Git 历史和编译产物。", "download": "下载",
-    "transfer": "转让", "transferOwnership": "转让项目", "transferDescription": "为“{{project}}”选择新的所有者。", "newOwner": "新所有者", "chooseNewOwner": "请选择用户", "noTransferUsers": "没有其他可用用户", "transferWarning": "转让后你仍保留读写权限。源码、历史、批注和成员不会改变；已保存的 GitHub token 会被移除，由新所有者配置自己的凭据。",
-    "transferForbidden": "只有当前项目所有者可以转让项目。", "transferTargetInvalid": "请选择新的项目所有者。", "transferSelf": "你已经是该项目的所有者。",
     "deleteTitle": "删除项目", "deleteDescription": "确定永久删除“{{project}}”及其全部文件吗？此操作不可撤销。",
     "chooseZip": "选择 ZIP 项目", "dropZip": "将 ZIP 压缩包拖放到这里", "browse": "浏览文件",
     "selectedFileSize": "已选择 · {{size}}", "clearFile": "清除已选文件"

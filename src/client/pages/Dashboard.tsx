@@ -5,7 +5,7 @@ import { ConfirmDialog, Modal } from "../Dialog";
 import type { Project, ProjectInvitation, ProjectListPagination, ProjectTag, SiteConfig, TagColor, User } from "../types";
 import i18n from "../i18n";
 import { errorMessage } from "../errors";
-import { Activity, AlertTriangle, Archive, ArrowDownUp, ArrowLeft, ArrowRightLeft, AtSign, BookMarked, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, FileArchive, FolderOpen, FolderPlus, History, LoaderCircle, MessageSquare, Sparkles, Tags, Upload, Users, X } from "lucide-react";
+import { Activity, Archive, ArrowDownUp, ArrowLeft, AtSign, BookMarked, CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, FileArchive, FolderOpen, FolderPlus, History, LoaderCircle, MessageSquare, Sparkles, Tags, Upload, Users, X } from "lucide-react";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { SiteFooter, SiteLogo } from "./SiteChrome";
 import { ProjectListRow } from "./ProjectListRow";
@@ -119,11 +119,6 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
   const [duplicating, setDuplicating] = useState(false);
   const [deleteProject, setDeleteProject] = useState<Project | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [transferProject, setTransferProject] = useState<Project | null>(null);
-  const [transferUsers, setTransferUsers] = useState<Array<{ id: string; username: string; displayName?: string }>>([]);
-  const [transferUserId, setTransferUserId] = useState("");
-  const [transferBusy, setTransferBusy] = useState(false);
-  const [transferError, setTransferError] = useState("");
   const [view, setView] = useState<"grid" | "list">(() => localStorage.getItem(scopedStorageKey("texlite-project-view")) === "list" ? "list" : "grid");
   const [sort, setSort] = useState<"updated" | "created">(() => localStorage.getItem(scopedStorageKey("texlite-project-sort")) === "created" ? "created" : "updated");
   const [showArchived, setShowArchived] = useState(false);
@@ -339,34 +334,6 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
     finally { setDeleting(false); }
   };
 
-  const openTransfer = async (project: Project) => {
-    setTransferProject(project);
-    setTransferUserId("");
-    setTransferUsers([]);
-    setTransferError("");
-    setTransferBusy(true);
-    try {
-      const result = await api<{ users: Array<{ id: string; username: string; displayName?: string }> }>("/api/users");
-      setTransferUsers(result.users.filter((candidate) => candidate.id !== project.ownerId));
-    } catch (e) { setTransferError(errorMessage(e)); }
-    finally { setTransferBusy(false); }
-  };
-
-  const transferOwnership = async () => {
-    if (!transferProject || !transferUserId) return;
-    setTransferBusy(true);
-    setTransferError("");
-    try {
-      await api(`/api/projects/${transferProject.id}/owner`, {
-        method: "PUT", body: JSON.stringify({ userId: transferUserId })
-      });
-      setTransferProject(null);
-      setTransferUserId("");
-      void load(showArchived, page, query, tagFilter, sort);
-    } catch (e) { setTransferError(errorMessage(e)); }
-    finally { setTransferBusy(false); }
-  };
-
   const toggleArchive = async (project: Project) => {
     const archive = !showArchived;
     setArchiveBusy(project.id); setError("");
@@ -484,7 +451,6 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
             onRename={() => { setRenameError(""); setRenameProject(project); setRenameValue(project.name); }}
             onDuplicate={() => { setDuplicateError(""); setDuplicateProject(project); setDuplicateValue(`${project.name} (1)`); }}
             onArchive={() => void toggleArchive(project)}
-            onTransfer={() => void openTransfer(project)}
             onDelete={() => { setDeleteProject(project); setDeleteError(""); }}
             onChooseIcon={() => setProjectIconTarget(project)}
           />)
@@ -521,7 +487,6 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
                 onRename={() => { setRenameError(""); setRenameProject(project); setRenameValue(project.name); }}
                 onDuplicate={() => { setDuplicateError(""); setDuplicateProject(project); setDuplicateValue(`${project.name} (1)`); }}
                 onArchive={() => void toggleArchive(project)}
-                onTransfer={() => void openTransfer(project)}
                 onDelete={() => { setDeleteProject(project); setDeleteError(""); }}
               />
             </div>
@@ -563,7 +528,6 @@ export function Dashboard({ site, user, initialData, onDataChange, onUser, onOpe
       <Modal open={Boolean(tagProject)} title={t("tags.assignTitle", { project: tagProject?.name ?? "" })} description={t("tags.assignDescription")} onOpenChange={(open) => { if (!open) { setTagProject(null); setTagAssignmentError(""); } }} footer={<button onClick={() => { setTagProject(null); setTagAssignmentError(""); }}>{t("common.close")}</button>}><div className="tag-assignment-list">{tagAssignmentError && <p className="error dialog-error">{tagAssignmentError}</p>}{tags.map((tag) => <label key={tag.id}><input type="checkbox" checked={Boolean(tagProject?.tags.some((item) => item.id === tag.id))} onChange={() => void toggleProjectTag(tag)} /><TagDot color={tag.color} /><span>{tag.name}</span></label>)}{tags.length === 0 && <p className="muted">{t("tags.empty")}</p>}</div></Modal>
       <Modal open={Boolean(renameProject)} title={t("projects.renameTitle")} onOpenChange={(open) => { if (!open && renaming) return; if (!open) { setRenameProject(null); setRenameError(""); } }} footer={<><button disabled={renaming} onClick={() => { setRenameProject(null); setRenameError(""); }}>{t("common.cancel")}</button><button className="primary" disabled={renaming || !renameValue.trim()} aria-busy={renaming} onClick={() => void rename()}>{renaming && <LoaderCircle className="spin" size={14} />}{renaming ? t("common.loading") : t("projects.rename")}</button></>}><>{renameError && <p className="error dialog-error">{renameError}</p>}<label className="form-field">{t("projects.name")}<input autoFocus value={renameValue} onChange={(event) => { setRenameValue(event.target.value); setRenameError(""); }} onKeyDown={(event) => { if (event.key === "Enter") void rename(); }} /></label></></Modal>
       <Modal open={Boolean(duplicateProject)} title={t("projects.duplicateTitle")} description={t("projects.duplicateDescription", { project: duplicateProject?.name ?? "" })} onOpenChange={(open) => { if (!open && !duplicating) { setDuplicateProject(null); setDuplicateValue(""); setDuplicateError(""); } }} footer={<><button disabled={duplicating} onClick={() => { setDuplicateProject(null); setDuplicateValue(""); setDuplicateError(""); }}>{t("common.cancel")}</button><button className="primary" disabled={duplicating || !duplicateValue.trim()} onClick={() => void duplicate()}>{duplicating ? t("projects.duplicating") : t("projects.duplicate")}</button></>}><>{duplicateError && <p className="error dialog-error">{duplicateError}</p>}<label className="form-field">{t("projects.name")}<input autoFocus value={duplicateValue} onChange={(event) => { setDuplicateValue(event.target.value); setDuplicateError(""); }} onKeyDown={(event) => { if (event.key === "Enter") void duplicate(); }} /></label></></Modal>
-      <Modal open={Boolean(transferProject)} title={t("projects.transferOwnership")} description={t("projects.transferDescription", { project: transferProject?.name ?? "" })} onOpenChange={(open) => { if (!open && !transferBusy) { setTransferProject(null); setTransferUserId(""); setTransferError(""); } }} footer={<><button disabled={transferBusy} onClick={() => { setTransferProject(null); setTransferUserId(""); setTransferError(""); }}>{t("common.cancel")}</button><button className="primary" disabled={transferBusy || !transferUserId} onClick={() => void transferOwnership()}>{transferBusy ? <LoaderCircle className="spin" size={14} /> : <ArrowRightLeft size={14} />}{t("projects.transfer")}</button></>}><div className="form-stack">{transferError && <p className="error dialog-error">{transferError}</p>}<label className="form-field">{t("projects.newOwner")}<select disabled={transferBusy || transferUsers.length === 0} value={transferUserId} onChange={(event) => setTransferUserId(event.target.value)}><option value="">{transferBusy ? t("common.loading") : transferUsers.length > 0 ? t("projects.chooseNewOwner") : t("projects.noTransferUsers")}</option>{transferUsers.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.displayName ?? candidate.username} (@{candidate.username})</option>)}</select></label><p className="warning"><AlertTriangle size={15} />{t("projects.transferWarning")}</p></div></Modal>
       <ConfirmDialog open={Boolean(deleteProject)} title={t("projects.deleteTitle")} description={t("projects.deleteDescription", { project: deleteProject?.name ?? "" })} confirmLabel={deleting ? t("common.loading") : t("common.delete")} danger busy={deleting} error={deleteError} onCancel={() => { if (!deleting) { setDeleteProject(null); setDeleteError(""); } }} onConfirm={() => void removeProject()} />
     </main>}{metricsOpen && <LazyModal title={t("metrics.title")} onClose={() => setMetricsOpen(false)}><SystemMetricsDialog open onOpenChange={setMetricsOpen} /></LazyModal>}<SiteFooter />
   </div>;

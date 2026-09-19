@@ -24,7 +24,6 @@ export function ProjectListRow({
   onRename,
   onDuplicate,
   onArchive,
-  onTransfer,
   onDelete,
   onChooseIcon
 }: {
@@ -45,7 +44,6 @@ export function ProjectListRow({
   onRename: () => void;
   onDuplicate: () => void;
   onArchive: () => void;
-  onTransfer: () => void;
   onDelete: () => void;
   onChooseIcon: () => void;
 }) {
@@ -112,7 +110,6 @@ export function ProjectListRow({
       onRename={onRename}
       onDuplicate={onDuplicate}
       onArchive={onArchive}
-      onTransfer={onTransfer}
       onDelete={onDelete}
     />
   </article>;

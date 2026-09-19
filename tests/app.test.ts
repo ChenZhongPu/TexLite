@@ -73,9 +73,31 @@ describe("texLite application", () => {
     const githubFetch: typeof fetch = async (input, init) => {
       const url = String(input);
       if (url === "https://github.com/login/oauth/access_token" && init?.method === "POST") {
+        const code = new URLSearchParams(String(init.body ?? "")).get("code");
+        if (code === "oauth-link-code") return Response.json({ access_token: "oauth-link-access-token" });
+        if (code === "oauth-linked-no-email-code") return Response.json({ access_token: "oauth-linked-no-email-access-token" });
+        if (code === "oauth-no-email-code") return Response.json({ access_token: "oauth-no-email-access-token" });
         return Response.json({ access_token: "oauth-test-access-token" });
       }
       const authorization = new Headers(init?.headers).get("authorization");
+      if (authorization === "Bearer oauth-link-access-token" && url.endsWith("/user")) {
+        return Response.json({ id: 77123, login: "linked-github", name: "Linked GitHub", avatar_url: "https://avatars.example.test/linked" });
+      }
+      if (authorization === "Bearer oauth-link-access-token" && url.endsWith("/user/emails")) {
+        return Response.json([{ email: "linked@example.test", primary: true, verified: true }]);
+      }
+      if (authorization === "Bearer oauth-linked-no-email-access-token" && url.endsWith("/user")) {
+        return Response.json({ id: 77123, login: "linked-github", name: "Linked GitHub", avatar_url: "https://avatars.example.test/linked" });
+      }
+      if (authorization === "Bearer oauth-linked-no-email-access-token" && url.endsWith("/user/emails")) {
+        return Response.json([]);
+      }
+      if (authorization === "Bearer oauth-no-email-access-token" && url.endsWith("/user")) {
+        return Response.json({ id: 77124, login: "email-less-github", name: "Email-less GitHub", avatar_url: "https://avatars.example.test/email-less" });
+      }
+      if (authorization === "Bearer oauth-no-email-access-token" && url.endsWith("/user/emails")) {
+        return Response.json([]);
+      }
       if (authorization === "Bearer oauth-test-access-token" && url.endsWith("/user")) {
         return Response.json({ id: 90210, login: "oauth-invitee", name: "OAuth Invitee", avatar_url: "https://avatars.example.test/invitee" });
       }
@@ -162,6 +184,8 @@ describe("texLite application", () => {
     });
     expect(invitation.statusCode).toBe(201);
     const invitationId = invitation.json().invitation.id as string;
+    expect(db.prepare("SELECT recipient_user_id, email FROM project_invitations WHERE id = ?").get(invitationId))
+      .toMatchObject({ recipient_user_id: me.json().user.id, email: "invitee@example.test" });
     const pending = await app.inject({ method: "GET", url: "/api/invitations", headers: { cookie: oauthUserCookie } });
     expect(pending.json().invitations).toHaveLength(1);
     expect(pending.json().invitations[0]).toMatchObject({ id: invitationId, projectId, permission: "edit" });
@@ -222,6 +246,78 @@ describe("texLite application", () => {
     expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: linkedCookie } })).statusCode).toBe(404);
     // Revoking a link does not remove a user who joined through an invitation.
     expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
+  });
+
+  it("links a verified GitHub email to an existing account and allows email-less OAuth accounts", async () => {
+    const local = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: "email-linked-user", displayName: "Email Linked User", password: "linked-password" }
+    });
+    const localId = local.json().user.id as string;
+    db.prepare("UPDATE users SET email = ? WHERE id = ?").run("linked@example.test", localId);
+
+    const linkAuthorization = await app.inject({ method: "GET", url: "/api/auth/github" });
+    const linkState = new URL(linkAuthorization.headers.location as string).searchParams.get("state");
+    const linkedCallback = await app.inject({
+      method: "GET",
+      url: `/auth/github/callback?code=oauth-link-code&state=${encodeURIComponent(linkState ?? "")}`,
+      headers: { cookie: namedCookie(linkAuthorization.headers, "texlite_oauth_state") }
+    });
+    expect(linkedCallback.statusCode).toBe(302);
+    const linkedCookie = namedCookie(linkedCallback.headers, "texlite_session");
+    const linkedMe = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: linkedCookie } });
+    expect(linkedMe.json().user).toMatchObject({ id: localId, username: "email-linked-user", email: "linked@example.test", githubConnected: true });
+    expect(db.prepare("SELECT user_id, issuer, subject FROM auth_identities WHERE issuer = 'github' AND subject = '77123'").get())
+      .toEqual({ user_id: localId, issuer: "github", subject: "77123" });
+
+    const linkedNoEmailAuthorization = await app.inject({ method: "GET", url: "/api/auth/github" });
+    const linkedNoEmailState = new URL(linkedNoEmailAuthorization.headers.location as string).searchParams.get("state");
+    const linkedNoEmailCallback = await app.inject({
+      method: "GET",
+      url: `/auth/github/callback?code=oauth-linked-no-email-code&state=${encodeURIComponent(linkedNoEmailState ?? "")}`,
+      headers: { cookie: namedCookie(linkedNoEmailAuthorization.headers, "texlite_oauth_state") }
+    });
+    expect(linkedNoEmailCallback.statusCode).toBe(302);
+    const linkedNoEmailMe = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: namedCookie(linkedNoEmailCallback.headers, "texlite_session") } });
+    expect(linkedNoEmailMe.json().user).toMatchObject({ id: localId, email: "linked@example.test", githubConnected: true });
+
+    const noEmailAuthorization = await app.inject({ method: "GET", url: "/api/auth/github" });
+    const noEmailState = new URL(noEmailAuthorization.headers.location as string).searchParams.get("state");
+    const noEmailCallback = await app.inject({
+      method: "GET",
+      url: `/auth/github/callback?code=oauth-no-email-code&state=${encodeURIComponent(noEmailState ?? "")}`,
+      headers: { cookie: namedCookie(noEmailAuthorization.headers, "texlite_oauth_state") }
+    });
+    expect(noEmailCallback.statusCode).toBe(302);
+    const noEmailMe = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: namedCookie(noEmailCallback.headers, "texlite_session") } });
+    expect(noEmailMe.json().user).toMatchObject({ username: "email-less-github", email: null, githubConnected: true });
+  });
+
+  it("limits non-admin user lookup to an exact email address", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: "directory-lookup-user", displayName: "Directory Lookup User", password: "lookup-password" }
+    });
+    const userId = created.json().user.id as string;
+    db.prepare("UPDATE users SET email = ? WHERE id = ?").run("directory@example.test", userId);
+    const login = await app.inject({
+      method: "POST", url: "/api/auth/login", payload: { username: "directory-lookup-user", password: "lookup-password" }
+    });
+    const userCookie = sessionCookie(login.headers);
+
+    const noQuery = await app.inject({ method: "GET", url: "/api/users", headers: { cookie: userCookie } });
+    expect(noQuery.statusCode).toBe(400);
+    expect(noQuery.json()).toMatchObject({ code: "USER_EMAIL_LOOKUP_INVALID" });
+    expect(noQuery.json()).not.toHaveProperty("users");
+    const exact = await app.inject({ method: "GET", url: "/api/users?email=Directory%40example.test", headers: { cookie: userCookie } });
+    expect(exact.statusCode).toBe(200);
+    expect(exact.json()).toMatchObject({ user: { id: userId, username: "directory-lookup-user" } });
+    expect(exact.json()).not.toHaveProperty("users");
+    expect((await app.inject({ method: "GET", url: "/api/users?email=missing%40example.test", headers: { cookie: userCookie } })).json())
+      .toEqual({ user: null });
+    expect((await app.inject({ method: "GET", url: "/api/admin/users?page=1&pageSize=20", headers: { cookie: userCookie } })).statusCode).toBe(403);
+    const pagedAdmin = await app.inject({ method: "GET", url: "/api/admin/users?page=1&pageSize=20", headers: { cookie } });
+    expect(pagedAdmin.json().pagination).toMatchObject({ page: 1, pageSize: 20 });
   });
 
   it("keeps the app shell fresh and caches fingerprinted browser runtimes", async () => {
@@ -1795,45 +1891,14 @@ Second version.
     expect((await app.inject({ method: "DELETE", url: `/api/projects/${projectId}`, headers: { cookie } })).statusCode).toBe(403);
   });
 
-  it("transfers ownership while retaining the former owner as an editor", async () => {
-    const createdUser = await app.inject({
-      method: "POST", url: "/api/admin/users", headers: { cookie },
-      payload: { username: "project-recipient", displayName: "Project Recipient", password: "recipient-password" }
+  it("does not expose project ownership transfer", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "No transfer paper" } });
+    const projectId = created.json().project.id as string;
+    const transfer = await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/owner`, headers: { cookie }, payload: { userId: randomUUID() }
     });
-    const recipient = createdUser.json().user;
-    expect(recipient.canCreateProjects).toBe(false);
-    const recipientLogin = await app.inject({
-      method: "POST", url: "/api/auth/login", payload: { username: "project-recipient", password: "recipient-password" }
-    });
-    const recipientCookie = sessionCookie(recipientLogin.headers);
-    const me = await app.inject({ method: "GET", url: "/api/me", headers: { cookie } });
-    const formerOwnerId = me.json().user.id as string;
-    const created = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Transferred paper" } });
-    const project = created.json().project;
-    await app.inject({
-      method: "PUT", url: `/api/projects/${project.id}/members/${recipient.id}`, headers: { cookie }, payload: { permission: "read" }
-    });
-    const historyCount = (db.prepare("SELECT COUNT(*) AS count FROM project_history_versions WHERE project_id = ?").get(project.id) as { count: number }).count;
-    // Add a comment to the project
-    await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/comments`, headers: { cookie },
-      payload: { path: "main.tex", startOffset: 0, endOffset: 5, content: "Transfer note" }
-    });
-
-    const transferred = await app.inject({
-      method: "PUT", url: `/api/projects/${project.id}/owner`, headers: { cookie }, payload: { userId: recipient.id }
-    });
-    expect(transferred.statusCode).toBe(200);
-    expect(transferred.json().project.ownerId).toBe(recipient.id);
-    expect(transferred.json().project).toMatchObject({ commentCount: 1, unresolvedCommentCount: 1 });
-    const recipientProject = await app.inject({ method: "GET", url: `/api/projects/${project.id}`, headers: { cookie: recipientCookie } });
-    expect(recipientProject.json().project).toMatchObject({ ownerId: recipient.id, permission: "owner" });
-    expect(db.prepare("SELECT permission FROM project_members WHERE project_id = ? AND user_id = ?").get(project.id, formerOwnerId)).toEqual({ permission: "edit" });
-    expect(db.prepare("SELECT permission FROM project_members WHERE project_id = ? AND user_id = ?").get(project.id, recipient.id)).toBeUndefined();
-    expect((db.prepare("SELECT COUNT(*) AS count FROM project_history_versions WHERE project_id = ?").get(project.id) as { count: number }).count).toBe(historyCount);
-    expect((await app.inject({
-      method: "PUT", url: `/api/projects/${project.id}/owner`, headers: { cookie }, payload: { userId: formerOwnerId }
-    })).statusCode).toBe(403);
+    expect(transfer.statusCode).toBe(404);
+    expect(transfer.json()).toMatchObject({ statusCode: 404 });
   });
 
   it("deletes a user's owned projects together with their histories", async () => {

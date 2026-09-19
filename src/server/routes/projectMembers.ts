@@ -4,30 +4,28 @@ import { currentUser, normalizeEmail, requireUser } from "../auth.js";
 import type { CollaborationService } from "../collaboration.js";
 import type { Config } from "../config.js";
 import type { DatabaseConnection } from "../db.js";
-import { apiError, httpError } from "../http.js";
-import type { ProjectMutationCoordinator } from "../projectMutations.js";
+import { apiError } from "../http.js";
 import { accessibleProject } from "../projects.js";
 import { activeShareLinkForToken, createShareLinkSecret, revealShareLinkSecret, shareLinkPath } from "../shareLinks.js";
 import { basePathHref } from "../../shared/basePath.js";
-import {
-  commentsSummaryForProject,
-  now,
-  projectJson,
-  requireActualProjectOwner,
-  tagsForProject,
-  touchProject
-} from "./projectShared.js";
+import { now, touchProject } from "./projectShared.js";
 
 interface ProjectMemberRouteContext {
   config: Config;
   db: DatabaseConnection;
   collaboration: CollaborationService;
-  projectMutations: ProjectMutationCoordinator;
 }
 
-/** Register project sharing, member permission, and ownership-transfer routes. */
+interface InvitationRecipient {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+}
+
+/** Register project sharing, invitation, and member-permission routes. */
 export function registerProjectMemberRoutes(app: FastifyInstance, context: ProjectMemberRouteContext): void {
-  const { config, db, collaboration, projectMutations } = context;
+  const { config, db, collaboration } = context;
 
   app.get("/share/:token", async (request, reply) => {
     const { token } = request.params as { token: string };
@@ -52,27 +50,35 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
   app.get("/api/invitations", async (request, reply) => {
     const user = requireUser(request, reply, db);
     if (!user) return;
-    if (!user.email) return { invitations: [] };
-    const rows = db.prepare(`SELECT invitation.id, invitation.project_id AS projectId,
+    const select = `SELECT invitation.id, invitation.project_id AS projectId,
         invitation.email, invitation.permission, invitation.created_at AS createdAt,
         recipient.username AS recipientUsername, recipient.display_name AS recipientDisplayName,
         project.name AS projectName, owner.display_name AS ownerDisplayName, owner.username AS ownerUsername
       FROM project_invitations invitation
       JOIN projects project ON project.id = invitation.project_id
       JOIN users owner ON owner.id = project.owner_id
-      LEFT JOIN users recipient ON recipient.email = invitation.email COLLATE NOCASE AND recipient.disabled = 0
-      WHERE invitation.email = ? COLLATE NOCASE AND invitation.status = 'pending'
-      ORDER BY invitation.created_at DESC`).all(normalizeEmail(user.email));
+      LEFT JOIN users recipient ON recipient.id = invitation.recipient_user_id AND recipient.disabled = 0`;
+    // Account-bound invitations do not depend on an email at acceptance time.
+    // Keep the email fallback only for legacy/external email invitations whose
+    // recipient did not yet have a TexLite account when they were sent.
+    const rows = user.email
+      ? db.prepare(`${select}
+          WHERE invitation.status = 'pending' AND (
+            invitation.recipient_user_id = ?
+            OR (invitation.recipient_user_id IS NULL AND invitation.email = ? COLLATE NOCASE)
+          )
+          ORDER BY invitation.created_at DESC`).all(user.id, normalizeEmail(user.email))
+      : db.prepare(`${select}
+          WHERE invitation.status = 'pending' AND invitation.recipient_user_id = ?
+          ORDER BY invitation.created_at DESC`).all(user.id);
     return { invitations: rows };
   });
 
   app.post("/api/invitations/:invitationId/accept", async (request, reply) => {
     const user = requireUser(request, reply, db);
     if (!user) return;
-    if (!user.email) return apiError(reply, 404, "INVITATION_NOT_FOUND");
     const { invitationId } = request.params as { invitationId: string };
-    const invitation = db.prepare(`SELECT * FROM project_invitations
-      WHERE id = ? AND status = 'pending' AND email = ? COLLATE NOCASE`).get(invitationId, normalizeEmail(user.email)) as {
+    const invitation = invitationForUser(db, invitationId, user.id, user.email) as {
       id: string; project_id: string; permission: "read" | "edit";
     } | undefined;
     if (!invitation) return apiError(reply, 404, "INVITATION_NOT_FOUND");
@@ -84,8 +90,10 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
         VALUES (?, ?, ?, ?)
         ON CONFLICT(project_id, user_id) DO UPDATE SET permission = excluded.permission`)
         .run(invitation.project_id, user.id, invitation.permission, changedAt);
-      db.prepare("UPDATE project_invitations SET status = 'accepted', responded_at = ? WHERE id = ? AND status = 'pending'")
-        .run(changedAt, invitation.id);
+      db.prepare(`UPDATE project_invitations
+        SET status = 'accepted', responded_at = ?, recipient_user_id = ?
+        WHERE id = ? AND status = 'pending'`)
+        .run(changedAt, user.id, invitation.id);
       // Accepting a membership invitation changes access only; it must not
       // attribute a document modification to the newly added collaborator.
     })();
@@ -96,11 +104,13 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
   app.post("/api/invitations/:invitationId/decline", async (request, reply) => {
     const user = requireUser(request, reply, db);
     if (!user) return;
-    if (!user.email) return apiError(reply, 404, "INVITATION_NOT_FOUND");
     const { invitationId } = request.params as { invitationId: string };
-    const result = db.prepare(`UPDATE project_invitations SET status = 'declined', responded_at = ?
-      WHERE id = ? AND status = 'pending' AND email = ? COLLATE NOCASE`)
-      .run(now(), invitationId, normalizeEmail(user.email));
+    const invitation = invitationForUser(db, invitationId, user.id, user.email) as { id: string } | undefined;
+    if (!invitation) return apiError(reply, 404, "INVITATION_NOT_FOUND");
+    const result = db.prepare(`UPDATE project_invitations
+      SET status = 'declined', responded_at = ?, recipient_user_id = ?
+      WHERE id = ? AND status = 'pending'`)
+      .run(now(), user.id, invitation.id);
     if (!result.changes) return apiError(reply, 404, "INVITATION_NOT_FOUND");
     return { ok: true };
   });
@@ -129,7 +139,7 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
         invitation.created_at AS createdAt,
         recipient.username AS recipientUsername, recipient.display_name AS recipientDisplayName
       FROM project_invitations invitation
-      LEFT JOIN users recipient ON recipient.email = invitation.email COLLATE NOCASE AND recipient.disabled = 0
+      LEFT JOIN users recipient ON recipient.id = invitation.recipient_user_id AND recipient.disabled = 0
       WHERE invitation.project_id = ? AND invitation.status = 'pending'
       ORDER BY invitation.created_at DESC`).all(id);
     return { invitations };
@@ -143,11 +153,7 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     if (!project || project.permission !== "owner") return apiError(reply, 403, "MEMBERS_MANAGE_FORBIDDEN");
     const query = request.query as { email?: unknown };
     if (typeof query.email !== "string" || !isEmail(query.email)) return { user: null };
-    const email = normalizeEmail(query.email);
-    const target = db.prepare(`SELECT id, username, display_name AS displayName, email
-      FROM users WHERE email = ? COLLATE NOCASE AND disabled = 0`).get(email) as {
-      id: string; username: string; displayName: string; email: string | null;
-    } | undefined;
+    const target = activeInvitationRecipientByEmail(db, normalizeEmail(query.email));
     return { user: target ?? null };
   });
 
@@ -160,26 +166,35 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     const body = (request.body ?? {}) as { email?: unknown; permission?: unknown };
     if (typeof body.email !== "string" || !isEmail(body.email)) return apiError(reply, 400, "INVITATION_EMAIL_INVALID");
     const email = normalizeEmail(body.email);
-    if (user.email && normalizeEmail(user.email) === email) return apiError(reply, 400, "INVITATION_OWNER_FORBIDDEN");
-    const target = db.prepare("SELECT id, username, display_name AS displayName, email FROM users WHERE email = ? COLLATE NOCASE AND disabled = 0").get(email) as {
-      id: string; username: string; displayName: string; email: string | null;
-    } | undefined;
+    const target = activeInvitationRecipientByEmail(db, email);
     if (target && target.id === project.owner_id) return apiError(reply, 400, "INVITATION_OWNER_FORBIDDEN");
     if (target && db.prepare("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?").get(id, target.id)) {
       return apiError(reply, 409, "INVITATION_MEMBER_EXISTS");
     }
+    // A matched email binds the invitation to the durable local user ID. An
+    // unmatched (but valid) email remains a compatible external invitation
+    // that can be accepted after its owner registers with that address.
+    const recipientUserId = target?.id ?? null;
     const permission = body.permission === "edit" ? "edit" : "read";
     const createdAt = now();
-    const pending = db.prepare("SELECT id FROM project_invitations WHERE project_id = ? AND email = ? AND status = 'pending'").get(id, email) as { id: string } | undefined;
+    const pending = recipientUserId
+      ? db.prepare(`SELECT id FROM project_invitations
+          WHERE project_id = ? AND recipient_user_id = ? AND status = 'pending'`)
+        .get(id, recipientUserId) as { id: string } | undefined
+      : db.prepare(`SELECT id FROM project_invitations
+          WHERE project_id = ? AND recipient_user_id IS NULL AND email = ? AND status = 'pending'`)
+        .get(id, email) as { id: string } | undefined;
     const invitationId = pending?.id ?? randomUUID();
     if (pending) {
-      db.prepare("UPDATE project_invitations SET permission = ?, invited_by = ?, created_at = ?, responded_at = NULL WHERE id = ?")
-        .run(permission, user.id, createdAt, invitationId);
+      db.prepare(`UPDATE project_invitations
+        SET recipient_user_id = ?, email = ?, permission = ?, invited_by = ?, created_at = ?, responded_at = NULL
+        WHERE id = ?`)
+        .run(recipientUserId, email, permission, user.id, createdAt, invitationId);
     } else {
       db.prepare(`INSERT INTO project_invitations
-        (id, project_id, email, permission, invited_by, status, created_at, responded_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL)`)
-        .run(invitationId, id, email, permission, user.id, createdAt);
+        (id, project_id, recipient_user_id, email, permission, invited_by, status, created_at, responded_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`)
+        .run(invitationId, id, recipientUserId, email, permission, user.id, createdAt);
     }
     touchProject(db, id, user.id);
     return reply.code(201).send({ invitation: {
@@ -269,61 +284,6 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     return { ok: true };
   });
 
-  app.put("/api/projects/:id/owner", async (request, reply) => {
-    const user = requireUser(request, reply, db);
-    if (!user) return;
-    const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
-    if (!project || project.owner_id !== user.id) {
-      return apiError(reply, 403, "PROJECT_TRANSFER_FORBIDDEN");
-    }
-    const body = (request.body ?? {}) as { userId?: unknown };
-    if (typeof body.userId !== "string" || !body.userId) {
-      return apiError(reply, 400, "PROJECT_TRANSFER_TARGET_INVALID");
-    }
-    if (body.userId === user.id) {
-      return apiError(reply, 400, "PROJECT_TRANSFER_SELF");
-    }
-    const target = db.prepare("SELECT id FROM users WHERE id = ? AND disabled = 0").get(body.userId) as { id: string } | undefined;
-    if (!target) return apiError(reply, 404, "USER_NOT_FOUND");
-
-    return await projectMutations.runExclusive(id, "project transfer", () => {
-      const currentTarget = db.prepare("SELECT id FROM users WHERE id = ? AND disabled = 0").get(body.userId) as { id: string } | undefined;
-      // The synchronous preflight immediately precedes maintenance, so this
-      // lookup cannot change before the operation starts.
-      if (!currentTarget) throw httpError(404, "USER_NOT_FOUND");
-      const changedAt = now();
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        // The new owner may already be a shared member. The previous owner keeps
-        // edit access so a transfer does not unexpectedly lock them out.
-        db.prepare("DELETE FROM project_members WHERE project_id = ? AND user_id = ?").run(id, currentTarget.id);
-        db.prepare(`INSERT INTO project_members (project_id, user_id, permission, created_at)
-          VALUES (?, ?, 'edit', ?)
-          ON CONFLICT(project_id, user_id) DO UPDATE SET permission = 'edit'`)
-          .run(id, user.id, changedAt);
-        db.prepare("UPDATE projects SET owner_id = ?, last_modified_by = ?, updated_at = ? WHERE id = ?")
-          .run(currentTarget.id, user.id, changedAt, id);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      return {
-        project: projectJson(
-          accessibleProject(db, id, user)!,
-          tagsForProject(db, id, user.id),
-          commentsSummaryForProject(db, id)
-        )
-      };
-    }, { preflight: () => {
-      requireActualProjectOwner(db, id, user);
-      if (!db.prepare("SELECT 1 FROM users WHERE id = ? AND disabled = 0").get(body.userId)) {
-        throw httpError(404, "USER_NOT_FOUND");
-      }
-    } });
-  });
-
   app.put("/api/projects/:id/members/:userId", async (request, reply) => {
     const user = requireUser(request, reply, db);
     if (!user) return;
@@ -359,6 +319,28 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
 
 function isEmail(value: string): boolean {
   return value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function activeInvitationRecipientByEmail(db: DatabaseConnection, email: string): InvitationRecipient | undefined {
+  return db.prepare(`SELECT id, username, display_name AS displayName, email
+    FROM users WHERE email = ? COLLATE NOCASE AND disabled = 0`).get(email) as InvitationRecipient | undefined;
+}
+
+function invitationForUser(
+  db: DatabaseConnection,
+  invitationId: string,
+  userId: string,
+  email: string | null
+): unknown {
+  if (email) {
+    return db.prepare(`SELECT * FROM project_invitations
+      WHERE id = ? AND status = 'pending' AND (
+        recipient_user_id = ?
+        OR (recipient_user_id IS NULL AND email = ? COLLATE NOCASE)
+      )`).get(invitationId, userId, normalizeEmail(email));
+  }
+  return db.prepare(`SELECT * FROM project_invitations
+    WHERE id = ? AND status = 'pending' AND recipient_user_id = ?`).get(invitationId, userId);
 }
 
 function requestIsSecure(request: { protocol: string }): boolean {

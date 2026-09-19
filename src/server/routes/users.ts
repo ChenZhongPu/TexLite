@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { publicUser, requireAdmin, requireUser } from "../auth.js";
+import { normalizeEmail, publicUser, requireAdmin, requireUser } from "../auth.js";
 import type { CollaborationService } from "../collaboration.js";
 import type { Config } from "../config.js";
 import { activeAdminCount, type DatabaseConnection, type UserRow } from "../db.js";
@@ -29,7 +29,7 @@ function text(value: unknown, max = 200): string {
   return value.trim();
 }
 
-/** Register administrator-facing user management and the active-user directory. */
+/** Register administrator-facing user management and exact active-user lookup. */
 export function registerUserManagementRoutes(app: FastifyInstance, context: UserManagementRouteContext): void {
   const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines } = context;
 
@@ -178,9 +178,19 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
 
   app.get("/api/users", async (request, reply) => {
     if (!requireUser(request, reply, db)) return;
-    const rows = db.prepare("SELECT id, username, display_name AS displayName FROM users WHERE disabled = 0 ORDER BY username").all();
-    return { users: rows };
+    const query = request.query as { email?: unknown };
+    if (typeof query.email !== "string" || !isEmail(query.email)) {
+      return apiError(reply, 400, "USER_EMAIL_LOOKUP_INVALID");
+    }
+    const user = db.prepare(`SELECT id, username, display_name AS displayName
+      FROM users WHERE email = ? COLLATE NOCASE AND disabled = 0`)
+      .get(normalizeEmail(query.email)) as { id: string; username: string; displayName: string } | undefined;
+    return { user: user ?? null };
   });
+}
+
+function isEmail(value: string): boolean {
+  return value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 function positivePage(value: unknown, fallback: number): number {
