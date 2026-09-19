@@ -7,7 +7,7 @@
     "languageEnglish": "English", "languageChinese": "中文", "search": "Search"
   },
   "auth": {
-    "tagline": "A lightweight LaTeX writing environment", "username": "Username", "password": "Password", "login": "Sign in",
+    "tagline": "A lightweight LaTeX writing environment", "loginTitle": "Sign in to {{site}}", "passwordLogin": "Sign in with username and password", "username": "Username", "password": "Password", "login": "Sign in",
     "contact": "Need an account? Contact {{email}}", "firstLogin": "Change your temporary password to continue",
     "currentPassword": "Current password", "newPassword": "New password", "confirmPassword": "Confirm new password",
     "updatePassword": "Update password", "mismatch": "The new passwords do not match", "passwordMinimum": "At least {{count}} characters", "sessionExpired": "Your session has expired. Please sign in again.", "logout": "Sign out", "or": "or", "githubLogin": "Continue with GitHub", "emailAlreadyInUse": "This email address is already linked to another account.", "oauthIdentityAlreadyLinked": "This account is already linked to a different GitHub identity.", "oauthNotConfigured": "GitHub sign-in is not configured on this server."

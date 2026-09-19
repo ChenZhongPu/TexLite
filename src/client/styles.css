@@ -20,12 +20,26 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 .page { min-height: 100vh; display: flex; flex-direction: column; }
 .login-page { min-height: 100vh; display: grid; grid-template-rows: 1fr auto; place-items: center; padding-top: 44px; background: radial-gradient(circle at 50% 0, #d8e8dd, #f5f5f1 45%); }
-.login-card { width: min(390px, calc(100vw - 32px)); padding: 38px; display: flex; flex-direction: column; gap: 16px; background: rgba(255,255,255,.92); border: 1px solid #dfe4df; border-radius: 16px; box-shadow: 0 24px 70px rgba(29,49,36,.12); }
-.login-card h1 { text-align: center; margin: 0; letter-spacing: -.04em; }
-.login-card > p { text-align: center; margin: -8px 0 8px; }
+.login-card { width: min(420px, calc(100vw - 32px)); padding: 36px 40px 32px; display: flex; flex-direction: column; gap: 16px; background: rgba(255,255,255,.96); border: 1px solid #dfe4df; border-radius: 14px; box-shadow: 0 20px 60px rgba(29,49,36,.12); }
+.login-auth-card { gap: 0; }
+.login-auth-card .auth-logo { margin-bottom: 14px; }
+.login-title { margin: 0; color: #202421; font-size: 24px; letter-spacing: -.04em; text-align: center; }
+.login-subtitle { margin: 8px 0 28px; font-size: 13px; line-height: 1.45; text-align: center; }
+.login-card:not(.login-auth-card) > p { text-align: center; margin: -8px 0 8px; }
 .login-card label, .settings label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; font-weight: 650; }
 .login-card input, .settings input, .settings select, .settings textarea { width: 100%; border: 1px solid #cbd2cc; border-radius: 8px; padding: 10px 11px; background: white; outline: none; }
 .login-card input:focus, .settings input:focus { border-color: #176b44; box-shadow: 0 0 0 3px #176b4420; }
+.github-login-button { width: 100%; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid #24292f; border-radius: 8px; padding: 0 16px; background: #24292f; color: white; font-size: 13px; font-weight: 650; line-height: 1; text-decoration: none; white-space: nowrap; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .08s ease; }
+.github-login-button:hover, .github-login-button:focus-visible { border-color: #111418; background: #111418; box-shadow: 0 4px 12px #11141825; color: white; }
+.github-login-button:focus-visible { outline: 2px solid #176b44; outline-offset: 2px; }
+.github-login-button:active { transform: translateY(1px); }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 24px 0 20px; color: #8a948d; font-size: 11px; }
+.auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: #e2e7e3; }
+.login-password-form { display: flex; flex-direction: column; gap: 14px; }
+.login-method-label { margin: 0 -1px 1px; color: #536159; font-size: 12px; font-weight: 650; }
+.login-password-form .primary { width: 100%; min-height: 44px; margin-top: 4px; }
+.login-password-form .error { margin: -2px 0 0; }
+.login-card .support { margin-top: 24px; line-height: 1.45; }
 .site-logo { width: 40px; height: 40px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
 .site-logo img { display: block; width: 100%; height: 100%; }
 .site-logo.compact { width: 34px; height: 34px; margin: 0 16px 0 10px; }

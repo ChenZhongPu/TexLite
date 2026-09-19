@@ -6,7 +6,7 @@
     "languageEnglish": "English", "languageChinese": "中文", "search": "搜索"
   },
   "auth": {
-    "tagline": "轻量 LaTeX 写作环境", "username": "用户名", "password": "密码", "login": "登录",
+    "tagline": "轻量 LaTeX 写作环境", "loginTitle": "登录 {{site}}", "passwordLogin": "使用用户名和密码登录", "username": "用户名", "password": "密码", "login": "登录",
     "contact": "需要账号？请联系 {{email}}", "firstLogin": "首次登录，请修改初始密码", "currentPassword": "当前密码",
     "newPassword": "新密码", "confirmPassword": "确认新密码", "updatePassword": "更新密码", "mismatch": "两次输入的新密码不一致", "passwordMinimum": "至少 {{count}} 位", "sessionExpired": "登录状态已过期，请重新登录。", "logout": "退出", "or": "或", "githubLogin": "使用 GitHub 登录", "emailAlreadyInUse": "该邮箱地址已关联到另一个账户。", "oauthIdentityAlreadyLinked": "该账户已经关联了另一个 GitHub 登录身份。", "oauthNotConfigured": "服务器尚未配置 GitHub 登录。"
   },
