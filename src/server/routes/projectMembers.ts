@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { currentUser, normalizeEmail, requireUser } from "../auth.js";
+import { upsertNuwaxUser } from "./auth.js";
 import type { CollaborationService } from "../collaboration.js";
 import type { Config } from "../config.js";
 import type { DatabaseConnection } from "../db.js";
 import { apiError } from "../http.js";
+import { NuwaxOAuthError, NuwaxOAuthService, type NuwaxProfile } from "../nuwaxOAuth.js";
 import { accessibleProject } from "../projects.js";
 import { activeShareLinkForToken, createShareLinkSecret, revealShareLinkSecret, shareLinkPath } from "../shareLinks.js";
 import { basePathHref } from "../../shared/basePath.js";
@@ -14,18 +16,12 @@ interface ProjectMemberRouteContext {
   config: Config;
   db: DatabaseConnection;
   collaboration: CollaborationService;
-}
-
-interface InvitationRecipient {
-  id: string;
-  username: string;
-  displayName: string;
-  email: string | null;
+  nuwaxOAuth: NuwaxOAuthService;
 }
 
 /** Register project sharing, invitation, and member-permission routes. */
 export function registerProjectMemberRoutes(app: FastifyInstance, context: ProjectMemberRouteContext): void {
-  const { config, db, collaboration } = context;
+  const { config, db, collaboration, nuwaxOAuth } = context;
 
   app.get("/share/:token", async (request, reply) => {
     const { token } = request.params as { token: string };
@@ -156,16 +152,31 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     return { invitations };
   });
 
-  app.get("/api/projects/:id/invitation-recipient", async (request, reply) => {
+  app.post("/api/projects/:id/invitation-recipient", async (request, reply) => {
     const user = requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     const project = accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "MEMBERS_MANAGE_FORBIDDEN");
-    const query = request.query as { email?: unknown };
-    if (typeof query.email !== "string" || !isEmail(query.email)) return { user: null };
-    const target = activeInvitationRecipientByEmail(db, normalizeEmail(query.email));
-    return { user: target ?? null };
+    const body = (request.body ?? {}) as { phone?: unknown };
+    const phone = normalizePhone(body.phone);
+    if (!phone) return apiError(reply, 400, "INVITATION_PHONE_INVALID");
+    try {
+      const profile = await nuwaxOAuth.searchByPhone(user.id, phone);
+      if (!profile) return { user: null };
+      // A successful directory hit becomes a local account immediately. The
+      // later OAuth callback then finds the same row by the stable Nuwax sub.
+      const target = upsertNuwaxUser(db, profile);
+      if (target.disabled) return { user: null };
+      return { user: {
+        id: target.id,
+        username: target.username,
+        displayName: target.display_name,
+        avatarUrl: target.avatar_url
+      } };
+    } catch (error) {
+      return handleNuwaxSearchError(reply, error);
+    }
   });
 
   app.post("/api/projects/:id/invitations", async (request, reply) => {
@@ -174,37 +185,33 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     const { id } = request.params as { id: string };
     const project = accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "MEMBERS_MANAGE_FORBIDDEN");
-    const body = (request.body ?? {}) as { email?: unknown; permission?: unknown };
-    if (typeof body.email !== "string" || !isEmail(body.email)) return apiError(reply, 400, "INVITATION_EMAIL_INVALID");
-    const email = normalizeEmail(body.email);
-    const target = activeInvitationRecipientByEmail(db, email);
-    if (target && target.id === project.owner_id) return apiError(reply, 400, "INVITATION_OWNER_FORBIDDEN");
-    if (target && db.prepare("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?").get(id, target.id)) {
+    const body = (request.body ?? {}) as { phone?: unknown; permission?: unknown };
+    const phone = normalizePhone(body.phone);
+    if (!phone) return apiError(reply, 400, "INVITATION_PHONE_INVALID");
+    let profile: NuwaxProfile | null;
+    try {
+      profile = await nuwaxOAuth.searchByPhone(user.id, phone);
+    } catch (error) {
+      return handleNuwaxSearchError(reply, error);
+    }
+    if (!profile) return apiError(reply, 404, "INVITATION_RECIPIENT_NOT_FOUND");
+    const target = upsertNuwaxUser(db, profile);
+    if (target.disabled) return apiError(reply, 404, "INVITATION_RECIPIENT_NOT_FOUND");
+    if (target.id === project.owner_id) return apiError(reply, 400, "INVITATION_OWNER_FORBIDDEN");
+    if (db.prepare("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?").get(id, target.id)) {
       return apiError(reply, 409, "INVITATION_MEMBER_EXISTS");
     }
-    // A matched email binds the invitation to the durable local user ID. An
-    // unmatched (but valid) email remains a compatible external invitation
-    // that can be accepted after its owner registers with that address.
-    const recipientUserId = target?.id ?? null;
+    // The phone is used only for this exact Nuwax lookup. The durable
+    // invitation stores the returned TexLite user ID and never stores the phone.
+    const recipientUserId = target.id;
+    const email = target.email;
     const permission = body.permission === "edit" ? "edit" : "read";
     const createdAt = now();
     const invitationId = db.transaction(() => {
-      // Prefer an already bound invitation when both paths exist. Updating an
-      // older external row first could otherwise conflict with the partial
-      // unique index on recipient_user_id.
-      const pending = recipientUserId
-        ? db.prepare(`SELECT id FROM project_invitations
-            WHERE project_id = ? AND status = 'pending' AND (
-              recipient_user_id = ?
-              OR (recipient_user_id IS NULL AND email = ? COLLATE NOCASE)
-            )
-            ORDER BY CASE WHEN recipient_user_id = ? THEN 0 ELSE 1 END, created_at DESC, id DESC
-            LIMIT 1`)
-          .get(id, recipientUserId, email, recipientUserId) as { id: string } | undefined
-        : db.prepare(`SELECT id FROM project_invitations
-            WHERE project_id = ? AND recipient_user_id IS NULL AND email = ? COLLATE NOCASE AND status = 'pending'
-            ORDER BY created_at DESC, id DESC LIMIT 1`)
-          .get(id, email) as { id: string } | undefined;
+      const pending = db.prepare(`SELECT id FROM project_invitations
+        WHERE project_id = ? AND status = 'pending' AND recipient_user_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT 1`)
+        .get(id, recipientUserId) as { id: string } | undefined;
       const selectedId = pending?.id ?? randomUUID();
       if (pending) {
         db.prepare(`UPDATE project_invitations
@@ -223,18 +230,18 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
             recipient_user_id = ?
             OR (recipient_user_id IS NULL AND email = ? COLLATE NOCASE)
           )`)
-          .run(createdAt, id, selectedId, recipientUserId, email);
+          .run(createdAt, id, selectedId, recipientUserId, email ?? "");
       }
       return selectedId;
     })();
     touchProject(db, id, user.id);
     return reply.code(201).send({ invitation: {
       id: invitationId,
-      email,
+      email: email ?? null,
       permission,
       createdAt,
       recipientUsername: target?.username ?? null,
-      recipientDisplayName: target?.displayName ?? null
+      recipientDisplayName: target.display_name ?? null
     } });
   });
 
@@ -361,13 +368,19 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
   });
 }
 
-function isEmail(value: string): boolean {
-  return value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+function normalizePhone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const compact = value.trim().replace(/[\s()-]/g, "");
+  return /^\+?[0-9]{7,20}$/.test(compact) ? compact : null;
 }
 
-function activeInvitationRecipientByEmail(db: DatabaseConnection, email: string): InvitationRecipient | undefined {
-  return db.prepare(`SELECT id, username, display_name AS displayName, email
-    FROM users WHERE email = ? COLLATE NOCASE AND disabled = 0`).get(email) as InvitationRecipient | undefined;
+function handleNuwaxSearchError(reply: { code: (status: number) => { send: (payload: unknown) => unknown }; request?: { headers?: Record<string, string | string[] | undefined> } }, error: unknown): unknown {
+  if (error instanceof NuwaxOAuthError) {
+    if (error.failure === "reauth") return apiError(reply, 401, "NUWAX_SEARCH_REAUTH_REQUIRED");
+    if (error.failure === "scope") return apiError(reply, 403, "NUWAX_SEARCH_SCOPE_REQUIRED");
+    if (error.failure === "rate_limited") return apiError(reply, 429, "NUWAX_SEARCH_RATE_LIMITED");
+  }
+  return apiError(reply, 502, "NUWAX_SEARCH_FAILED");
 }
 
 function invitationForUser(

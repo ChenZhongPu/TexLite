@@ -50,6 +50,7 @@ import { registerUserManagementRoutes } from "./routes/users.js";
 import { registerWordCountRoutes } from "./routes/wordCount.js";
 import { HarperService } from "./harper.js";
 import { TexcountService } from "./texcount.js";
+import { NuwaxOAuthService } from "./nuwaxOAuth.js";
 import { basePathHref, basePathPrefix, withoutBasePath } from "../shared/basePath.js";
 
 // Retained public helper for callers and tests; implementation lives with the file routes.
@@ -87,7 +88,7 @@ function escapeHtmlAttribute(value: string): string {
 export async function buildApp(
   config: Config,
   db: DatabaseConnection,
-  options: { logger?: boolean; githubFetch?: typeof fetch } = {}
+  options: { logger?: boolean; nuwaxFetch?: typeof fetch } = {}
 ): Promise<FastifyInstance> {
   // The CLI holds the instance lock before it constructs the app. Resolve any
   // interrupted filesystem/database deletion before another startup task can
@@ -105,6 +106,7 @@ export async function buildApp(
     trustProxy: trustedProxyIps.length > 0 ? trustedProxyIps : false
   });
   const queue = new CompileQueue(config.maxCompileJobs);
+  const nuwaxOAuth = new NuwaxOAuthService(config, db, options.nuwaxFetch);
   const compileCoordinator = new ProjectCompileCoordinator(queue);
   const metrics = new MetricRegistry(200);
   const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
@@ -277,7 +279,7 @@ export async function buildApp(
       eventLoopDelay
     });
     registerCollaborationRoutes(routes, { db, collaboration, metrics });
-    registerAuthRoutes(routes, { config, db, collaboration, loginLimiter, githubFetch: options.githubFetch });
+    registerAuthRoutes(routes, { config, db, collaboration, loginLimiter, nuwaxOAuth });
     registerCitationRoutes(routes, { db });
     registerUserManagementRoutes(routes, {
       config,
@@ -289,7 +291,7 @@ export async function buildApp(
       projectQuota
     });
     registerCommentRoutes(routes, { config, db, collaboration, projectMutations });
-    registerProjectMemberRoutes(routes, { config, db, collaboration });
+    registerProjectMemberRoutes(routes, { config, db, collaboration, nuwaxOAuth });
     registerProjectFileRoutes(routes, {
       config,
       db,

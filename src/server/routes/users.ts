@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { normalizeEmail, publicUser, requireAdmin, requireUser } from "../auth.js";
+import { isValidUsername, MAX_DISPLAY_NAME_LENGTH, MAX_USERNAME_LENGTH } from "./auth.js";
 import type { CollaborationService } from "../collaboration.js";
 import type { Config } from "../config.js";
 import { activeAdminCount, type DatabaseConnection, type UserRow } from "../db.js";
@@ -68,14 +69,14 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
   app.post("/api/admin/users", async (request, reply) => {
     if (!requireAdmin(request, reply, db)) return;
     const body = request.body as Record<string, unknown>;
-    const username = text(body?.username, 64);
-    if (!/^[\p{L}\p{N}_.-]+$/u.test(username)) return apiError(reply, 400, "USERNAME_INVALID");
-    const displayName = text(body?.displayName ?? username, 100);
+    const username = text(body?.username, MAX_USERNAME_LENGTH);
+    if (!isValidUsername(username)) return apiError(reply, 400, "USERNAME_INVALID");
+    const displayName = text(body?.displayName ?? username, MAX_DISPLAY_NAME_LENGTH);
     const password = typeof body?.password === "string" ? body.password : "";
     const role = body?.role === "admin" ? "admin" : "user";
     const user: UserRow = {
       id: randomUUID(), username, display_name: displayName,
-      password_hash: await hashPassword(password), email: null, github_id: null, avatar_url: null, role, disabled: 0,
+      password_hash: await hashPassword(password), email: null, github_id: null, nuwax_subject: null, avatar_url: null, role, disabled: 0,
       must_change_password: 0, can_create_projects: body?.canCreateProjects === true ? 1 : 0, created_at: now()
     };
     db.prepare(`INSERT INTO users
@@ -99,7 +100,7 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
     if (target.role === "admin" && (!role || role !== "admin" || disabled) && activeAdminCount(db) <= 1) {
       return apiError(reply, 400, "LAST_ADMIN");
     }
-    const displayName = typeof body.displayName === "string" ? text(body.displayName, 100) : target.display_name;
+    const displayName = typeof body.displayName === "string" ? text(body.displayName, MAX_DISPLAY_NAME_LENGTH) : target.display_name;
     let passwordHash = target.password_hash;
     let mustChange = target.must_change_password;
     if (typeof body.password === "string" && body.password) {

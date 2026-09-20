@@ -10,7 +10,7 @@ export interface PublicUser {
   displayName: string;
   email: string | null;
   avatarUrl: string | null;
-  githubConnected: boolean;
+  nuwaxConnected: boolean;
   role: "admin" | "user";
   disabled: boolean;
   mustChangePassword: boolean;
@@ -26,7 +26,7 @@ export function publicUser(user: UserRow): PublicUser {
     displayName: user.display_name,
     email: user.email ?? null,
     avatarUrl: user.avatar_url ?? null,
-    githubConnected: Boolean(user.github_id),
+    nuwaxConnected: Boolean(user.nuwax_subject),
     role: user.role,
     disabled: Boolean(user.disabled),
     mustChangePassword: Boolean(user.must_change_password),
@@ -36,8 +36,7 @@ export function publicUser(user: UserRow): PublicUser {
   };
 }
 
-/** GitHub returns verified mailbox identities; all invitation comparisons use
- * the normalized lowercase form so case differences cannot bypass matching. */
+/** Retained for legacy account metadata and invitation migrations. */
 export function normalizeEmail(value: string): string {
   return value.trim().toLocaleLowerCase("en-US");
 }

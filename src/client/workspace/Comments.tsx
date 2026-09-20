@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { AtSign, Check, CheckCircle2, Copy, Eye, Link2, Pencil, Reply, RotateCcw, Save, Send, Trash2, UserPlus, Users } from "lucide-react";
+import { AtSign, Check, CheckCircle2, Copy, Eye, Link2, Pencil, Reply, RotateCcw, Save, Search, Send, Trash2, UserPlus, Users } from "lucide-react";
 import { api } from "../api";
 import { ConfirmDialog, Modal } from "../Dialog";
 import { errorMessage } from "../errors";
@@ -110,8 +110,8 @@ export function CommentThread({
 
 interface ShareMember { id: string; username: string; email: string | null; displayName?: string; permission: "read" | "edit" }
 
-function validInviteEmail(value: string): boolean {
-  return value.length <= 320 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+function validInvitePhone(value: string): boolean {
+  return /^\+?[0-9]{7,20}$/.test(value.trim().replace(/[\s()-]/g, ""));
 }
 
 export function ShareDialog({ open, onOpenChange, project, projectId }: {
@@ -121,9 +121,9 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
   const [members, setMembers] = useState<ShareMember[]>([]);
   const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
   const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
-  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [permission, setPermission] = useState<"read" | "edit">("read");
-  const [recipientPreview, setRecipientPreview] = useState<{ username: string; displayName: string; email: string | null } | null>(null);
+  const [recipientPreview, setRecipientPreview] = useState<{ username: string; displayName: string; avatarUrl?: string | null } | null>(null);
   const [recipientLookup, setRecipientLookup] = useState(false);
   const [recipientLookupDone, setRecipientLookupDone] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ShareMember | null>(null);
@@ -150,37 +150,32 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
     } catch (error) { setError(errorMessage(error)); }
   };
   useEffect(() => { if (open) void load(); }, [open, projectId, canManage]);
-  useEffect(() => {
-    const normalizedEmail = email.trim();
-    setRecipientPreview(null);
-    setRecipientLookupDone(false);
-    if (!open || !canManage || !validInviteEmail(normalizedEmail)) {
-      setRecipientLookup(false);
-      return;
-    }
+  const lookupRecipient = async () => {
+    const normalizedPhone = phone.trim().replace(/[\s()-]/g, "");
+    if (!validInvitePhone(normalizedPhone) || recipientLookup) return;
     setRecipientLookup(true);
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void api<{ user: { username: string; displayName: string; email: string | null } | null }>(
-        `/api/projects/${projectId}/invitation-recipient?email=${encodeURIComponent(normalizedEmail)}`,
-        { signal: controller.signal }
-      ).then((result) => {
-        if (controller.signal.aborted) return;
-        setRecipientPreview(result.user);
-        setRecipientLookupDone(true);
-      }).catch((lookupError) => {
-        if (!controller.signal.aborted) setError(errorMessage(lookupError));
-      }).finally(() => {
-        if (!controller.signal.aborted) setRecipientLookup(false);
-      });
-    }, 280);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [canManage, email, open, projectId]);
-  const addInvitation = async () => {
-    if (!email.trim()) return;
+    setRecipientLookupDone(false);
+    setRecipientPreview(null);
+    setError("");
     try {
-      await api(`/api/projects/${projectId}/invitations`, { method: "POST", body: JSON.stringify({ email, permission }) });
-      setEmail(""); setPermission("read"); await load();
+      const result = await api<{ user: { username: string; displayName: string; avatarUrl?: string | null } | null }>(
+        `/api/projects/${projectId}/invitation-recipient`,
+        { method: "POST", body: JSON.stringify({ phone: normalizedPhone }) }
+      );
+      setRecipientPreview(result.user);
+      setRecipientLookupDone(true);
+    } catch (lookupError) {
+      setError(errorMessage(lookupError));
+    } finally {
+      setRecipientLookup(false);
+    }
+  };
+  const addInvitation = async () => {
+    const normalizedPhone = phone.trim().replace(/[\s()-]/g, "");
+    if (!recipientPreview || !validInvitePhone(normalizedPhone)) return;
+    try {
+      await api(`/api/projects/${projectId}/invitations`, { method: "POST", body: JSON.stringify({ phone: normalizedPhone, permission }) });
+      setPhone(""); setRecipientPreview(null); setRecipientLookupDone(false); setPermission("read"); await load();
     } catch (error) { setError(errorMessage(error)); }
   };
   const changePermission = async (member: ShareMember, next: "read" | "edit") => {
@@ -232,8 +227,8 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
     <div className="share-dialog">
       {error && <p className="error">{error}</p>}
       <div className="share-owner"><Users size={17} /><span><small>{t("projects.owner")}</small><strong>{project.ownerDisplayName ?? project.ownerUsername}</strong></span></div>
-      {canManage && <div className="share-add"><div className="share-invite-email"><label className="form-field">{t("projectSettings.inviteEmail")}<input type="email" value={email} placeholder={t("projectSettings.inviteEmailPlaceholder")} onChange={(event) => setEmail(event.target.value)} /></label>{recipientLookup && <small className="field-hint">{t("projectSettings.recipientLookup")}</small>}{recipientPreview && <span className="share-recipient-preview"><span className="member-avatar">{recipientPreview.displayName.slice(0, 1).toLocaleUpperCase()}</span><span><strong>{recipientPreview.displayName}</strong><small>@{recipientPreview.username} · {recipientPreview.email ?? email.trim()}</small></span></span>}{recipientLookupDone && !recipientLookup && !recipientPreview && <small className="field-hint">{t("projectSettings.recipientNotFound")}</small>}</div><label className="form-field">{t("common.permission")}<select value={permission} onChange={(event) => setPermission(event.target.value as "read" | "edit")}><option value="read">{t("common.readOnly")}</option><option value="edit">{t("common.readWrite")}</option></select></label><button className="primary icon-button" disabled={!email.trim()} onClick={() => void addInvitation()}><UserPlus size={15} />{t("projectSettings.addMember")}</button><small className="field-hint">{t("projectSettings.inviteHint")}</small></div>}
-      {canManage && <><div className="shared-members-heading"><strong>{t("projectSettings.pendingInvitations")}</strong><span>{invitations.length}</span></div><div className="shared-members pending-invitations">{invitations.map((invitation) => <div className="shared-member" key={invitation.id}><span className="member-identity"><span className="member-avatar">@</span><span><strong>{invitation.recipientDisplayName ?? invitation.recipientUsername ?? invitation.email}</strong><small>{invitation.recipientUsername ? `@${invitation.recipientUsername} · ${invitation.email}` : invitation.email} · {invitation.permission === "edit" ? t("common.readWrite") : t("common.readOnly")}</small></span></span><button className="icon-only danger-text" title={t("common.remove")} aria-label={t("common.remove")} onClick={() => void revokeInvitation(invitation)}><Trash2 size={15} /></button></div>)}{invitations.length === 0 && <div className="share-empty"><span>{t("projectSettings.noPendingInvitations")}</span></div>}</div></>}
+      {canManage && <div className="share-add"><div className="share-invite-phone"><label className="form-field">{t("projectSettings.invitePhone")}<input type="tel" value={phone} placeholder={t("projectSettings.invitePhonePlaceholder")} onChange={(event) => { setPhone(event.target.value); setRecipientPreview(null); setRecipientLookupDone(false); }} /></label><button type="button" className="icon-button" disabled={!validInvitePhone(phone) || recipientLookup} onClick={() => void lookupRecipient()}><Search size={15} />{recipientLookup ? t("common.loading") : t("projectSettings.findRecipient")}</button>{recipientPreview && <span className="share-recipient-preview"><span className="member-avatar">{recipientPreview.displayName.slice(0, 1).toLocaleUpperCase()}</span><span><strong>{recipientPreview.displayName}</strong><small>@{recipientPreview.username}</small></span></span>}{recipientLookupDone && !recipientLookup && !recipientPreview && <small className="field-hint">{t("projectSettings.recipientNotFound")}</small>}</div><label className="form-field">{t("common.permission")}<select value={permission} onChange={(event) => setPermission(event.target.value as "read" | "edit")}><option value="read">{t("common.readOnly")}</option><option value="edit">{t("common.readWrite")}</option></select></label><button className="primary icon-button" disabled={!recipientPreview} onClick={() => void addInvitation()}><UserPlus size={15} />{t("projectSettings.addMember")}</button><small className="field-hint">{t("projectSettings.invitePhoneHint")}</small></div>}
+      {canManage && <><div className="shared-members-heading"><strong>{t("projectSettings.pendingInvitations")}</strong><span>{invitations.length}</span></div><div className="shared-members pending-invitations">{invitations.map((invitation) => <div className="shared-member" key={invitation.id}><span className="member-identity"><span className="member-avatar">@</span><span><strong>{invitation.recipientDisplayName ?? invitation.recipientUsername ?? t("projectSettings.pendingRecipient")}</strong><small>{invitation.recipientUsername ? `@${invitation.recipientUsername}` : t("projectSettings.pendingRecipient")} · {invitation.permission === "edit" ? t("common.readWrite") : t("common.readOnly")}</small></span></span><button className="icon-only danger-text" title={t("common.remove")} aria-label={t("common.remove")} onClick={() => void revokeInvitation(invitation)}><Trash2 size={15} /></button></div>)}{invitations.length === 0 && <div className="share-empty"><span>{t("projectSettings.noPendingInvitations")}</span></div>}</div></>}
       {canManage && <section className="share-links-section"><div className="share-links-heading"><div><strong><Link2 size={15} />{t("projectSettings.shareLinks")}</strong><p>{t("projectSettings.shareLinksDescription")}</p></div></div><button type="button" className="share-link-create" disabled={linkBusy} onClick={() => void createShareLink()}><Eye size={14} />{linkBusy ? t("common.loading") : t("projectSettings.createReadLink")}</button><small className="share-link-note">{t("projectSettings.revokeLinkDescription")}</small><div className="share-links-list">{shareLinks.map((link) => <div className="share-link-row" key={link.id}><span className="share-link-icon"><Eye size={14} /></span><span className="share-link-details"><strong>{t("projectSettings.linkRead")}</strong><input className="share-link-url" aria-label={t("projectSettings.linkRead")} readOnly value={new URL(link.url, window.location.origin).toString()} onFocus={(event) => event.currentTarget.select()} /><small>{new Date(link.createdAt).toLocaleString(i18n.resolvedLanguage)}</small></span><span className="share-link-actions"><button type="button" className="icon-only" title={copiedLinkId === link.id ? t("projectSettings.copiedLink") : t("projectSettings.copyLink")} aria-label={copiedLinkId === link.id ? t("projectSettings.copiedLink") : t("projectSettings.copyLink")} onClick={() => void copyShareLink(link)}>{copiedLinkId === link.id ? <Check size={15} /> : <Copy size={15} />}</button><button type="button" className="icon-only danger-text" title={t("projectSettings.revokeLink")} aria-label={t("projectSettings.revokeLink")} onClick={() => setRevokeLinkTarget(link)}><Trash2 size={15} /></button></span></div>)}{shareLinks.length === 0 && <div className="share-empty"><Link2 size={22} /><span>{t("projectSettings.noShareLinks")}</span></div>}</div></section>}
       <div className="shared-members-heading"><strong>{t("projectSettings.members")}</strong><span>{members.length}</span></div>
       <div className="shared-members">{members.map((member) => <div className="shared-member" key={member.id}><span className="member-identity"><span className="member-avatar">{(member.displayName ?? member.username).slice(0, 1).toLocaleUpperCase()}</span><span><strong>{member.displayName ?? member.username}</strong><small>{member.email ?? `@${member.username}`}</small></span></span><span className="member-controls"><select aria-label={t("common.permission")} disabled={!canManage} value={member.permission} onChange={(event) => void changePermission(member, event.target.value as "read" | "edit")}><option value="read">{t("common.readOnly")}</option><option value="edit">{t("common.readWrite")}</option></select>{canManage && <button className="icon-only danger-text" title={t("common.remove")} aria-label={t("common.remove")} onClick={() => setRemoveTarget(member)}><Trash2 size={15} /></button>}</span></div>)}{members.length === 0 && <div className="share-empty"><Users size={24} /><span>{t("projectSettings.noMembers")}</span></div>}</div>

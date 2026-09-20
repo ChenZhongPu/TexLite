@@ -152,10 +152,11 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
       maxProjectsPerUser: CONFIG_DEFAULTS.maxProjectsPerUser,
       maxSourceStorageMBPerUser: CONFIG_DEFAULTS.maxSourceStorageMBPerUser
     },
-    githubOAuth: {
-      clientId: process.env.TEXLITE_GITHUB_CLIENT_ID ?? "",
-      clientSecret: process.env.TEXLITE_GITHUB_CLIENT_SECRET ?? "",
-      ...(process.env.TEXLITE_GITHUB_REDIRECT_URI ? { redirectUri: process.env.TEXLITE_GITHUB_REDIRECT_URI } : {})
+    OAuth: {
+      baseURL: process.env.TEXLITE_NUWAX_BASE_URL ?? "https://testagent.xspaceagi.com",
+      clientId: process.env.TEXLITE_NUWAX_CLIENT_ID ?? "",
+      clientSecret: process.env.TEXLITE_NUWAX_CLIENT_SECRET ?? "",
+      ...(process.env.TEXLITE_NUWAX_REDIRECT_URI ? { redirectUri: process.env.TEXLITE_NUWAX_REDIRECT_URI } : {})
     },
     latex: {
       latexmk: CONFIG_DEFAULTS.latexmk,
@@ -321,7 +322,7 @@ async function printConfig(options: CliOptions): Promise<void> {
     historyMaxVersions: config.historyMaxVersions,
     historyMaxStorageBytes: config.historyMaxStorageBytes,
     editHistoryMaxStorageBytes: config.editHistoryMaxStorageBytes,
-    githubOAuthEnabled: Boolean(config.githubOAuth)
+    nuwaxOAuthEnabled: Boolean(config.oauth)
   }, null, 2));
 }
 

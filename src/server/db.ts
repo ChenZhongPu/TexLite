@@ -14,6 +14,8 @@ export interface UserRow {
   password_hash: string;
   email: string | null;
   github_id: string | null;
+  /** Stable Nuwax subject used to link pre-provisioned and OAuth accounts. */
+  nuwax_subject: string | null;
   avatar_url: string | null;
   role: UserRole;
   disabled: number;
@@ -95,7 +97,8 @@ const databaseMigrations: readonly DatabaseMigration[] = [
   { version: 5, name: "project_share_links", apply: applyProjectShareLinksMigration },
   { version: 6, name: "unique_user_emails_and_user_bound_invitations", apply: applyUniqueUserEmailsAndUserBoundInvitationsMigration },
   { version: 7, name: "recoverable_project_directory_staging", apply: applyRecoverableProjectDirectoryStagingMigration },
-  { version: 8, name: "recoverable_user_deletion_staging", apply: applyRecoverableUserDeletionStagingMigration }
+  { version: 8, name: "recoverable_user_deletion_staging", apply: applyRecoverableUserDeletionStagingMigration },
+  { version: 9, name: "nuwax_oauth_accounts_and_tokens", apply: applyNuwaxOAuthAccountsAndTokensMigration }
 ];
 
 export function openDatabase(config: Config): DatabaseConnection {
@@ -453,7 +456,7 @@ function applyBaselineMigration(db: DatabaseConnection, context: DatabaseMigrati
     CREATE TABLE IF NOT EXISTS project_invitations (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      email TEXT NOT NULL COLLATE NOCASE,
+      email TEXT COLLATE NOCASE,
       permission TEXT NOT NULL CHECK (permission IN ('read', 'edit')),
       invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'revoked')),
@@ -612,7 +615,7 @@ function applyGithubIdentityMigration(db: DatabaseConnection): void {
     CREATE TABLE IF NOT EXISTS project_invitations (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      email TEXT NOT NULL COLLATE NOCASE,
+      email TEXT COLLATE NOCASE,
       permission TEXT NOT NULL CHECK (permission IN ('read', 'edit')),
       invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'revoked')),
@@ -687,9 +690,8 @@ function applyProjectShareLinksMigration(db: DatabaseConnection): void {
 
 /**
  * Email remains optional: SQLite's partial unique index permits any number of
- * accounts without one, while making every non-null mailbox an unambiguous
- * account lookup key. Invitations remain email-addressed, but additionally
- * retain a known recipient ID so their identity survives provider changes.
+ * accounts without one, while making every non-null mailbox unambiguous. New
+ * invitations are bound to a local user ID; phone numbers are never stored.
  */
 function applyUniqueUserEmailsAndUserBoundInvitationsMigration(db: DatabaseConnection): void {
   // Older releases never write blank addresses, but treating historical blank
@@ -716,7 +718,7 @@ function applyUniqueUserEmailsAndUserBoundInvitationsMigration(db: DatabaseConne
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       recipient_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-      email TEXT NOT NULL COLLATE NOCASE,
+      email TEXT COLLATE NOCASE,
       permission TEXT NOT NULL CHECK (permission IN ('read', 'edit')),
       invited_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'declined', 'revoked')),
@@ -780,6 +782,27 @@ function applyRecoverableUserDeletionStagingMigration(db: DatabaseConnection): v
     );
     CREATE INDEX IF NOT EXISTS user_deletion_staging_created_at
       ON user_deletion_staging(created_at);
+  `);
+}
+
+/** Add the Nuwax account key and encrypted-token storage used by phone lookup. */
+function applyNuwaxOAuthAccountsAndTokensMigration(db: DatabaseConnection): void {
+  if (missingColumn(db, "users", "nuwax_subject")) {
+    db.exec("ALTER TABLE users ADD COLUMN nuwax_subject TEXT");
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS users_nuwax_subject_unique
+      ON users(nuwax_subject) WHERE nuwax_subject IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS nuwax_oauth_tokens (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      access_token_ciphertext TEXT NOT NULL,
+      access_token_expires_at TEXT NOT NULL,
+      refresh_token_ciphertext TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 

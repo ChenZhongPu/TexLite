@@ -7,11 +7,10 @@ fork 仓库地址为 [ChenZhongPu/TexLite](https://github.com/ChenZhongPu/TexLit
 
 ## 本 fork 的改动
 
-- **开放用户系统**：支持 GitHub OAuth 登录、分页用户管理、用户个人信息和密码自助管理，
-  并使用带身份提供方的账号唯一标识。邮箱是可选字段，但存在时会以大小写不敏感方式保持唯一；
-  经验证的同邮箱 OAuth 身份会关联到同一个 TexLite 账户。
-- **项目权限**：注册用户默认可以创建项目。邀请仅通过邮箱发出，同时展示匹配到的用户名；
-  被邀请者必须明确接受后，才会成为项目成员。未设置邮箱的账户仍可登录，但不能被项目邀请。
+- **开放用户系统**：接入 Nuwax OAuth，使用 Nuwax 返回的 `sub` 作为稳定的账号关联键；
+  用户名和显示名都支持在个人页面修改，长度上限均为 50。邮箱不是必填项，未返回邮箱的用户也可以正常注册和登录。
+- **项目权限**：注册用户默认可以创建项目。邀请使用 Nuwax 的手机号精确检索，检索结果会显示用户名和显示名；
+  手机号只用于检索，不写入 TexLite。被邀请者必须明确接受后，才会成为项目成员。
 - **项目分享**：项目所有者可以生成和撤销只读链接。只有链接权限的用户必须通过链接打开项目，
   不会出现在项目列表中，也不能批注或使用 `@` 提及；写权限必须通过明确加入项目获得。撤销链接
   不会移除已经加入项目的成员。
@@ -21,6 +20,29 @@ fork 仓库地址为 [ChenZhongPu/TexLite](https://github.com/ChenZhongPu/TexLit
 
 安装、部署和开发配置不在本 README 中重复说明，基础内容请参考
 [上游项目](https://github.com/SWUFE-DB-Group/TexLite)。
+
+## Nuwax OAuth 配置
+
+在配置文件中填写管理员登记的 Nuwax OAuth 信息。示例中的 `redirectUri` 故意留空，必须由管理员
+根据 Nuwax 应用后台登记的地址显式填写；本地测试时通常是
+`http://localhost:3001/auth/nuwax/callback`。
+
+```json
+{
+  "OAuth": {
+    "baseURL": "https://testagent.xspaceagi.com",
+    "clientId": "",
+    "clientSecret": "",
+    "redirectUri": ""
+  }
+}
+```
+
+应用需要登记 `user:search` scope。TexLite 按 Nuwax 的既有约定使用逗号分隔的
+`profile,user:search`，不是空格分隔。Client Secret 只放在服务端配置或环境变量中，不要提交到 Git。
+项目所有者首次使用手机号邀请前，需要先通过 Nuwax 登录一次，以便服务端取得带有该用户租户上下文的访问令牌。
+
+本地测试不需要保留旧数据；删除 `data` 目录后重新启动即可按当前配置初始化。
 
 ## 公网部署配额
 

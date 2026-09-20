@@ -29,10 +29,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .login-card label, .settings label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; font-weight: 650; }
 .login-card input, .settings input, .settings select, .settings textarea { width: 100%; border: 1px solid #cbd2cc; border-radius: 8px; padding: 10px 11px; background: white; outline: none; }
 .login-card input:focus, .settings input:focus { border-color: #176b44; box-shadow: 0 0 0 3px #176b4420; }
-.github-login-button { width: 100%; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid #24292f; border-radius: 8px; padding: 0 16px; background: #24292f; color: white; font-size: 13px; font-weight: 650; line-height: 1; text-decoration: none; white-space: nowrap; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .08s ease; }
-.github-login-button:hover, .github-login-button:focus-visible { border-color: #111418; background: #111418; box-shadow: 0 4px 12px #11141825; color: white; }
-.github-login-button:focus-visible { outline: 2px solid #176b44; outline-offset: 2px; }
-.github-login-button:active { transform: translateY(1px); }
+.oauth-login-button { width: 100%; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid #176b44; border-radius: 8px; padding: 0 16px; background: #176b44; color: white; font-size: 13px; font-weight: 650; line-height: 1; text-decoration: none; white-space: nowrap; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .08s ease; }
+.oauth-login-button:hover, .oauth-login-button:focus-visible { border-color: #0f4f31; background: #0f4f31; box-shadow: 0 4px 12px #176b4430; color: white; }
+.oauth-login-button:focus-visible { outline: 2px solid #176b44; outline-offset: 2px; }
+.oauth-login-button:active { transform: translateY(1px); }
 .auth-divider { display: flex; align-items: center; gap: 12px; margin: 24px 0 20px; color: #8a948d; font-size: 11px; }
 .auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: #e2e7e3; }
 .login-password-form { display: flex; flex-direction: column; gap: 14px; }
@@ -919,7 +919,7 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .share-owner small { color: #6f7d74; font-size: 10px; text-transform: uppercase; }
 .share-add { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; align-items: end; gap: 9px; padding-bottom: 16px; border-bottom: 1px solid #e4e7e4; }
 .share-add .icon-button { height: 39px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; font-size: 12px; }
-.share-invite-email { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.share-invite-phone { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .share-recipient-preview { min-width: 0; display: flex; align-items: center; gap: 7px; padding: 5px 7px; border: 1px solid #d7e5da; border-radius: 6px; background: #f5faf6; color: #2d5e40; }
 .share-recipient-preview > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .share-recipient-preview strong, .share-recipient-preview small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

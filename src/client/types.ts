@@ -7,7 +7,7 @@ export interface SiteConfig {
   /** Server-enforced cap for one citation-library BibTeX entry. */
   maxCitationBibtexBytes: number;
   allowedEngines?: Array<"pdflatex" | "xelatex" | "lualatex">;
-  githubOAuthEnabled: boolean;
+  nuwaxOAuthEnabled: boolean;
   maxUploadSizeMB: number;
   maxCollaborativeFileSizeMB: number;
 }
@@ -19,7 +19,7 @@ export interface User {
   role: "admin" | "user";
   email: string | null;
   avatarUrl: string | null;
-  githubConnected: boolean;
+  nuwaxConnected: boolean;
   disabled: boolean;
   mustChangePassword: boolean;
   hasPassword: boolean;
@@ -139,7 +139,7 @@ export interface HistoryVersionDetail {
 export interface ProjectInvitation {
   id: string;
   projectId?: string;
-  email: string;
+  email: string | null;
   permission: "read" | "edit";
   createdAt: string;
   recipientUsername?: string | null;

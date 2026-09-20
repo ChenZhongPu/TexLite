@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, CheckCircle2, Github, KeyRound, Save, UserRound } from "lucide-react";
+import { ArrowLeft, CheckCircle2, KeyRound, LogIn, Save, UserRound } from "lucide-react";
 import { api } from "../api";
 import { errorMessage } from "../errors";
 import type { SiteConfig, User } from "../types";
@@ -12,6 +12,7 @@ export function UserProfile({ site, user, onUser, onBack }: {
   onBack: () => void;
 }) {
   const { t } = useTranslation();
+  const [username, setUsername] = useState(user.username);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [displayNameBusy, setDisplayNameBusy] = useState(false);
   const [displayNameError, setDisplayNameError] = useState("");
@@ -32,8 +33,9 @@ export function UserProfile({ site, user, onUser, onBack }: {
     try {
       const result = await api<{ user: User }>("/api/me", {
         method: "PATCH",
-        body: JSON.stringify({ displayName })
+        body: JSON.stringify({ username, displayName })
       });
+      setUsername(result.user.username);
       setDisplayName(result.user.displayName);
       onUser(result.user);
       setDisplayNameSaved(true);
@@ -82,8 +84,11 @@ export function UserProfile({ site, user, onUser, onBack }: {
       <section className="profile-card">
         <div className="profile-card-heading"><UserRound aria-hidden size={18} /><div><h2>{t("profile.identityTitle")}</h2><p>{t("profile.identityDescription")}</p></div></div>
         <form className="profile-form" onSubmit={(event) => void saveDisplayName(event)}>
+          <label className="form-field">{t("profile.username")}
+            <input maxLength={50} value={username} onChange={(event) => { setUsername(event.target.value); setDisplayNameSaved(false); }} />
+          </label>
           <label className="form-field">{t("profile.displayName")}
-            <input maxLength={100} value={displayName} onChange={(event) => { setDisplayName(event.target.value); setDisplayNameSaved(false); }} />
+            <input maxLength={50} value={displayName} onChange={(event) => { setDisplayName(event.target.value); setDisplayNameSaved(false); }} />
           </label>
           {displayNameError && <p className="error dialog-error">{displayNameError}</p>}
           {displayNameSaved && <p className="profile-success" role="status"><CheckCircle2 aria-hidden size={14} />{t("profile.saved")}</p>}
@@ -92,7 +97,7 @@ export function UserProfile({ site, user, onUser, onBack }: {
         <dl className="profile-details">
           <div><dt>{t("profile.username")}</dt><dd>@{user.username}</dd></div>
           <div><dt>{t("profile.email")}</dt><dd>{user.email ?? "—"}</dd></div>
-          <div><dt>{t("profile.signIn")}</dt><dd>{user.githubConnected ? <><Github aria-hidden size={14} />{t("profile.github")}</> : t("profile.localPassword")}</dd></div>
+          <div><dt>{t("profile.signIn")}</dt><dd>{user.nuwaxConnected ? <><LogIn aria-hidden size={14} />{t("profile.nuwax")}</> : t("profile.localPassword")}</dd></div>
         </dl>
       </section>
       <section className="profile-card">

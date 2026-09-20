@@ -6,7 +6,7 @@ import type { SiteConfig, User } from "../types";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { SiteFooter, SiteLogo } from "./SiteChrome";
 import { appPath } from "../basePath";
-import { Github } from "lucide-react";
+import { LogIn } from "lucide-react";
 
 export function ChangePassword({ site, user, onChanged }: { site: SiteConfig; user: User; onChanged: (user: User) => void }) {
   const { t } = useTranslation();
@@ -37,9 +37,9 @@ export function Login({ site, onLogin }: { site: SiteConfig; onLogin: (user: Use
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const returnPath = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("return") ?? "";
-  const githubLoginPath = returnPath
-    ? `${appPath("/api/auth/github", site.basePath)}?return=${encodeURIComponent(returnPath)}`
-    : appPath("/api/auth/github", site.basePath);
+  const nuwaxLoginPath = returnPath
+    ? `${appPath("/api/auth/nuwax", site.basePath)}?return=${encodeURIComponent(returnPath)}`
+    : appPath("/api/auth/nuwax", site.basePath);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
@@ -55,13 +55,13 @@ export function Login({ site, onLogin }: { site: SiteConfig; onLogin: (user: Use
       <SiteLogo siteName={site.siteName} auth />
       <h1 className="login-title">{t("auth.loginTitle", { site: site.siteName })}</h1>
       <p className="muted login-subtitle">{t("auth.tagline")}</p>
-      {site.githubOAuthEnabled && <>
-        <a className="github-login-button" href={githubLoginPath}><Github aria-hidden size={18} /><span>{t("auth.githubLogin")}</span></a>
+      {site.nuwaxOAuthEnabled && <>
+        <a className="oauth-login-button" href={nuwaxLoginPath}><LogIn aria-hidden size={18} /><span>{t("auth.nuwaxLogin")}</span></a>
         <div className="auth-divider"><span>{t("auth.or")}</span></div>
       </>}
       <div className="login-password-form">
-        {site.githubOAuthEnabled && <p className="login-method-label">{t("auth.passwordLogin")}</p>}
-        <label>{t("auth.username")}<input autoFocus={!site.githubOAuthEnabled} value={username} onChange={(e) => setUsername(e.target.value)} /></label>
+        {site.nuwaxOAuthEnabled && <p className="login-method-label">{t("auth.passwordLogin")}</p>}
+        <label>{t("auth.username")}<input autoFocus={!site.nuwaxOAuthEnabled} value={username} onChange={(e) => setUsername(e.target.value)} /></label>
         <label>{t("auth.password")}<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
         {error && <p className="error">{error}</p>}
         <button className="primary" type="submit">{t("auth.login")}</button>

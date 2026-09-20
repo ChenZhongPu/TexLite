@@ -45,6 +45,7 @@ describe("texLite application", () => {
   let db: DatabaseConnection;
   let app: FastifyInstance;
   let cookie: string;
+  let nuwaxAdminCookie: string;
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-test-"));
@@ -59,12 +60,10 @@ describe("texLite application", () => {
       historyMaxVersions: 200, historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024,
       maxProjectsPerUser: 1_000, maxSourceStorageBytesPerUser: 2 * 1024 * 1024 * 1024,
       git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com",
-      githubOAuth: {
+      oauth: {
         clientId: "oauth-test-client", clientSecret: "oauth-test-secret",
-        redirectUri: "http://localhost:3001/auth/github/callback",
-        authorizeUrl: "https://github.com/login/oauth/authorize",
-        tokenUrl: "https://github.com/login/oauth/access_token",
-        apiUrl: "https://api.github.com"
+        redirectUri: "http://localhost:3001/auth/nuwax/callback",
+        baseUrl: "https://testagent.xspaceagi.com"
       }
     };
     fs.mkdirSync(path.join(config.clientDir, "assets"), { recursive: true });
@@ -72,42 +71,48 @@ describe("texLite application", () => {
     fs.writeFileSync(path.join(config.clientDir, "assets", "app-deadbeef.js"), "export {};\n");
     db = openDatabase(config);
     db.prepare(`INSERT INTO users
-      (id, username, display_name, password_hash, role, disabled, must_change_password, can_create_projects, created_at)
-      VALUES (?, 'admin', 'Administrator', ?, 'admin', 0, 0, 1, ?)`)
+      (id, username, display_name, password_hash, email, github_id, nuwax_subject, role, disabled, must_change_password, can_create_projects, created_at)
+      VALUES (?, 'admin', 'Administrator', ?, NULL, NULL, 'admin-sub', 'admin', 0, 0, 1, ?)`)
       .run(randomUUID(), await hashPassword("administrator password"), new Date().toISOString());
-    const githubFetch: typeof fetch = async (input, init) => {
+    const nuwaxFetch: typeof fetch = async (input, init) => {
       const url = String(input);
-      if (url === "https://github.com/login/oauth/access_token" && init?.method === "POST") {
+      if (url === "https://testagent.xspaceagi.com/api/oauth2/token" && init?.method === "POST") {
         const code = new URLSearchParams(String(init.body ?? "")).get("code");
-        if (code === "oauth-link-code") return Response.json({ access_token: "oauth-link-access-token" });
-        if (code === "oauth-linked-no-email-code") return Response.json({ access_token: "oauth-linked-no-email-access-token" });
-        if (code === "oauth-no-email-code") return Response.json({ access_token: "oauth-no-email-access-token" });
-        return Response.json({ access_token: "oauth-test-access-token" });
+        const suffix = code === "oauth-admin-code" ? "admin"
+          : code === "oauth-link-code" ? "link"
+            : code === "oauth-linked-no-email-code" ? "linked-no-email"
+              : code === "oauth-no-email-code" ? "no-email" : "test";
+        return Response.json({
+          access_token: `oauth-${suffix}-access-token`,
+          refresh_token: `refresh-${suffix}-token`,
+          expires_in: 7_200,
+          scope: "profile,user:search"
+        });
       }
       const authorization = new Headers(init?.headers).get("authorization");
-      if (authorization === "Bearer oauth-link-access-token" && url.endsWith("/user")) {
-        return Response.json({ id: 77123, login: "linked-github", name: "Linked GitHub", avatar_url: "https://avatars.example.test/linked" });
+      if (url.endsWith("/api/oauth2/userinfo")) {
+        if (authorization === "Bearer oauth-admin-access-token") {
+          return Response.json({ sub: "admin-sub", user_id: 1, name: "Administrator", avatar: null, tenant_id: 1 });
+        }
+        if (authorization === "Bearer oauth-link-access-token" || authorization === "Bearer oauth-linked-no-email-access-token") {
+          return Response.json({ sub: "77123", user_id: 77123, name: "Linked Nuwax", avatar: "https://avatars.example.test/linked", tenant_id: 1 });
+        }
+        if (authorization === "Bearer oauth-no-email-access-token") {
+          return Response.json({ sub: "77124", user_id: 77124, name: "Nuwax User", avatar: "https://avatars.example.test/no-email", tenant_id: 1 });
+        }
+        if (authorization === "Bearer oauth-test-access-token") {
+          return Response.json({ sub: "90210", user_id: 90210, name: "OAuth Invitee", avatar: "https://avatars.example.test/invitee", tenant_id: 1 });
+        }
       }
-      if (authorization === "Bearer oauth-link-access-token" && url.endsWith("/user/emails")) {
-        return Response.json([{ email: "linked@example.test", primary: true, verified: true }]);
-      }
-      if (authorization === "Bearer oauth-linked-no-email-access-token" && url.endsWith("/user")) {
-        return Response.json({ id: 77123, login: "linked-github", name: "Linked GitHub", avatar_url: "https://avatars.example.test/linked" });
-      }
-      if (authorization === "Bearer oauth-linked-no-email-access-token" && url.endsWith("/user/emails")) {
-        return Response.json([]);
-      }
-      if (authorization === "Bearer oauth-no-email-access-token" && url.endsWith("/user")) {
-        return Response.json({ id: 77124, login: "email-less-github", name: "Email-less GitHub", avatar_url: "https://avatars.example.test/email-less" });
-      }
-      if (authorization === "Bearer oauth-no-email-access-token" && url.endsWith("/user/emails")) {
-        return Response.json([]);
-      }
-      if (authorization === "Bearer oauth-test-access-token" && url.endsWith("/user")) {
-        return Response.json({ id: 90210, login: "oauth-invitee", name: "OAuth Invitee", avatar_url: "https://avatars.example.test/invitee" });
-      }
-      if (authorization === "Bearer oauth-test-access-token" && url.endsWith("/user/emails")) {
-        return Response.json([{ email: "invitee@example.test", primary: true, verified: true }]);
+      if (url.includes("/api/oauth2/user/search")) {
+        const phone = new URL(url).searchParams.get("phone");
+        if (authorization === "Bearer oauth-admin-access-token" && phone === "13800000000") {
+          return Response.json({ sub: "90210", user_id: 90210, name: "OAuth Invitee", avatar: "https://avatars.example.test/invitee", tenant_id: 1 });
+        }
+        if (authorization === "Bearer oauth-admin-access-token" && phone === "13900000000") {
+          return Response.json({ sub: "77125", user_id: 77125, name: "Provisioned Nuwax", avatar: "https://avatars.example.test/provisioned", tenant_id: 1 });
+        }
+        return Response.json({});
       }
       if (url.endsWith("/user") && init?.method === "GET") {
         return Response.json({ login: "texlite-owner" });
@@ -123,10 +128,21 @@ describe("texLite application", () => {
       }
       return Response.json({ message: "Not found" }, { status: 404 });
     };
-    app = await buildApp(config, db, { logger: false, githubFetch });
+    app = await buildApp(config, db, { logger: false, nuwaxFetch });
     const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: "admin", password: "administrator password" } });
     expect(login.statusCode).toBe(200);
     cookie = sessionCookie(login.headers);
+    const authorization = await app.inject({ method: "GET", url: "/api/auth/nuwax" });
+    const authorizeUrl = new URL(authorization.headers.location as string);
+    const state = authorizeUrl.searchParams.get("state");
+    const oauthCookie = namedCookie(authorization.headers, "texlite_oauth_state");
+    const callback = await app.inject({
+      method: "GET",
+      url: `/auth/nuwax/callback?code=oauth-admin-code&state=${encodeURIComponent(state ?? "")}`,
+      headers: { cookie: oauthCookie }
+    });
+    expect(callback.statusCode).toBe(302);
+    nuwaxAdminCookie = namedCookie(callback.headers, "texlite_session");
   }, 30_000);
 
   afterAll(async () => {
@@ -144,35 +160,36 @@ describe("texLite application", () => {
     expect(unauthenticated.json()).toMatchObject({ code: "AUTH_REQUIRED" });
     const publicConfig = await app.inject({ method: "GET", url: "/api/config" });
     expect(publicConfig.json()).toMatchObject({
-      siteName: "Test texLite", adminEmail: "admin@example.test", minPasswordLength: MIN_PASSWORD_LENGTH, githubOAuthEnabled: true,
+      siteName: "Test texLite", adminEmail: "admin@example.test", minPasswordLength: MIN_PASSWORD_LENGTH, nuwaxOAuthEnabled: true,
       maxCitationBibtexBytes: MAX_CITATION_BIBTEX_BYTES
     });
   });
 
-  it("registers with GitHub and requires invitation acceptance", async () => {
-    const authorization = await app.inject({ method: "GET", url: "/api/auth/github?return=%2Fdashboard" });
+  it("registers with Nuwax and requires invitation acceptance", async () => {
+    const authorization = await app.inject({ method: "GET", url: "/api/auth/nuwax?return=%2Fdashboard" });
     expect(authorization.statusCode).toBe(302);
     const authorizeUrl = new URL(authorization.headers.location as string);
-    expect(authorizeUrl.origin + authorizeUrl.pathname).toBe("https://github.com/login/oauth/authorize");
+    expect(authorizeUrl.origin + authorizeUrl.pathname).toBe("https://testagent.xspaceagi.com/api/oauth2/authorize");
     expect(authorizeUrl.searchParams.get("client_id")).toBe("oauth-test-client");
+    expect(authorizeUrl.searchParams.get("scope")).toBe("profile,user:search");
     const state = authorizeUrl.searchParams.get("state");
     expect(state).toBeTruthy();
     const oauthCookie = namedCookie(authorization.headers, "texlite_oauth_state");
 
     const callback = await app.inject({
       method: "GET",
-      url: `/auth/github/callback?code=oauth-test-code&state=${encodeURIComponent(state ?? "")}`,
+      url: `/auth/nuwax/callback?code=oauth-test-code&state=${encodeURIComponent(state ?? "")}`,
       headers: { cookie: oauthCookie }
     });
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe("/dashboard");
     const oauthUserCookie = namedCookie(callback.headers, "texlite_session");
     const me = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: oauthUserCookie } });
-    expect(me.json().user).toMatchObject({ username: "oauth-invitee", email: "invitee@example.test", githubConnected: true, hasPassword: false });
-    expect(db.prepare("SELECT issuer, subject, user_id, provider_username FROM auth_identities WHERE issuer = 'github'").get())
-      .toMatchObject({ issuer: "github", subject: "90210", user_id: me.json().user.id, provider_username: "oauth-invitee" });
+    expect(me.json().user).toMatchObject({ username: "90210", email: null, nuwaxConnected: true, hasPassword: false });
+    expect(db.prepare("SELECT issuer, subject, user_id, provider_username FROM auth_identities WHERE issuer = 'nuwax'").get())
+      .toMatchObject({ issuer: "nuwax", subject: "90210", user_id: me.json().user.id, provider_username: "OAuth Invitee" });
 
-    const displayNameUpdate = await app.inject({ method: "PATCH", url: "/api/me", headers: { cookie: oauthUserCookie }, payload: { displayName: "Local OAuth Name" } });
+    const displayNameUpdate = await app.inject({ method: "PATCH", url: "/api/me", headers: { cookie: oauthUserCookie }, payload: { username: "oauth-invitee", displayName: "Local OAuth Name" } });
     expect(displayNameUpdate.statusCode).toBe(200);
     expect(displayNameUpdate.json().user).toMatchObject({ displayName: "Local OAuth Name" });
     const passwordUpdate = await app.inject({ method: "PUT", url: "/api/me/password", headers: { cookie: oauthUserCookie }, payload: { newPassword: "oauth-password" } });
@@ -184,13 +201,13 @@ describe("texLite application", () => {
     const project = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Invitation project" } });
     const projectId = project.json().project.id as string;
     const invitation = await app.inject({
-      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie },
-      payload: { email: "invitee@example.test", permission: "edit" }
+      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie: nuwaxAdminCookie },
+      payload: { phone: "13800000000", permission: "edit" }
     });
     expect(invitation.statusCode).toBe(201);
     const invitationId = invitation.json().invitation.id as string;
     expect(db.prepare("SELECT recipient_user_id, email FROM project_invitations WHERE id = ?").get(invitationId))
-      .toMatchObject({ recipient_user_id: me.json().user.id, email: "invitee@example.test" });
+      .toMatchObject({ recipient_user_id: me.json().user.id, email: null });
     const pending = await app.inject({ method: "GET", url: "/api/invitations", headers: { cookie: oauthUserCookie } });
     expect(pending.json().invitations).toHaveLength(1);
     expect(pending.json().invitations[0]).toMatchObject({ id: invitationId, projectId, permission: "edit" });
@@ -204,7 +221,7 @@ describe("texLite application", () => {
     expect((await app.inject({ method: "POST", url: `/api/invitations/${invitationId}/accept`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(404);
     const memberDirectory = await app.inject({ method: "GET", url: `/api/projects/${projectId}/members`, headers: { cookie: oauthUserCookie } });
     expect(memberDirectory.statusCode).toBe(200);
-    expect(memberDirectory.json().members).toContainEqual(expect.objectContaining({ username: "oauth-invitee", email: "invitee@example.test" }));
+    expect(memberDirectory.json().members).toContainEqual(expect.objectContaining({ username: "oauth-invitee", email: null }));
 
     const shareReader = await app.inject({
       method: "POST", url: "/api/admin/users", headers: { cookie },
@@ -253,56 +270,36 @@ describe("texLite application", () => {
     expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
   });
 
-  it("retires legacy email invitations when an account is accepted or removed", async () => {
+  it("uses exact Nuwax phone lookup and never stores the phone in an invitation", async () => {
     const project = await app.inject({
-      method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Legacy invitation cleanup" }
+      method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Phone invitation" }
     });
     const projectId = project.json().project.id as string;
-    const external = await app.inject({
-      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie },
-      payload: { email: "legacy-invitee@example.test", permission: "read" }
+    const preview = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/invitation-recipient`, headers: { cookie: nuwaxAdminCookie },
+      payload: { phone: "139 0000 0000" }
     });
-    expect(external.statusCode).toBe(201);
-    const externalInvitationId = external.json().invitation.id as string;
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().user).toMatchObject({ username: "77125", displayName: "Provisioned Nuwax" });
+    expect(db.prepare("SELECT nuwax_subject FROM users WHERE username = '77125'").get())
+      .toEqual({ nuwax_subject: "77125" });
 
-    const created = await app.inject({
-      method: "POST", url: "/api/admin/users", headers: { cookie },
-      payload: { username: "legacy-invitee", displayName: "Legacy Invitee", password: "legacy-invitee-password" }
+    const invitation = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie: nuwaxAdminCookie },
+      payload: { phone: "13900000000", permission: "read" }
     });
-    const recipientId = created.json().user.id as string;
-    db.prepare("UPDATE users SET email = ? WHERE id = ?").run("legacy-invitee@example.test", recipientId);
-    // Emulate the two pending rows that an older deployment could retain:
-    // one email-only invitation and one newer account-bound invitation.
-    const boundInvitationId = randomUUID();
-    const adminId = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string }).id;
-    db.prepare(`INSERT INTO project_invitations
-      (id, project_id, recipient_user_id, email, permission, invited_by, status, created_at, responded_at)
-      VALUES (?, ?, ?, ?, 'edit', ?, 'pending', ?, NULL)`)
-      .run(boundInvitationId, projectId, recipientId, "legacy-invitee@example.test", adminId, new Date().toISOString());
+    expect(invitation.statusCode).toBe(201);
+    const invitationId = invitation.json().invitation.id as string;
+    expect(db.prepare("SELECT recipient_user_id, email FROM project_invitations WHERE id = ?").get(invitationId))
+      .toMatchObject({ recipient_user_id: preview.json().user.id, email: null });
+    expect(db.prepare("SELECT name FROM pragma_table_info('project_invitations') WHERE name = 'phone'").get()).toBeUndefined();
 
-    const normalized = await app.inject({
-      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie },
-      payload: { email: "legacy-invitee@example.test", permission: "edit" }
+    const invalid = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/invitation-recipient`, headers: { cookie: nuwaxAdminCookie },
+      payload: { phone: "not-a-phone" }
     });
-    expect(normalized.statusCode).toBe(201);
-    expect(normalized.json().invitation.id).toBe(boundInvitationId);
-    expect(db.prepare("SELECT status FROM project_invitations WHERE id = ?").get(externalInvitationId))
-      .toEqual({ status: "revoked" });
-
-    const login = await app.inject({
-      method: "POST", url: "/api/auth/login", payload: { username: "legacy-invitee", password: "legacy-invitee-password" }
-    });
-    const recipientCookie = sessionCookie(login.headers);
-    expect((await app.inject({
-      method: "POST", url: `/api/invitations/${boundInvitationId}/accept`, headers: { cookie: recipientCookie }
-    })).statusCode).toBe(200);
-    expect((await app.inject({
-      method: "DELETE", url: `/api/projects/${projectId}/members/${recipientId}`, headers: { cookie }
-    })).statusCode).toBe(200);
-    expect((await app.inject({
-      method: "POST", url: `/api/invitations/${externalInvitationId}/accept`, headers: { cookie: recipientCookie }
-    })).statusCode).toBe(404);
-    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: recipientCookie } })).statusCode).toBe(404);
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ code: "INVITATION_PHONE_INVALID" });
   });
 
   it("enforces per-account project-count and source-storage quotas", async () => {
@@ -367,49 +364,43 @@ describe("texLite application", () => {
     }
   });
 
-  it("links a verified GitHub email to an existing account and allows email-less OAuth accounts", async () => {
-    const local = await app.inject({
-      method: "POST", url: "/api/admin/users", headers: { cookie },
-      payload: { username: "email-linked-user", displayName: "Email Linked User", password: "linked-password" }
-    });
-    const localId = local.json().user.id as string;
-    db.prepare("UPDATE users SET email = ? WHERE id = ?").run("linked@example.test", localId);
-
-    const linkAuthorization = await app.inject({ method: "GET", url: "/api/auth/github" });
+  it("uses Nuwax sub as the stable account key and keeps email optional", async () => {
+    const linkAuthorization = await app.inject({ method: "GET", url: "/api/auth/nuwax" });
     const linkState = new URL(linkAuthorization.headers.location as string).searchParams.get("state");
     const linkedCallback = await app.inject({
       method: "GET",
-      url: `/auth/github/callback?code=oauth-link-code&state=${encodeURIComponent(linkState ?? "")}`,
+      url: `/auth/nuwax/callback?code=oauth-link-code&state=${encodeURIComponent(linkState ?? "")}`,
       headers: { cookie: namedCookie(linkAuthorization.headers, "texlite_oauth_state") }
     });
     expect(linkedCallback.statusCode).toBe(302);
     const linkedCookie = namedCookie(linkedCallback.headers, "texlite_session");
     const linkedMe = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: linkedCookie } });
-    expect(linkedMe.json().user).toMatchObject({ id: localId, username: "email-linked-user", email: "linked@example.test", githubConnected: true });
-    expect(db.prepare("SELECT user_id, issuer, subject FROM auth_identities WHERE issuer = 'github' AND subject = '77123'").get())
-      .toEqual({ user_id: localId, issuer: "github", subject: "77123" });
+    const linkedId = linkedMe.json().user.id as string;
+    expect(linkedMe.json().user).toMatchObject({ username: "77123", email: null, nuwaxConnected: true });
+    expect(db.prepare("SELECT user_id, issuer, subject FROM auth_identities WHERE issuer = 'nuwax' AND subject = '77123'").get())
+      .toEqual({ user_id: linkedId, issuer: "nuwax", subject: "77123" });
 
-    const linkedNoEmailAuthorization = await app.inject({ method: "GET", url: "/api/auth/github" });
+    const linkedNoEmailAuthorization = await app.inject({ method: "GET", url: "/api/auth/nuwax" });
     const linkedNoEmailState = new URL(linkedNoEmailAuthorization.headers.location as string).searchParams.get("state");
     const linkedNoEmailCallback = await app.inject({
       method: "GET",
-      url: `/auth/github/callback?code=oauth-linked-no-email-code&state=${encodeURIComponent(linkedNoEmailState ?? "")}`,
+      url: `/auth/nuwax/callback?code=oauth-linked-no-email-code&state=${encodeURIComponent(linkedNoEmailState ?? "")}`,
       headers: { cookie: namedCookie(linkedNoEmailAuthorization.headers, "texlite_oauth_state") }
     });
     expect(linkedNoEmailCallback.statusCode).toBe(302);
     const linkedNoEmailMe = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: namedCookie(linkedNoEmailCallback.headers, "texlite_session") } });
-    expect(linkedNoEmailMe.json().user).toMatchObject({ id: localId, email: "linked@example.test", githubConnected: true });
+    expect(linkedNoEmailMe.json().user).toMatchObject({ id: linkedId, username: "77123", email: null, nuwaxConnected: true });
 
-    const noEmailAuthorization = await app.inject({ method: "GET", url: "/api/auth/github" });
+    const noEmailAuthorization = await app.inject({ method: "GET", url: "/api/auth/nuwax" });
     const noEmailState = new URL(noEmailAuthorization.headers.location as string).searchParams.get("state");
     const noEmailCallback = await app.inject({
       method: "GET",
-      url: `/auth/github/callback?code=oauth-no-email-code&state=${encodeURIComponent(noEmailState ?? "")}`,
+      url: `/auth/nuwax/callback?code=oauth-no-email-code&state=${encodeURIComponent(noEmailState ?? "")}`,
       headers: { cookie: namedCookie(noEmailAuthorization.headers, "texlite_oauth_state") }
     });
     expect(noEmailCallback.statusCode).toBe(302);
     const noEmailMe = await app.inject({ method: "GET", url: "/api/me", headers: { cookie: namedCookie(noEmailCallback.headers, "texlite_session") } });
-    expect(noEmailMe.json().user).toMatchObject({ username: "email-less-github", email: null, githubConnected: true });
+    expect(noEmailMe.json().user).toMatchObject({ username: "77124", email: null, nuwaxConnected: true });
   });
 
   it("limits non-admin user lookup to an exact email address", async () => {

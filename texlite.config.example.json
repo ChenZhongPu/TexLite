@@ -26,7 +26,8 @@
     "maxProjectsPerUser": 100,
     "maxSourceStorageMBPerUser": 2048
   },
-  "githubOAuth": {
+  "OAuth": {
+    "baseURL": "https://testagent.xspaceagi.com",
     "clientId": "",
     "clientSecret": "",
     "redirectUri": ""

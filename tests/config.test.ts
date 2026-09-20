@@ -14,7 +14,8 @@ describe("configuration", () => {
     "TEXLITE_EDIT_HISTORY_MAX_STORAGE_MB",
     "TEXLITE_MAX_PROJECTS_PER_USER", "TEXLITE_MAX_PROJECT_SOURCE_STORAGE_MB",
     "TEXLITE_GIT", "TEXLITE_GIT_TIMEOUT", "TEXLITE_GITHUB_API_URL",
-    "TEXLITE_GITHUB_CLIENT_ID", "TEXLITE_GITHUB_CLIENT_SECRET", "TEXLITE_GITHUB_REDIRECT_URI"
+    "TEXLITE_NUWAX_CLIENT_ID", "TEXLITE_NUWAX_CLIENT_SECRET", "TEXLITE_NUWAX_REDIRECT_URI", "TEXLITE_NUWAX_BASE_URL",
+    "TEXLITE_OAUTH_CLIENT_ID", "TEXLITE_OAUTH_CLIENT_SECRET", "TEXLITE_OAUTH_REDIRECT_URI", "TEXLITE_OAUTH_BASE_URL"
   ] as const;
   const originalEnvironment = new Map(envKeys.map((key) => [key, process.env[key]]));
   let root = "";
@@ -88,32 +89,32 @@ describe("configuration", () => {
     });
   });
 
-  it("requires an explicit redirect URI when GitHub OAuth is enabled", () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-github-redirect-"));
+  it("requires an explicit redirect URI when Nuwax OAuth is enabled", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-nuwax-redirect-"));
     const configPath = path.join(root, "texlite.config.json");
     fs.writeFileSync(configPath, JSON.stringify({
       storage: { dataDir: path.join(root, "data") },
-      githubOAuth: { clientId: "client", clientSecret: "secret" }
+      OAuth: { clientId: "client", clientSecret: "secret" }
     }));
     process.env.TEXLITE_CONFIG = configPath;
-    delete process.env.TEXLITE_GITHUB_CLIENT_ID;
-    delete process.env.TEXLITE_GITHUB_CLIENT_SECRET;
-    delete process.env.TEXLITE_GITHUB_REDIRECT_URI;
-    expect(() => loadConfig()).toThrow(/githubOAuth\.redirectUri.*configured/);
+    delete process.env.TEXLITE_NUWAX_CLIENT_ID;
+    delete process.env.TEXLITE_NUWAX_CLIENT_SECRET;
+    delete process.env.TEXLITE_NUWAX_REDIRECT_URI;
+    expect(() => loadConfig()).toThrow(/OAuth\.redirectUri.*configured/);
   });
 
-  it("allows an empty redirect URI placeholder while GitHub OAuth is disabled", () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-github-placeholder-"));
+  it("allows an empty redirect URI placeholder while Nuwax OAuth is disabled", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-nuwax-placeholder-"));
     const configPath = path.join(root, "texlite.config.json");
     fs.writeFileSync(configPath, JSON.stringify({
       storage: { dataDir: path.join(root, "data") },
-      githubOAuth: { clientId: "", clientSecret: "", redirectUri: "" }
+      OAuth: { baseURL: "https://testagent.xspaceagi.com", clientId: "", clientSecret: "", redirectUri: "" }
     }));
     process.env.TEXLITE_CONFIG = configPath;
-    delete process.env.TEXLITE_GITHUB_CLIENT_ID;
-    delete process.env.TEXLITE_GITHUB_CLIENT_SECRET;
-    delete process.env.TEXLITE_GITHUB_REDIRECT_URI;
-    expect(loadConfig().githubOAuth).toBeNull();
+    delete process.env.TEXLITE_NUWAX_CLIENT_ID;
+    delete process.env.TEXLITE_NUWAX_CLIENT_SECRET;
+    delete process.env.TEXLITE_NUWAX_REDIRECT_URI;
+    expect(loadConfig().oauth).toBeNull();
   });
 
   it("rejects invalid limits instead of silently restoring a default", () => {

@@ -9,13 +9,11 @@ export type LatexEngine = typeof LATEX_ENGINES[number];
 export const PDF_LOADING_STRATEGIES = ["auto", "full", "range"] as const;
 export type PdfLoadingStrategy = typeof PDF_LOADING_STRATEGIES[number];
 
-export interface GithubOAuthConfig {
+export interface NuwaxOAuthConfig {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
-  authorizeUrl: string;
-  tokenUrl: string;
-  apiUrl: string;
+  baseUrl: string;
 }
 
 /** Effective values used when the corresponding file/env setting is omitted. */
@@ -48,7 +46,7 @@ export const CONFIG_DEFAULTS = {
   // limits. These apply to source files owned by one account.
   maxProjectsPerUser: 100,
   maxSourceStorageMBPerUser: 2_048,
-  githubOAuth: null as GithubOAuthConfig | null,
+  oauth: null as NuwaxOAuthConfig | null,
   // Retained only so old Config fixtures and old config files can be read
   // during migration. Project-level rc files are no longer honored.
   git: "git",
@@ -101,7 +99,7 @@ export interface Config {
   maxProjectsPerUser?: number;
   /** Per-account aggregate source-byte ceiling; populated by loadConfig(). */
   maxSourceStorageBytesPerUser?: number;
-  githubOAuth?: GithubOAuthConfig | null;
+  oauth?: NuwaxOAuthConfig | null;
   /** @deprecated Kept for source compatibility; always ignored by compile paths. */
   allowProjectLatexmkrc?: boolean;
   /** @deprecated Kept for source compatibility; Git routes are no longer registered. */
@@ -189,7 +187,7 @@ export function loadConfig(configPathOverride?: string): Config {
   );
   const basePath = resolveBasePath(fileConfig);
   const trustedProxyIps = resolveTrustedProxyIps(fileConfig);
-  const githubOAuth = resolveGithubOAuth(fileConfig);
+  const oauth = resolveNuwaxOAuth(fileConfig);
 
   const config: Config = {
     configPath,
@@ -218,7 +216,7 @@ export function loadConfig(configPathOverride?: string): Config {
     editHistoryMaxStorageBytes: editHistoryMaxStorageMB * 1024 * 1024,
     maxProjectsPerUser,
     maxSourceStorageBytesPerUser: maxSourceStorageMBPerUser * 1024 * 1024,
-    githubOAuth,
+    oauth,
     // Explicitly disable this legacy setting. It remains in the materialized
     // shape only for callers compiled against the pre-public-deployment API.
     allowProjectLatexmkrc: false,
@@ -252,14 +250,13 @@ export function validateConfig(config: Config): void {
   validateDirectoryTarget("projects directory", config.projectsDir, true);
   validateFileTarget("database path", config.databasePath);
   validateDirectoryTarget("client directory", config.clientDir, false);
-  if (config.githubOAuth) {
-    optionalString(config.githubOAuth.clientId, "githubOAuth.clientId", { min: 1, max: 256 });
-    optionalString(config.githubOAuth.clientSecret, "githubOAuth.clientSecret", { min: 1, max: 512 });
-    optionalString(config.githubOAuth.redirectUri, "githubOAuth.redirectUri", { min: 1, max: 2_048 });
-    validateUrl("githubOAuth.redirectUri", config.githubOAuth.redirectUri);
-    validateUrl("githubOAuth.authorizeUrl", config.githubOAuth.authorizeUrl);
-    validateUrl("githubOAuth.tokenUrl", config.githubOAuth.tokenUrl);
-    validateUrl("githubOAuth.apiUrl", config.githubOAuth.apiUrl);
+  if (config.oauth) {
+    optionalString(config.oauth.clientId, "OAuth.clientId", { min: 1, max: 256 });
+    optionalString(config.oauth.clientSecret, "OAuth.clientSecret", { min: 1, max: 512 });
+    optionalString(config.oauth.redirectUri, "OAuth.redirectUri", { min: 1, max: 2_048 });
+    optionalString(config.oauth.baseUrl, "OAuth.baseURL", { min: 1, max: 2_048 });
+    validateUrl("OAuth.redirectUri", config.oauth.redirectUri);
+    validateUrl("OAuth.baseURL", config.oauth.baseUrl);
   }
   if (!config.allowedEngines.length || new Set(config.allowedEngines).size !== config.allowedEngines.length) {
     throw configurationError("latex.allowedEngines", "must contain at least one unique engine");
@@ -320,13 +317,22 @@ interface FileConfig {
   history?: { maxVersions?: number; maxStorageMB?: number };
   editHistory?: { maxStorageMB?: number };
   projects?: { maxProjectsPerUser?: number; maxSourceStorageMBPerUser?: number };
-  githubOAuth?: {
+  /** Nuwax is the single supported OAuth provider. Keep the capitalized key
+   * because it matches the provider's integration examples. */
+  OAuth?: {
     clientId?: string;
     clientSecret?: string;
     redirectUri?: string;
-    authorizeUrl?: string;
-    tokenUrl?: string;
-    apiUrl?: string;
+    baseUrl?: string;
+    baseURL?: string;
+  };
+  /** Lower-case alias retained for deployments that prefer conventional JSON keys. */
+  oauth?: {
+    clientId?: string;
+    clientSecret?: string;
+    redirectUri?: string;
+    baseUrl?: string;
+    baseURL?: string;
   };
   git?: { binary?: string; operationTimeoutSeconds?: number; githubApiBaseUrl?: string };
 }
@@ -406,19 +412,20 @@ function validateFileConfig(config: FileConfig): void {
   optionalInteger(projects?.maxProjectsPerUser, "projects.maxProjectsPerUser", CONFIG_LIMITS.maxProjectsPerUser);
   optionalInteger(projects?.maxSourceStorageMBPerUser, "projects.maxSourceStorageMBPerUser", CONFIG_LIMITS.maxSourceStorageMBPerUser);
 
-  const githubOAuth = optionalSection(config.githubOAuth, "githubOAuth");
-  optionalString(githubOAuth?.clientId, "githubOAuth.clientId", { min: 0, max: 256 });
-  optionalString(githubOAuth?.clientSecret, "githubOAuth.clientSecret", { min: 0, max: 512 });
-  optionalString(githubOAuth?.redirectUri, "githubOAuth.redirectUri", { min: 0, max: 2_048 });
-  optionalString(githubOAuth?.authorizeUrl, "githubOAuth.authorizeUrl", { min: 1, max: 2_048 });
-  optionalString(githubOAuth?.tokenUrl, "githubOAuth.tokenUrl", { min: 1, max: 2_048 });
-  optionalString(githubOAuth?.apiUrl, "githubOAuth.apiUrl", { min: 1, max: 2_048 });
-  const oauthClientId = process.env.TEXLITE_GITHUB_CLIENT_ID?.trim()
-    || (typeof githubOAuth?.clientId === "string" ? githubOAuth.clientId.trim() : "") || "";
-  const oauthClientSecret = process.env.TEXLITE_GITHUB_CLIENT_SECRET?.trim()
-    || (typeof githubOAuth?.clientSecret === "string" ? githubOAuth.clientSecret.trim() : "") || "";
+  const oauthSection = optionalSection(config.OAuth, "OAuth") ?? optionalSection(config.oauth, "oauth");
+  optionalString(oauthSection?.clientId, "OAuth.clientId", { min: 0, max: 256 });
+  optionalString(oauthSection?.clientSecret, "OAuth.clientSecret", { min: 0, max: 512 });
+  optionalString(oauthSection?.redirectUri, "OAuth.redirectUri", { min: 0, max: 2_048 });
+  optionalString(oauthSection?.baseURL, "OAuth.baseURL", { min: 1, max: 2_048 });
+  optionalString(oauthSection?.baseUrl, "OAuth.baseURL", { min: 1, max: 2_048 });
+  const oauthClientId = process.env.TEXLITE_NUWAX_CLIENT_ID?.trim()
+    || process.env.TEXLITE_OAUTH_CLIENT_ID?.trim()
+    || (typeof oauthSection?.clientId === "string" ? oauthSection.clientId.trim() : "") || "";
+  const oauthClientSecret = process.env.TEXLITE_NUWAX_CLIENT_SECRET?.trim()
+    || process.env.TEXLITE_OAUTH_CLIENT_SECRET?.trim()
+    || (typeof oauthSection?.clientSecret === "string" ? oauthSection.clientSecret.trim() : "") || "";
   if (Boolean(oauthClientId) !== Boolean(oauthClientSecret)) {
-    throw configurationError("githubOAuth", "clientId and clientSecret must be configured together");
+    throw configurationError("OAuth", "clientId and clientSecret must be configured together");
   }
 
   const latex = optionalSection(config.latex, "latex");
@@ -458,24 +465,42 @@ function validateFileConfig(config: FileConfig): void {
   }
 }
 
-function resolveGithubOAuth(fileConfig: FileConfig): GithubOAuthConfig | null {
-  const section = fileConfig.githubOAuth;
-  const clientId = process.env.TEXLITE_GITHUB_CLIENT_ID?.trim() || section?.clientId?.trim() || "";
-  const clientSecret = process.env.TEXLITE_GITHUB_CLIENT_SECRET?.trim() || section?.clientSecret?.trim() || "";
+function resolveNuwaxOAuth(fileConfig: FileConfig): NuwaxOAuthConfig | null {
+  const section = fileConfig.OAuth ?? fileConfig.oauth;
+  const clientId = process.env.TEXLITE_NUWAX_CLIENT_ID?.trim()
+    || process.env.TEXLITE_OAUTH_CLIENT_ID?.trim()
+    || section?.clientId?.trim() || "";
+  const clientSecret = process.env.TEXLITE_NUWAX_CLIENT_SECRET?.trim()
+    || process.env.TEXLITE_OAUTH_CLIENT_SECRET?.trim()
+    || section?.clientSecret?.trim() || "";
   if (!clientId && !clientSecret) return null;
   if (!clientId || !clientSecret) {
-    throw configurationError("githubOAuth", "clientId and clientSecret must be configured together");
+    throw configurationError("OAuth", "clientId and clientSecret must be configured together");
   }
-  const redirectUri = process.env.TEXLITE_GITHUB_REDIRECT_URI?.trim() || section?.redirectUri?.trim() || "";
-  if (!redirectUri) throw configurationError("githubOAuth.redirectUri", "must be configured when GitHub OAuth is enabled");
+  const redirectUri = process.env.TEXLITE_NUWAX_REDIRECT_URI?.trim()
+    || process.env.TEXLITE_OAUTH_REDIRECT_URI?.trim()
+    || section?.redirectUri?.trim() || "";
+  if (!redirectUri) throw configurationError("OAuth.redirectUri", "must be configured when Nuwax OAuth is enabled");
+  const baseUrl = process.env.TEXLITE_NUWAX_BASE_URL?.trim()
+    || process.env.TEXLITE_OAUTH_BASE_URL?.trim()
+    || section?.baseURL?.trim()
+    || section?.baseUrl?.trim()
+    || "https://testagent.xspaceagi.com";
   return {
     clientId,
     clientSecret,
     redirectUri,
-    authorizeUrl: section?.authorizeUrl?.trim() || "https://github.com/login/oauth/authorize",
-    tokenUrl: section?.tokenUrl?.trim() || "https://github.com/login/oauth/access_token",
-    apiUrl: (section?.apiUrl?.trim() || "https://api.github.com").replace(/\/+$/, "")
+    baseUrl: normalizeOAuthBaseUrl(baseUrl)
   };
+}
+
+function normalizeOAuthBaseUrl(value: string): string {
+  const parsed = new URL(value);
+  if (!(["http:", "https:"] as string[]).includes(parsed.protocol)
+    || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw configurationError("OAuth.baseURL", "must be an http(s) URL without credentials, query parameters, or a fragment");
+  }
+  return parsed.toString().replace(/\/+$/, "");
 }
 
 function optionalSection(value: unknown, name: string): Record<string, unknown> | undefined {
