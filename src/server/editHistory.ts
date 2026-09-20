@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseConnection } from "./db.js";
+import type { EditHistorySelectionRow } from "./database/repositories/editHistory.js";
 import { safeRelativePath } from "./files.js";
 
 /**
@@ -40,20 +41,7 @@ export interface EditHistorySegmentInput {
   steps: EditHistoryStep[];
 }
 
-interface EditHistoryRow {
-  id: string;
-  project_id: string;
-  file_path: string;
-  author_id: string | null;
-  kind: EditHistoryKind;
-  before_hash: string;
-  after_hash: string;
-  steps_json: string;
-  created_at: string;
-  updated_at: string;
-  author_username: string | null;
-  author_name: string | null;
-}
+type EditHistoryRow = EditHistorySelectionRow;
 
 export interface SelectionHistoryAuthor {
   id: string | null;
@@ -94,14 +82,6 @@ interface StoredSegment {
   stepsBytes: number;
 }
 
-interface SegmentStorageRow {
-  id: string;
-  file_path: string;
-  after_hash: string;
-  updated_at: string;
-  steps_bytes: number;
-}
-
 interface PassageState {
   range: TextRange;
   text: string;
@@ -124,7 +104,7 @@ export class ProjectEditHistoryService {
     this.maxStorageBytes = normalizeStorageLimit(maxStorageBytes);
   }
 
-  record(projectId: string, inputs: readonly EditHistorySegmentInput[]): void {
+  async record(projectId: string, inputs: readonly EditHistorySegmentInput[]): Promise<void> {
     const normalized = inputs
       .map(normalizeSegment)
       .filter((segment): segment is EditHistorySegmentInput => segment !== null);
@@ -140,95 +120,57 @@ export class ProjectEditHistoryService {
       if (stepsBytes > this.maxStorageBytes) skipped.push(segment);
       else segments.push({ segment, stepsJson, stepsBytes });
     }
-    const insert = this.db.prepare(`INSERT INTO project_edit_segments
-      (id, project_id, file_path, author_id, kind, before_hash, after_hash, steps_json, created_at, updated_at, steps_bytes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    this.db.transaction(() => {
-      for (const { segment, stepsJson, stepsBytes } of segments) {
-        insert.run(
-          randomUUID(), projectId, segment.filePath, segment.authorId, segment.kind,
-          segment.beforeHash, segment.afterHash, stepsJson, segment.createdAt, segment.updatedAt, stepsBytes
-        );
-      }
-      for (const segment of skipped) this.recordRetentionBoundary(projectId, segment.filePath, segment.afterHash, segment.updatedAt);
-      this.prune(projectId);
-    })();
+    await this.db.editHistory.record(
+      segments.map(({ segment, stepsJson, stepsBytes }) => ({
+        id: randomUUID(),
+        projectId,
+        filePath: segment.filePath,
+        authorId: segment.authorId,
+        kind: segment.kind,
+        beforeHash: segment.beforeHash,
+        afterHash: segment.afterHash,
+        stepsJson,
+        stepsBytes,
+        createdAt: segment.createdAt,
+        updatedAt: segment.updatedAt
+      })),
+      skipped.map((segment) => ({
+        projectId,
+        filePath: segment.filePath,
+        afterHash: segment.afterHash,
+        updatedAt: segment.updatedAt
+      })),
+      this.maxStorageBytes
+    );
   }
 
   /** Logical edit payload; shared SQLite pages and indexes are not included. */
-  stats(projectId: string): { segmentCount: number; payloadBytes: number; maxStorageBytes: number } {
-    const row = this.db.prepare(`SELECT COUNT(*) AS segmentCount,
-      COALESCE(SUM(steps_bytes), 0) AS payloadBytes
-      FROM project_edit_segments WHERE project_id = ?`).get(projectId) as { segmentCount: number; payloadBytes: number };
+  async stats(projectId: string): Promise<{ segmentCount: number; payloadBytes: number; maxStorageBytes: number }> {
+    const row = await this.db.editHistory.stats(projectId);
     return { ...row, maxStorageBytes: this.maxStorageBytes };
   }
 
-  clear(projectId: string): void {
-    this.db.transaction(() => {
-      this.db.prepare("DELETE FROM project_edit_segments WHERE project_id = ?").run(projectId);
-      this.db.prepare("DELETE FROM project_edit_history_boundaries WHERE project_id = ?").run(projectId);
-    })();
+  async clear(projectId: string): Promise<void> {
+    await this.db.editHistory.clear(projectId);
   }
 
   /** Apply a changed storage setting to retained records during startup. */
-  enforceRetention(projectId: string): void {
-    this.db.transaction(() => this.prune(projectId))();
+  async enforceRetention(projectId: string): Promise<void> {
+    await this.db.editHistory.prune(projectId, this.maxStorageBytes);
   }
 
-  /** Keep the newest contiguous suffix within both record and payload limits. */
-  private prune(projectId: string): void {
-    const rows = this.db.prepare(`SELECT id, file_path, after_hash, updated_at, steps_bytes
-      FROM project_edit_segments WHERE project_id = ?
-      ORDER BY updated_at DESC, rowid DESC`).all(projectId) as SegmentStorageRow[];
-    let retainedBytes = 0;
-    let retainedCount = 0;
-    let firstDiscard = rows.length;
-    for (let index = 0; index < rows.length; index += 1) {
-      const size = Math.max(0, Number(rows[index]!.steps_bytes) || 0);
-      if (retainedCount >= MAX_SEGMENTS_PER_PROJECT || retainedBytes + size > this.maxStorageBytes) {
-        firstDiscard = index;
-        break;
-      }
-      retainedBytes += size;
-      retainedCount += 1;
-    }
-    if (firstDiscard === rows.length) return;
-    const remove = this.db.prepare("DELETE FROM project_edit_segments WHERE id = ?");
-    const boundaryFiles = new Set<string>();
-    for (const row of rows.slice(firstDiscard)) {
-      // Rows are newest first. The first discarded row for a source file is
-      // precisely where a backward selection map must stop.
-      if (!boundaryFiles.has(row.file_path)) {
-        boundaryFiles.add(row.file_path);
-        this.recordRetentionBoundary(projectId, row.file_path, row.after_hash, row.updated_at);
-      }
-      remove.run(row.id);
-    }
-  }
-
-  private recordRetentionBoundary(projectId: string, filePath: string, afterHash: string, updatedAt: string): void {
-    this.db.prepare(`INSERT INTO project_edit_history_boundaries (project_id, file_path, after_hash, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(project_id, file_path) DO UPDATE SET after_hash = excluded.after_hash, updated_at = excluded.updated_at`)
-      .run(projectId, filePath, afterHash, updatedAt);
-  }
-
-  selectionHistory(
+  async selectionHistory(
     projectId: string,
     filePathInput: string,
     currentSource: string,
     startInput: number,
     endInput: number,
     resultLimit = DEFAULT_RESULT_LIMIT
-  ): SelectionHistoryResult {
+  ): Promise<SelectionHistoryResult> {
     const filePath = safeRelativePath(filePathInput);
     const start = clamp(Math.min(startInput, endInput), 0, currentSource.length);
     const end = clamp(Math.max(startInput, endInput), start, currentSource.length);
-    const rows = this.db.prepare(`SELECT segment.*, user.username AS author_username, user.display_name AS author_name
-      FROM project_edit_segments segment LEFT JOIN users user ON user.id = segment.author_id
-      WHERE segment.project_id = ? AND segment.file_path = ?
-      ORDER BY segment.updated_at DESC, segment.rowid DESC LIMIT ?`)
-      .all(projectId, filePath, MAX_SEGMENTS_TO_SCAN) as EditHistoryRow[];
+    const rows = await this.db.editHistory.selectionRows(projectId, filePath, MAX_SEGMENTS_TO_SCAN);
 
     const entries: SelectionHistoryEntry[] = [];
     let passage: PassageState = {
@@ -296,7 +238,7 @@ export class ProjectEditHistoryService {
       }
     }
     if (openEntry && entries.length < limit) entries.push(stripEntryMetadata(openEntry));
-    if (chainComplete && exhaustedRows && this.reachedRetentionBoundary(projectId, filePath, expectedHash)) {
+    if (chainComplete && exhaustedRows && await this.reachedRetentionBoundary(projectId, filePath, expectedHash)) {
       chainComplete = false;
     }
     if (exhaustedRows && entries.length) {
@@ -306,10 +248,8 @@ export class ProjectEditHistoryService {
     return { entries, baseline, hasMore: !exhaustedRows, chainComplete };
   }
 
-  private reachedRetentionBoundary(projectId: string, filePath: string, expectedHash: string): boolean {
-    const row = this.db.prepare(`SELECT after_hash FROM project_edit_history_boundaries
-      WHERE project_id = ? AND file_path = ?`).get(projectId, filePath) as { after_hash?: string } | undefined;
-    return row?.after_hash === expectedHash;
+  private async reachedRetentionBoundary(projectId: string, filePath: string, expectedHash: string): Promise<boolean> {
+    return await this.db.editHistory.retentionBoundary(projectId, filePath) === expectedHash;
   }
 }
 

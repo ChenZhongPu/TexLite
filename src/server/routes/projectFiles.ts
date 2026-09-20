@@ -32,7 +32,6 @@ import { replaceProject, searchProject } from "../projectSearch.js";
 import { mainDocumentCandidates } from "../latexRoot.js";
 import {
   commentsForFile,
-  escapeGlobPattern,
   movedProjectPath,
   now,
   requireEditableProject,
@@ -56,10 +55,10 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines, metrics, projectQuota, recordHistory } = context;
 
   app.get("/api/projects/:id/files", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     // Directory walks can be slow on external/project-mounted storage. Keep
     // this request off the event loop and unblocked by Yjs room initialization
     // so the file tree and retained-PDF stream can be served concurrently, but
@@ -67,8 +66,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     return await projectMutations.runFilesystemRead(id, async () => ({
       files: await listProjectFilesAsync(config, id)
     }), {
-      preflight: () => {
-        if (!accessibleProject(db, id, user)) {
+      preflight: async () => {
+        if (!(await accessibleProject(db, id, user))) {
           throw httpError(404, "PROJECT_NOT_FOUND");
         }
       }
@@ -76,16 +75,16 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   });
 
   app.get("/api/projects/:id/main-files", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     return await projectMutations.runFilesystemRead(id, async () => {
       const files = await listProjectFilesAsync(config, id);
       return await mainDocumentCandidates(config, id, files);
     }, {
-      preflight: () => {
-        if (!accessibleProject(db, id, user)) {
+      preflight: async () => {
+        if (!(await accessibleProject(db, id, user))) {
           throw httpError(404, "PROJECT_NOT_FOUND");
         }
       }
@@ -93,10 +92,10 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   });
 
   app.get("/api/projects/:id/outline", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: string };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
@@ -106,8 +105,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       return await projectMutations.runConsistentRead(id, async () => ({
         outline: await projectOutlines.build(id, mainFile), mainFile
       }), {
-        preflight: () => {
-          const current = accessibleProject(db, id, user);
+        preflight: async () => {
+          const current = await accessibleProject(db, id, user);
           if (!current) throw httpError(404, "PROJECT_NOT_FOUND");
           const selected = compileMainFile(config, id, current.main_file, query.mainFile);
           if (!selected || selected !== mainFile) throw httpError(400, "MAIN_DOCUMENT_INVALID");
@@ -118,71 +117,71 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   });
 
   app.get("/api/projects/:id/search", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { q?: string; caseSensitive?: string; wholeWord?: string };
     const startedAt = performance.now();
     try {
-      return await projectMutations.runConsistentRead(id, () => searchProject(config, id, {
+      return await projectMutations.runConsistentRead(id, async () => searchProject(config, id, {
           query: query.q ?? "",
           caseSensitive: query.caseSensitive === "1",
           wholeWord: query.wholeWord === "1"
         }), {
-          preflight: () => {
-            if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+          preflight: async () => {
+            if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
           }
       });
     } finally { metrics.record("search.project", performance.now() - startedAt); }
   });
 
   app.post("/api/projects/:id/search/replace", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { query?: unknown; replacement?: unknown; caseSensitive?: unknown; wholeWord?: unknown };
     if (typeof body.query !== "string" || typeof body.replacement !== "string" || body.replacement.length > 100_000) {
       return apiError(reply, 400, "SEARCH_QUERY_INVALID");
     }
     return await projectMutations.runExclusive(id, "project-wide replace", async () => {
-      const currentProject = requireEditableProject(db, id, user);
-      const sourceBytesBefore = projectQuota.sourceBytes(currentProject.owner_id, id);
+      const currentProject = await requireEditableProject(db, id, user);
+      const sourceBytesBefore = await projectQuota.sourceBytes(currentProject.owner_id, id);
       const changed = await replaceProject(config, id, {
         query: body.query as string,
         caseSensitive: body.caseSensitive === true,
         wholeWord: body.wholeWord === true,
         maxFileBytes: maxCollaborativeFileBytes(config),
-        beforeInstall: (prepared) => {
+        beforeInstall: async (prepared) => {
           const delta = prepared.reduce((total, file) => total
             + Buffer.byteLength(file.content, "utf8") - Buffer.byteLength(file.previous, "utf8"), 0);
-          projectQuota.assertCanStoreSource(currentProject.owner_id, id, sourceBytesBefore + delta);
+          await projectQuota.assertCanStoreSource(currentProject.owner_id, id, sourceBytesBefore + delta);
         }
       }, body.replacement as string);
       const sourceDelta = changed.reduce((total, file) => total
         + Buffer.byteLength(file.content, "utf8") - Buffer.byteLength(file.previous, "utf8"), 0);
-      if (sourceDelta !== 0) projectQuota.adjustSourceBytes(currentProject.owner_id, id, sourceDelta);
+      if (sourceDelta !== 0) await projectQuota.adjustSourceBytes(currentProject.owner_id, id, sourceDelta);
       let replacements = 0;
       for (const file of changed) {
-        reanchorFileComments(db, id, file.path, file.previous, file.content);
+        await reanchorFileComments(db, id, file.path, file.previous, file.content);
         collaboration.updateFile(id, file.path, file.content, user.id);
         replacements += file.count;
       }
       if (changed.length) {
-        touchProject(db, id, user.id);
+        await touchProject(db, id, user.id);
         recordHistory(id, user.id, "file", changed.map((file) => file.path));
       }
       return { ok: true, replacements, files: changed.map((file) => file.path) };
-    }, { preflight: () => { requireEditableProject(db, id, user); } });
+    }, { preflight: async () => { await requireEditableProject(db, id, user); } });
   });
 
   app.get("/api/projects/:id/completions", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: unknown };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
@@ -190,8 +189,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     const startedAt = performance.now();
     try {
       return await projectMutations.runConsistentRead(id, async () => ({ index: await latexCompletions.build(id, mainFile) }), {
-        preflight: () => {
-          const current = accessibleProject(db, id, user);
+        preflight: async () => {
+          const current = await accessibleProject(db, id, user);
           if (!current) throw httpError(404, "PROJECT_NOT_FOUND");
           const selected = compileMainFile(config, id, current.main_file, query.mainFile);
           if (!selected || selected !== mainFile) throw httpError(400, "MAIN_DOCUMENT_INVALID");
@@ -202,33 +201,33 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   });
 
   app.post("/api/projects/:id/folders", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { path?: unknown };
     const folderPath = safeRelativePath(typeof body.path === "string" ? body.path : "");
-    return await projectMutations.runWrite(id, () => {
+    return await projectMutations.runWrite(id, async () => {
       const absolute = resolveSourcePath(config, id, folderPath);
       if (fs.existsSync(absolute)) return apiError(reply, 409, "PATH_EXISTS", { path: folderPath });
       fs.mkdirSync(absolute, { recursive: true, mode: 0o700 });
-      touchProject(db, id, user.id);
+      await touchProject(db, id, user.id);
       // Empty folders have no file entry to trigger a refresh on their own.
       // Publish a source-tree event so other open sessions see the folder
       // immediately instead of waiting for a later file operation.
       collaboration.invalidateSourceTree(id, folderPath);
       return reply.code(201).send({ ok: true, path: folderPath });
-    }, { preflight: () => { requireEditableProject(db, id, user); } });
+    }, { preflight: async () => { await requireEditableProject(db, id, user); } });
   });
 
   app.patch("/api/projects/:id/path", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { source?: unknown; destinationDirectory?: unknown; destinationName?: unknown };
     const source = safeRelativePath(typeof body.source === "string" ? body.source : "");
@@ -263,8 +262,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     const destinationAbsolute = resolveSourcePath(config, id, destination);
     if (fs.existsSync(destinationAbsolute)) return apiError(reply, 409, "PATH_EXISTS", { path: destination });
     let currentProject = project;
-    const validateMove = (): void => {
-      currentProject = requireEditableProject(db, id, user);
+    const validateMove = async (): Promise<void> => {
+      currentProject = await requireEditableProject(db, id, user);
       assertNoSourceSymlinks(config, id);
       if (source === currentProject.main_file && !/\.tex$/i.test(destination)) {
         throw httpError(400, "MAIN_DOCUMENT_INVALID");
@@ -289,42 +288,34 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     // durable write lock, not maintenance mode.  Maintenance resets the Yjs
     // epoch and makes every connected browser reload after an otherwise safe
     // drag-and-drop move.
-    return await projectMutations.runWrite(id, () => {
+    return await projectMutations.runWrite(id, async () => {
       fs.renameSync(sourceAbsolute, destinationAbsolute);
-      let hasCommentUpdates = false;
-      db.exec("BEGIN IMMEDIATE");
       try {
         const mainFile = movedProjectPath(currentProject.main_file, source, destination)!;
-        const changedAt = now();
-        db.prepare(`UPDATE projects SET main_file = ?, latexmkrc = NULL, updated_at = ?, last_modified_by = ? WHERE id = ?`)
-          .run(mainFile, changedAt, user.id, id);
-        const comments = db.prepare("SELECT id, file_path FROM comments WHERE project_id = ?").all(id) as Array<{ id: string; file_path: string }>;
-        const updateComment = db.prepare("UPDATE comments SET file_path = ?, updated_at = ? WHERE id = ?");
-        for (const comment of comments) {
-          const nextPath = movedProjectPath(comment.file_path, source, destination);
-          if (nextPath !== comment.file_path) {
-            updateComment.run(nextPath, changedAt, comment.id);
-            hasCommentUpdates = true;
-          }
-        }
-        db.exec("COMMIT");
+        const hasCommentUpdates = await db.projectCatalog.moveProjectPath({
+          id,
+          mainFile,
+          source,
+          destination,
+          changedAt: now(),
+          lastModifiedBy: user.id
+        });
+        await collaboration.movePath(id, source, destination, user.id);
+        if (hasCommentUpdates) collaboration.signalComments(id);
       } catch (error) {
-        db.exec("ROLLBACK");
         fs.renameSync(destinationAbsolute, sourceAbsolute);
         throw error;
       }
-      collaboration.movePath(id, source, destination, user.id);
-      if (hasCommentUpdates) collaboration.signalComments(id);
       recordHistory(id, user.id, "file", [source, destination]);
       return { ok: true, path: destination };
     }, { preflight: validateMove });
   });
 
   app.get("/api/projects/:id/file/raw", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { path?: string; download?: string };
     const filePath = safeRelativePath(query.path ?? "");
     const temporaryDirectory = path.join(config.dataDir, "tmp");
@@ -337,8 +328,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
           throw httpError(404, "FILE_NOT_FOUND", { path: filePath });
         }
         await fs.promises.copyFile(absolute, temporaryFile);
-      }, { preflight: () => {
-        if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+      }, { preflight: async () => {
+        if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
       } });
     } catch (error) {
       await fs.promises.rm(temporaryFile, { force: true }).catch(() => undefined);
@@ -372,13 +363,13 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   });
 
   app.get("/api/projects/:id/file", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     const { path: filePath } = request.query as { path?: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const relative = safeRelativePath(filePath ?? "");
-    return await projectMutations.runConsistentRead(id, () => {
+    return await projectMutations.runConsistentRead(id, async () => {
       const absolute = resolveSourcePath(config, id, relative);
       if (!fs.existsSync(absolute)) return apiError(reply, 404, "FILE_NOT_FOUND", { path: relative });
       const stat = fs.statSync(absolute);
@@ -388,8 +379,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
         return apiError(reply, 413, "FILE_TOO_LARGE", { path: relative });
       }
       return { path: relative, content: fs.readFileSync(absolute, "utf8") };
-    }, { preflight: () => {
-      if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+    }, { preflight: async () => {
+      if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
     } });
   });
 
@@ -397,11 +388,11 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
   // uses PUT for autosaves, but a user action such as "New file" must never
   // silently replace an existing file.
   app.post("/api/projects/:id/file", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { path?: unknown; content?: unknown };
     const filePath = safeRelativePath(typeof body.path === "string" ? body.path : "");
@@ -412,16 +403,16 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     if (byteLength > limit) {
       return apiError(reply, 413, "FILE_TOO_LARGE", { path: filePath, size: Math.floor(limit / 1024 / 1024) });
     }
-    return await projectMutations.runWrite(id, () => {
-      const currentProject = requireEditableProject(db, id, user);
+    return await projectMutations.runWrite(id, async () => {
+      const currentProject = await requireEditableProject(db, id, user);
       const absolute = resolveSourcePath(config, id, filePath);
       if (fs.existsSync(absolute)) {
         return apiError(reply, 409, "FILE_EXISTS", { path: filePath });
       }
-      projectQuota.assertCanStoreSource(
+      await projectQuota.assertCanStoreSource(
         currentProject.owner_id,
         id,
-        projectQuota.sourceBytes(currentProject.owner_id, id) + byteLength
+        await projectQuota.sourceBytes(currentProject.owner_id, id) + byteLength
       );
       try {
         fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o700 });
@@ -439,20 +430,20 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
         }
         throw error;
       }
-      projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength);
-      touchProject(db, id, user.id);
+      await projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength);
+      await touchProject(db, id, user.id);
       collaboration.updateFile(id, filePath, content, user.id);
       recordHistory(id, user.id, "file", [filePath]);
-      return reply.code(201).send({ ok: true, path: filePath, comments: commentsForFile(db, config, id, filePath) });
-    }, { preflight: () => { requireEditableProject(db, id, user); } });
+      return reply.code(201).send({ ok: true, path: filePath, comments: await commentsForFile(db, config, id, filePath) });
+    }, { preflight: async () => { await requireEditableProject(db, id, user); } });
   });
 
   app.put("/api/projects/:id/file", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { path?: unknown; content?: unknown };
     const filePath = safeRelativePath(typeof body.path === "string" ? body.path : "");
@@ -463,38 +454,38 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     if (byteLength > limit) {
       return apiError(reply, 413, "FILE_TOO_LARGE", { path: filePath, size: Math.floor(limit / 1024 / 1024) });
     }
-    return await projectMutations.runWrite(id, () => {
-      const currentProject = requireEditableProject(db, id, user);
+    return await projectMutations.runWrite(id, async () => {
+      const currentProject = await requireEditableProject(db, id, user);
       const absolute = resolveSourcePath(config, id, filePath);
       const previousBytes = fs.existsSync(absolute) && fs.statSync(absolute).isFile() ? fs.statSync(absolute).size : 0;
-      projectQuota.assertCanStoreSource(
+      await projectQuota.assertCanStoreSource(
         currentProject.owner_id,
         id,
-        projectQuota.sourceBytes(currentProject.owner_id, id) - previousBytes + byteLength
+        await projectQuota.sourceBytes(currentProject.owner_id, id) - previousBytes + byteLength
       );
       fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o700 });
       const previousContent = fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8") : "";
-      reanchorFileComments(db, id, filePath, previousContent, content);
+      await reanchorFileComments(db, id, filePath, previousContent, content);
       fs.writeFileSync(absolute, content, { encoding: "utf8", mode: 0o600 });
-      projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength - previousBytes);
-      touchProject(db, id, user.id);
+      await projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength - previousBytes);
+      await touchProject(db, id, user.id);
       collaboration.updateFile(id, filePath, content, user.id);
       recordHistory(id, user.id, "file", [filePath]);
-      return { ok: true, comments: commentsForFile(db, config, id, filePath) };
-    }, { preflight: () => { requireEditableProject(db, id, user); } });
+      return { ok: true, comments: await commentsForFile(db, config, id, filePath) };
+    }, { preflight: async () => { await requireEditableProject(db, id, user); } });
   });
 
   app.delete("/api/projects/:id/file", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
     const { path: filePath } = request.query as { path?: string };
     const relative = safeRelativePath(filePath ?? "");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
-    return await projectMutations.runWrite(id, () => {
-      const currentProject = requireEditableProject(db, id, user);
+    return await projectMutations.runWrite(id, async () => {
+      const currentProject = await requireEditableProject(db, id, user);
       if (relative === currentProject.main_file || currentProject.main_file.startsWith(`${relative}/`)) {
         return apiError(reply, 400, "MAIN_FILE_DELETE_FORBIDDEN", { path: relative });
       }
@@ -506,21 +497,21 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       }
       fs.rmSync(absolute, { recursive: true, force: true });
       projectQuota.refreshSourceBytes(currentProject.owner_id, id);
-      const deleteResult = db.prepare("DELETE FROM comments WHERE project_id = ? AND (file_path = ? OR file_path GLOB ?)").run(id, relative, `${escapeGlobPattern(relative)}/*`);
-      touchProject(db, id, user.id);
+      const deletedComments = await db.comments.deleteForFileTree(id, relative);
+      await touchProject(db, id, user.id);
       collaboration.removePath(id, relative);
-      if (deleteResult.changes > 0) collaboration.signalComments(id);
+      if (deletedComments > 0) collaboration.signalComments(id);
       recordHistory(id, user.id, "file", [relative]);
       return { ok: true };
-    }, { preflight: () => { requireEditableProject(db, id, user); } });
+    }, { preflight: async () => { requireEditableProject(db, id, user); } });
   });
 
   app.post("/api/projects/:id/upload", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const part = await request.file();
     if (!part) return apiError(reply, 400, "UPLOAD_EMPTY");
@@ -553,8 +544,8 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       throw error;
     }
     try {
-      return await projectMutations.runWrite(id, () => {
-        const currentProject = requireEditableProject(db, id, user);
+      return await projectMutations.runWrite(id, async () => {
+        const currentProject = await requireEditableProject(db, id, user);
         const absolute = resolveSourcePath(config, id, relative);
         const replacing = overwrite === "1";
         if (fs.existsSync(absolute) && fs.statSync(absolute).isDirectory()) {
@@ -564,10 +555,10 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
           return apiError(reply, 409, "FILE_EXISTS", { path: relative });
         }
         const previousBytes = fs.existsSync(absolute) && fs.statSync(absolute).isFile() ? fs.statSync(absolute).size : 0;
-        projectQuota.assertCanStoreSource(
+        await projectQuota.assertCanStoreSource(
           currentProject.owner_id,
           id,
-          projectQuota.sourceBytes(currentProject.owner_id, id) - previousBytes + byteLength
+          await projectQuota.sourceBytes(currentProject.owner_id, id) - previousBytes + byteLength
         );
         try {
           fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o700 });
@@ -593,12 +584,12 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
           fs.copyFileSync(tmpPath, absolute);
           fs.unlinkSync(tmpPath);
         }
-        projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength - previousBytes);
-        touchProject(db, id, user.id);
+        await projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength - previousBytes);
+        await touchProject(db, id, user.id);
         if (collaborativeText) {
           const content = fs.readFileSync(absolute, "utf8");
           if (previousContent !== null && previousContent !== content) {
-            reanchorFileComments(db, id, relative, previousContent, content);
+            await reanchorFileComments(db, id, relative, previousContent, content);
             collaboration.signalComments(id);
           }
           collaboration.updateFile(id, relative, content, user.id);
@@ -607,7 +598,7 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
         }
         recordHistory(id, user.id, "file", [relative]);
         return reply.code(201).send({ ok: true, path: relative });
-      }, { preflight: () => { requireEditableProject(db, id, user); } });
+      }, { preflight: async () => { await requireEditableProject(db, id, user); } });
     } finally {
       if (fs.existsSync(tmpPath)) {
         try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }

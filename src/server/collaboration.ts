@@ -18,9 +18,7 @@ import type { Config } from "./config.js";
 import type { DatabaseConnection, UserRow } from "./db.js";
 import { listProjectFilesAsync, outputRoot, resolveSourcePath, safeRelativePath, sourceRoot, type FileEntry } from "./files.js";
 import {
-  collaborationProjectAccessFromStatement,
   canEdit,
-  prepareCollaborationProjectAccessStatement,
   type CollaborationProjectAccess
 } from "./projects.js";
 import { reanchorFileComments } from "./anchors.js";
@@ -130,6 +128,7 @@ interface Room {
   pendingEditSegments: EditHistorySegmentInput[];
   textObservers: Map<string, (event: Y.YTextEvent, transaction: Y.Transaction) => void>;
   saveTimer: NodeJS.Timeout | null;
+  flushPromise: Promise<CollaborationSaveReceipt> | null;
   stateSaveTimer: NodeJS.Timeout | null;
   cleanupTimer: NodeJS.Timeout | null;
   lastModifiedUserId: string | null;
@@ -171,33 +170,25 @@ export class CollaborationService {
   /** Transient server-side status, restored into each newly opened room. */
   private readonly historyWarnings = new Set<string>();
   private closed = false;
-  private readonly userByIdStatement;
-  private readonly activeSessionStatement;
-  private readonly projectOwnerStatement;
-  private readonly collaborationProjectAccessStatement;
   private readonly projectQuota: ProjectQuotaService;
 
   constructor(
     private readonly config: Config,
     private readonly db: DatabaseConnection,
-    private readonly onPersist?: (event: CollaborationPersistEvent) => void,
+    private readonly onPersist?: (event: CollaborationPersistEvent) => Promise<void> | void,
     projectQuota?: ProjectQuotaService
   ) {
-    this.userByIdStatement = db.prepare<[string], UserRow>("SELECT * FROM users WHERE id = ?");
-    this.activeSessionStatement = db.prepare("SELECT 1 FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?");
-    this.projectOwnerStatement = db.prepare("SELECT owner_id FROM projects WHERE id = ?");
-    this.collaborationProjectAccessStatement = prepareCollaborationProjectAccessStatement(db);
     this.projectQuota = projectQuota ?? new ProjectQuotaService(config, db);
   }
 
-  private lookupProjectAccess(projectId: string, user: UserRow): CollaborationProjectAccess | null {
-    return collaborationProjectAccessFromStatement(this.collaborationProjectAccessStatement, projectId, user);
+  private async lookupProjectAccess(projectId: string, user: UserRow): Promise<CollaborationProjectAccess | null> {
+    return await this.db.projects.findCollaborationAccess(projectId, user);
   }
 
-  private sessionIsActive(user: UserRow): boolean {
-    return !user.session_id || Boolean(this.activeSessionStatement.get(
+  private async sessionIsActive(user: UserRow): Promise<boolean> {
+    return !user.session_id || await this.db.identity.sessionIsActive(
       user.session_id, user.id, new Date().toISOString()
-    ));
+    );
   }
 
   async connect(socket: WebSocket, projectId: string, user: UserRow): Promise<void> {
@@ -207,11 +198,11 @@ export class CollaborationService {
     }
     // currentUser() had an active session during the HTTP upgrade, but the
     // row may have been revoked while this asynchronous room load was queued.
-    if (!this.sessionIsActive(user)) {
+    if (!(await this.sessionIsActive(user))) {
       socket.close(1008, "Sign-in session expired");
       return;
     }
-    const project = this.lookupProjectAccess(projectId, user);
+    const project = await this.lookupProjectAccess(projectId, user);
     if (!project) {
       socket.close(1008, "Project access denied");
       return;
@@ -223,7 +214,7 @@ export class CollaborationService {
     }
     const existing = this.rooms.get(projectId);
     if (existing) {
-      this.attachConnection(existing, socket, user);
+      await this.attachConnection(existing, socket, user);
       return;
     }
     const generation = this.projectGeneration(projectId);
@@ -244,7 +235,7 @@ export class CollaborationService {
       } else if (this.projectGeneration(projectId) !== generation) {
         socket.close(1013, "Collaboration state changed; retry required");
       } else if (socket.readyState === WebSocket.OPEN) {
-        this.attachConnection(room, socket, user);
+        await this.attachConnection(room, socket, user);
       } else {
         socket.close(1000, "Collaboration connection closed during initialization");
       }
@@ -264,9 +255,9 @@ export class CollaborationService {
     try { await initialization; } catch { /* Source files remain authoritative if recovery fails. */ }
   }
 
-  flushProject(projectId: string): CollaborationSaveReceipt | null {
+  async flushProject(projectId: string): Promise<CollaborationSaveReceipt | null> {
     const room = this.rooms.get(projectId);
-    return room ? this.flushRoom(room) : null;
+    return room ? await this.flushRoom(room) : null;
   }
 
   /**
@@ -292,7 +283,7 @@ export class CollaborationService {
    * disk revision, allowing callers to label a snapshot that predates edits
    * without treating that consistent snapshot as invalid.
    */
-  endSnapshotBarrier(projectId: string): CollaborationSaveReceipt | null {
+  async endSnapshotBarrier(projectId: string): Promise<CollaborationSaveReceipt | null> {
     const depth = this.snapshotBarriers.get(projectId) ?? 0;
     if (depth <= 0) return this.rooms.get(projectId) ? this.currentReceipt(this.rooms.get(projectId)!) : null;
     const nextDepth = depth - 1;
@@ -310,7 +301,7 @@ export class CollaborationService {
     room.snapshotFlushPending = false;
     let receipt: CollaborationSaveReceipt;
     try {
-      receipt = shouldFlush ? this.flushRoom(room) : this.currentReceipt(room);
+      receipt = shouldFlush ? await this.flushRoom(room) : this.currentReceipt(room);
     } catch (error) {
       // A state-file or source-file I/O failure must still complete any
       // browser flush requests waiting behind the barrier. The caller should
@@ -499,13 +490,13 @@ export class CollaborationService {
       : revision === null;
   }
 
-  movePath(projectId: string, sourceInput: string, destinationInput: string, userId: string): void {
+  async movePath(projectId: string, sourceInput: string, destinationInput: string, userId: string): Promise<void> {
     const room = this.rooms.get(projectId);
     if (!room) {
       this.invalidateProject(projectId);
       return;
     }
-    this.flushRoom(room);
+    await this.flushRoom(room);
     const source = safeRelativePath(sourceInput);
     const destination = safeRelativePath(destinationInput);
     const moved = [...room.allowedPaths].filter((filePath) => filePath === source || filePath.startsWith(`${source}/`));
@@ -596,7 +587,7 @@ export class CollaborationService {
    * completed states must therefore not override the retained-PDF lookup for
    * a newly opened workspace.
    */
-  private sanitizeCompileStates(room: Room): void {
+  private async sanitizeCompileStates(room: Room): Promise<void> {
     const current = room.meta.get("compileStates");
     if (!current || typeof current !== "object" || Array.isArray(current)) {
       if (current !== undefined) room.doc.transact(() => room.meta.delete("compileStates"), META_ORIGIN);
@@ -605,19 +596,13 @@ export class CollaborationService {
     const retained: SharedCompileStates = {};
     let changed = false;
     const checkedAt = Date.now();
-    const findRun = this.db.prepare(`SELECT id, status, main_file FROM compile_runs
-      WHERE id = ? AND project_id = ?`);
-    const findLatestRun = this.db.prepare(`SELECT id, status FROM compile_runs
-      WHERE project_id = ? AND main_file = ? ORDER BY created_at DESC LIMIT 1`);
     for (const [mainFile, value] of Object.entries(current as Record<string, unknown>)) {
       if (!isSharedCompileState(mainFile, value)) {
         changed = true;
         continue;
       }
       if (value.status === "queued" || value.status === "running") {
-        const run = findRun.get(value.runId, room.projectId) as {
-          id: string; status: string; main_file: string;
-        } | undefined;
+        const run = await this.db.compileRuns.findRun(value.runId, room.projectId);
         if (!run || run.main_file !== mainFile || (run.status !== "queued" && run.status !== "running")) {
           changed = true;
           continue;
@@ -632,12 +617,8 @@ export class CollaborationService {
           continue;
         }
         if (value.status !== "cleaned") {
-          const run = findRun.get(value.runId, room.projectId) as {
-            id: string; status: string; main_file: string;
-          } | undefined;
-          const latest = findLatestRun.get(room.projectId, mainFile) as {
-            id: string; status: string;
-          } | undefined;
+          const run = await this.db.compileRuns.findRun(value.runId, room.projectId);
+          const latest = await this.db.compileRuns.latestCreated(room.projectId, mainFile);
           if (!run || run.main_file !== mainFile || run.status !== value.status
             || !latest || latest.id !== value.runId || latest.status !== value.status) {
             changed = true;
@@ -654,8 +635,8 @@ export class CollaborationService {
     }, META_ORIGIN);
   }
 
-  private sendCompileStates(room: Room, socket: WebSocket): void {
-    const payload = this.compileStatesForClient(room);
+  private async sendCompileStates(room: Room, socket: WebSocket): Promise<void> {
+    const payload = await this.compileStatesForClient(room);
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_COMPILE_STATES);
     encoding.writeVarString(encoder, JSON.stringify(payload));
@@ -667,17 +648,10 @@ export class CollaborationService {
    * was queued. This keeps the handshake authoritative without making every
    * compile request persist a duplicate Yjs metadata update.
    */
-  private compileStatesForClient(room: Room): SharedCompileStates {
+  private async compileStatesForClient(room: Room): Promise<SharedCompileStates> {
     const current = room.meta.get("compileStates");
     const states: SharedCompileStates = isCompileStateMap(current) ? { ...current } : {};
-    const activeRuns = this.db.prepare(`SELECT run.id, run.main_file, run.status, run.requested_by,
-      run.created_at, user.username AS requested_by_username, user.display_name AS requested_by_name
-      FROM compile_runs run LEFT JOIN users user ON user.id = run.requested_by
-      WHERE run.project_id = ? AND run.status IN ('queued', 'running')
-      ORDER BY CASE run.status WHEN 'running' THEN 0 ELSE 1 END, run.created_at DESC`).all(room.projectId) as Array<{
-        id: string; main_file: string; status: "queued" | "running"; requested_by: string | null;
-        created_at: string; requested_by_username: string | null; requested_by_name: string | null;
-      }>;
+    const activeRuns = await this.db.compileRuns.activeRuns(room.projectId);
     for (const run of activeRuns) {
       if (states[run.main_file]?.status === "running" && run.status === "queued") continue;
       states[run.main_file] = {
@@ -715,7 +689,7 @@ export class CollaborationService {
     const room = this.rooms.get(projectId);
     if (!room) return;
     for (const connection of room.connections) connection.socket.close(1008, "Project closed");
-    this.destroyRoom(room);
+    void this.destroyRoom(room);
   }
 
   resetProject(projectId: string): void {
@@ -724,15 +698,15 @@ export class CollaborationService {
     const room = this.rooms.get(projectId);
     if (room) {
       for (const connection of room.connections) connection.socket.close(4001, "Project version changed; reload required");
-      this.destroyRoom(room, false);
+      void this.destroyRoom(room, false);
     }
     fs.rmSync(collaborationStatePath(this.config, projectId), { force: true });
     fs.rmSync(collaborationEpochPath(this.config, projectId), { force: true });
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
     this.closed = true;
-    for (const room of [...this.rooms.values()]) this.destroyRoom(room);
+    for (const room of [...this.rooms.values()]) await this.destroyRoom(room);
     this.roomInitializations.clear();
     this.snapshotBarriers.clear();
     this.pendingConnections.clear();
@@ -833,7 +807,7 @@ export class CollaborationService {
     throw new Error(lastFailure);
   }
 
-  private createRoom(projectId: string, bootstrap: RoomBootstrap): Room {
+  private async createRoom(projectId: string, bootstrap: RoomBootstrap): Promise<Room> {
     const existing = this.rooms.get(projectId);
     if (existing) {
       bootstrap.doc.destroy();
@@ -854,6 +828,7 @@ export class CollaborationService {
       textObservers: new Map(),
       saveTimer: null,
       stateSaveTimer: null,
+      flushPromise: null,
       cleanupTimer: null,
       lastModifiedUserId: null,
       epoch: bootstrap.epoch,
@@ -879,7 +854,7 @@ export class CollaborationService {
     if (this.historyWarnings.has(projectId)) {
       room.doc.transact(() => room.meta.set("historyWarning", true), META_ORIGIN);
     }
-    this.sanitizeCompileStates(room);
+    await this.sanitizeCompileStates(room);
     let recoveredDirty = false;
     const diskPaths = new Set<string>();
     room.doc.transact(() => {
@@ -911,7 +886,7 @@ export class CollaborationService {
       }
     }, DISK_ORIGIN);
     const rejectedRecoveredPaths = this.rejectOversizedTexts(room);
-    const rejectedRecoveredOverQuotaPaths = this.rejectOverQuotaTexts(room);
+    const rejectedRecoveredOverQuotaPaths = await this.rejectOverQuotaTexts(room);
     recoveredDirty = room.dirtyPaths.size > 0;
     room.meta.observe((_event, transaction) => {
       if (isConnectionOrigin(transaction.origin)) room.compileMetaValidationPending = true;
@@ -925,7 +900,7 @@ export class CollaborationService {
       if (origin !== META_ORIGIN) this.scheduleStateSave(room);
       if (room.compileMetaValidationPending) {
         room.compileMetaValidationPending = false;
-        this.sanitizeCompileStates(room);
+        void this.sanitizeCompileStates(room).catch(() => undefined);
       }
       if (origin !== DISK_ORIGIN && origin !== HTTP_ORIGIN && origin !== META_ORIGIN) {
         if (origin && typeof origin === "object" && "user" in origin) {
@@ -951,7 +926,7 @@ export class CollaborationService {
     try {
       // Persist a corrected state even when an oversized recovered document was
       // reverted to the source file and no source write remains dirty.
-      if (recoveredDirty || rejectedRecoveredPaths.length > 0 || rejectedRecoveredOverQuotaPaths.length > 0) this.flushRoom(room);
+      if (recoveredDirty || rejectedRecoveredPaths.length > 0 || rejectedRecoveredOverQuotaPaths.length > 0) await this.flushRoom(room);
       else if (recoveredMetadataChanged) this.scheduleStateSave(room);
     } catch (error) {
       this.disposeRoom(room);
@@ -964,13 +939,13 @@ export class CollaborationService {
     return room;
   }
 
-  private attachConnection(room: Room, socket: WebSocket, user: UserRow): void {
+  private async attachConnection(room: Room, socket: WebSocket, user: UserRow): Promise<void> {
     if (socket.readyState !== WebSocket.OPEN) return;
-    if (!this.sessionIsActive(user)) {
+    if (!(await this.sessionIsActive(user))) {
       socket.close(1008, "Sign-in session expired");
       return;
     }
-    if (!this.lookupProjectAccess(room.projectId, user)) {
+    if (!(await this.lookupProjectAccess(room.projectId, user))) {
       socket.close(1008, "Project access denied");
       return;
     }
@@ -998,7 +973,9 @@ export class CollaborationService {
     socket.binaryType = "arraybuffer";
     socket.on("message", (data) => {
       try {
-        this.handleMessage(room, connection, rawData(data));
+        void this.handleMessage(room, connection, rawData(data)).catch(() => {
+          socket.close(1003, "Invalid collaboration message");
+        });
       } catch {
         socket.close(1003, "Invalid collaboration message");
       }
@@ -1121,11 +1098,11 @@ export class CollaborationService {
     });
   }
 
-  private handleMessage(room: Room, connection: Connection, bytes: Uint8Array): void {
+  private async handleMessage(room: Room, connection: Connection, bytes: Uint8Array): Promise<void> {
     // Authentication is normally checked when the WebSocket upgrades, but a
     // socket can outlive logout, password changes and natural expiry. Keep the
     // concrete session row as the authority for every protocol message.
-    if (!this.sessionIsActive(connection.user)) {
+    if (!(await this.sessionIsActive(connection.user))) {
       if (connection.sessionId) this.disconnectSession(connection.sessionId, "Sign-in session expired");
       else {
         connection.socket.close(1008, "Sign-in session expired");
@@ -1133,7 +1110,7 @@ export class CollaborationService {
       }
       return;
     }
-    const refreshedUser = this.userByIdStatement.get(connection.user.id);
+    const refreshedUser = await this.db.identity.findUserById(connection.user.id);
     if (!refreshedUser || refreshedUser.disabled) {
       connection.socket.close(1008, "Project access revoked");
       this.disconnect(room, connection);
@@ -1145,15 +1122,14 @@ export class CollaborationService {
     // session is incorrectly treated as an unauthorised project access.
     const refreshedAccessUser: UserRow = {
       ...refreshedUser,
-      // userByIdStatement intentionally reads only durable user fields. Keep
-      // the request-scoped session/link credentials on the live connection
+      // Keep the request-scoped session/link credentials on the live connection
       // so every later packet still verifies the same browser session.
       session_id: connection.sessionId,
       session_expires_at: connection.sessionExpiresAt,
       ...(connection.user.share_link_id ? { share_link_id: connection.user.share_link_id } : {})
     };
     connection.user = refreshedAccessUser;
-    const current = this.lookupProjectAccess(room.projectId, refreshedAccessUser);
+    const current = await this.lookupProjectAccess(room.projectId, refreshedAccessUser);
     if (!current) {
       connection.socket.close(1008, "Project access revoked");
       return;
@@ -1186,9 +1162,9 @@ export class CollaborationService {
         connection.protocolVerified = true;
         if (connection.protocolTimer) clearTimeout(connection.protocolTimer);
         connection.protocolTimer = null;
-        this.sanitizeCompileStates(room);
+        await this.sanitizeCompileStates(room);
         this.sendSyncStep1(room, connection.socket);
-        this.sendCompileStates(room, connection.socket);
+        await this.sendCompileStates(room, connection.socket);
         this.sendAwareness(room, connection.socket);
         this.sendFormatLeaseStates(room, connection);
       }
@@ -1206,8 +1182,8 @@ export class CollaborationService {
         // not apply their source updates, but always send the authoritative
         // ephemeral compile state back to them.
         if (canEdit(current)) syncProtocol.readSyncStep2(decoder, room.doc, connection);
-        this.sanitizeCompileStates(room);
-        this.sendCompileStates(room, connection.socket);
+        await this.sanitizeCompileStates(room);
+        await this.sendCompileStates(room, connection.socket);
       } else if (canEdit(current)) {
         if (syncType === syncProtocol.messageYjsUpdate) syncProtocol.readUpdate(decoder, room.doc, connection);
       }
@@ -1231,7 +1207,7 @@ export class CollaborationService {
       }
       let receipt: CollaborationSaveReceipt;
       try {
-        receipt = this.flushRoom(room);
+        receipt = await this.flushRoom(room);
       } catch {
         receipt = this.currentReceipt(room, false, [...room.dirtyPaths]);
         if (room.dirtyPaths.size > 0) this.scheduleSave(room);
@@ -1519,15 +1495,16 @@ export class CollaborationService {
 
   private scheduleRoomCleanup(room: Room): void {
     if (room.connections.size === 0 && !room.cleanupTimer) {
-      room.cleanupTimer = setTimeout(() => this.destroyRoom(room), ROOM_IDLE_MS);
+      room.cleanupTimer = setTimeout(() => { void this.destroyRoom(room); }, ROOM_IDLE_MS);
     }
   }
 
   private scheduleSave(room: Room): void {
     if (room.saveTimer) clearTimeout(room.saveTimer);
     room.saveTimer = setTimeout(() => {
-      try { this.flushRoom(room); }
-      catch { room.saveTimer = null; /* The Yjs state remains durable and the next client flush retries. */ }
+      void this.flushRoom(room).catch(() => {
+        room.saveTimer = null; /* The Yjs state remains durable and the next client flush retries. */
+      });
     }, SAVE_DELAY_MS);
   }
 
@@ -1543,7 +1520,6 @@ export class CollaborationService {
     if (room.stateSaveTimer) clearTimeout(room.stateSaveTimer);
     room.stateSaveTimer = null;
     this.rejectOversizedTexts(room);
-    this.rejectOverQuotaTexts(room);
     const target = collaborationStatePath(this.config, room.projectId);
     const temporary = `${target}.tmp`;
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -1551,7 +1527,20 @@ export class CollaborationService {
     fs.renameSync(temporary, target);
   }
 
-  private flushRoom(room: Room): CollaborationSaveReceipt {
+  private flushRoom(room: Room): Promise<CollaborationSaveReceipt> {
+    if (room.flushPromise) return room.flushPromise;
+    const pending = (async (): Promise<CollaborationSaveReceipt> => {
+      try {
+        return await this.flushRoomInternal(room);
+      } finally {
+        room.flushPromise = null;
+      }
+    })();
+    room.flushPromise = pending;
+    return pending;
+  }
+
+  private async flushRoomInternal(room: Room): Promise<CollaborationSaveReceipt> {
     if (room.snapshotBarrierDepth > 0 || (this.snapshotBarriers.get(room.projectId) ?? 0) > 0) {
       if (room.saveTimer) clearTimeout(room.saveTimer);
       room.saveTimer = null;
@@ -1563,7 +1552,7 @@ export class CollaborationService {
     room.saveTimer = null;
     const rejectedDuringFlush = [
       ...this.rejectOversizedTexts(room),
-      ...this.rejectOverQuotaTexts(room)
+      ...(await this.rejectOverQuotaTexts(room))
     ];
     this.persistRoomState(room);
     let changed = false;
@@ -1609,7 +1598,7 @@ export class CollaborationService {
       persistedSourceDelta += Buffer.byteLength(next, "utf8") - Buffer.byteLength(previous, "utf8");
       room.dirtyPaths.delete(filePath);
       finalizedPaths.add(filePath);
-      try { reanchorFileComments(this.db, room.projectId, filePath, previous, next); }
+      try { await reanchorFileComments(this.db, room.projectId, filePath, previous, next); }
       catch { /* Source durability is primary; comments can still be re-anchored by a later edit. */ }
       changed = true;
       changedPaths.push(filePath);
@@ -1622,16 +1611,15 @@ export class CollaborationService {
       room.pendingEditSegments = room.pendingEditSegments.filter((segment) => !finalizedPaths.has(segment.filePath));
     }
     if (changed && room.lastModifiedUserId) {
-      this.db.prepare("UPDATE projects SET updated_at = ?, last_modified_by = ? WHERE id = ?")
-        .run(new Date().toISOString(), room.lastModifiedUserId, room.projectId);
+      await this.db.projectData.touchProject(room.projectId, room.lastModifiedUserId, new Date().toISOString());
     }
     if (persistedSourceDelta !== 0) {
-      const owner = this.projectOwnerStatement.get(room.projectId) as { owner_id: string } | undefined;
-      if (owner) this.projectQuota.adjustSourceBytes(owner.owner_id, room.projectId, persistedSourceDelta);
+      const ownerId = await this.db.projects.findOwnerId(room.projectId);
+      if (ownerId) await this.projectQuota.adjustSourceBytes(ownerId, room.projectId, persistedSourceDelta);
     }
     if (changed) this.signalComments(room.projectId);
     if (changed && this.onPersist) {
-      try { this.onPersist({ projectId: room.projectId, userId: room.lastModifiedUserId, paths: changedPaths, edits, durationMs: performance.now() - startedAt }); }
+      try { await this.onPersist({ projectId: room.projectId, userId: room.lastModifiedUserId, paths: changedPaths, edits, durationMs: performance.now() - startedAt }); }
       catch { /* Source durability must not depend on optional history bookkeeping. */ }
     }
     const ok = failedPaths.length === 0 && room.dirtyPaths.size === 0;
@@ -1641,8 +1629,7 @@ export class CollaborationService {
     } else if (!room.saveTimer && room.dirtyPaths.size > 0) {
       // Retry with backoff if dirty files remain unpersisted
       room.saveTimer = setTimeout(() => {
-        try { this.flushRoom(room); }
-        catch { room.saveTimer = null; }
+        void this.flushRoom(room).catch(() => { room.saveTimer = null; });
       }, 2000);
     }
     const receipt = this.currentReceipt(room, ok, [...new Set(failedPaths)]);
@@ -1663,10 +1650,10 @@ export class CollaborationService {
     room.doc.transact(() => room.meta.set("filesEvent", { ...event, revision: randomUUID() }), META_ORIGIN);
   }
 
-  private destroyRoom(room: Room, persist = true): void {
+  private async destroyRoom(room: Room, persist = true): Promise<void> {
     if (this.rooms.get(room.projectId) !== room) return;
     if (persist) {
-      try { this.flushRoom(room); }
+      try { await this.flushRoom(room); }
       catch { try { this.persistRoomState(room); } catch { /* Keep shutdown best-effort. */ } }
     }
     this.disposeRoom(room);
@@ -1719,9 +1706,9 @@ export class CollaborationService {
    * state must not keep an over-quota draft that would later be retried after
    * an unrelated file operation.
    */
-  private rejectOverQuotaTexts(room: Room): string[] {
-    const owner = this.projectOwnerStatement.get(room.projectId) as { owner_id: string } | undefined;
-    if (!owner) return [];
+  private async rejectOverQuotaTexts(room: Room): Promise<string[]> {
+    const ownerId = await this.db.projects.findOwnerId(room.projectId);
+    if (!ownerId) return [];
     const changes: Array<{ filePath: string; text: Y.Text; previous: string; delta: number }> = [];
     let delta = 0;
     for (const filePath of room.dirtyPaths) {
@@ -1735,8 +1722,8 @@ export class CollaborationService {
       delta += change;
     }
     if (!changes.length || delta <= 0) return [];
-    const currentBytes = this.projectQuota.sourceBytes(owner.owner_id, room.projectId);
-    if (this.projectQuota.canStoreSource(owner.owner_id, room.projectId, currentBytes + delta)) return [];
+    const currentBytes = await this.projectQuota.sourceBytes(ownerId, room.projectId);
+    if (await this.projectQuota.canStoreSource(ownerId, room.projectId, currentBytes + delta)) return [];
     room.doc.transact(() => {
       for (const change of changes) replaceText(change.text, change.previous);
     }, DISK_ORIGIN);

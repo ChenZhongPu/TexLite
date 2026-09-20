@@ -20,10 +20,10 @@ export function registerProjectReferenceRoutes(app: FastifyInstance, context: Pr
   const { config, db, projectMutations } = context;
 
   app.get("/api/projects/:id/references/resolve", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { kind?: unknown; key?: unknown; path?: unknown; mainFile?: unknown };
     const kind = query.kind === "citation" || query.kind === "label" ? query.kind as LatexReferenceKind : null;
@@ -37,8 +37,8 @@ export function registerProjectReferenceRoutes(app: FastifyInstance, context: Pr
     return await projectMutations.runConsistentRead(id, async () => ({
       target: await resolveProjectReference(config, id, kind, key, { preferredPath, mainFile })
     }), {
-      preflight: () => {
-        if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+      preflight: async () => {
+        if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
       }
     });
   });

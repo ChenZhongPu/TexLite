@@ -8,20 +8,20 @@ function testConfig(): Config {
   const root = path.join(os.tmpdir(), "texlite-environment-test");
   return {
     configPath: path.join(root, "config.json"), siteName: "Test", adminEmail: "",
-    host: "127.0.0.1", port: 3000, basePath: "/", dataDir: root, databasePath: path.join(root, "db.sqlite"),
+    host: "127.0.0.1", port: 3000, basePath: "/", dataDir: root,
+    database: { driver: "postgresql", url: "postgresql://postgres@127.0.0.1:5432/texlite-test", sslMode: "disable" },
     projectsDir: path.join(root, "projects"), clientDir: path.join(root, "client"), sessionDays: 1,
     compileTimeoutMs: 30_000, maxCompileJobs: 1, latexmk: process.execPath, defaultEngine: "xelatex",
-    allowedEngines: [], extraArgs: [], allowProjectLatexmkrc: true, maxUploadBytes: 1024,
+    allowedEngines: [], extraArgs: [], maxUploadBytes: 1024,
     pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
     historyMaxVersions: 200, historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024,
-    git: process.execPath, gitOperationTimeoutMs: 10_000, githubApiBaseUrl: "https://api.github.com"
   };
 }
 
 describe("startup environment checks", () => {
   it("requires LaTeX commands and does not require Git", async () => {
     const config = testConfig();
-    const available = await assertEnvironment({ ...config, git: "/definitely/missing/texlite-git" });
+    const available = await assertEnvironment(config);
     expect(available).toHaveLength(2);
     expect(available.map((item) => item.name)).toEqual(["Node.js 24+", "latexmk"]);
     expect(available[0].version).toMatch(/^v\d+/);
@@ -30,7 +30,7 @@ describe("startup environment checks", () => {
   });
 
   it("reports optional host tools without making them startup requirements", async () => {
-    const tools = await inspectHostEnvironment({ ...testConfig(), git: "/definitely/missing/texlite-git" });
+    const tools = await inspectHostEnvironment(testConfig());
     expect(tools.find((tool) => tool.id === "node")).toMatchObject({ requirement: "required", status: "installed" });
     expect(tools.find((tool) => tool.id === "texcount")).toMatchObject({ requirement: "optional", purpose: "Word and character statistics" });
     expect(tools.some((tool) => tool.id === "harper-cli" || tool.id === "harper-ls")).toBe(false);

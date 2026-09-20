@@ -139,21 +139,20 @@ export function stageProjectDirectoryRemoval(config: Config, projectId: string):
  * Stage a persisted project tree with a database journal written before the
  * filesystem rename. A restart can therefore resolve the move safely.
  */
-export function stagePersistedProjectDirectoryRemoval(
+export async function stagePersistedProjectDirectoryRemoval(
   config: Config,
   db: DatabaseConnection,
   projectId: string
-): StagedProjectDirectoryRemoval | null {
+): Promise<StagedProjectDirectoryRemoval | null> {
   if (!fs.existsSync(projectRoot(config, projectId))) return null;
   const removal = stagedProjectDirectoryRemoval(config, projectId);
-  db.prepare(`INSERT INTO project_directory_staging (project_id, trash_name, created_at)
-    VALUES (?, ?, ?)`).run(projectId, removal.trashName, new Date().toISOString());
+  await db.projectDirectoryStaging.stage(projectId, removal.trashName, new Date().toISOString());
   try {
     fs.mkdirSync(projectTrashDirectory(config), { recursive: true, mode: 0o700 });
     fs.renameSync(removal.source, removal.trash);
     return removal;
   } catch (error) {
-    clearPersistedProjectDirectoryRemoval(db, removal);
+    await clearPersistedProjectDirectoryRemoval(db, removal);
     throw error;
   }
 }
@@ -172,7 +171,7 @@ export async function purgePersistedProjectDirectoryRemoval(
   removal: StagedProjectDirectoryRemoval
 ): Promise<void> {
   await purgeStagedProjectDirectory(removal);
-  clearPersistedProjectDirectoryRemoval(db, removal);
+  await clearPersistedProjectDirectoryRemoval(db, removal);
 }
 
 /** Restore an intact staged tree after a later database operation fails. */
@@ -185,27 +184,26 @@ export function restoreStagedProjectDirectory(removal: StagedProjectDirectoryRem
 }
 
 /** Restore a persisted tree and remove its recovery journal only after success. */
-export function restorePersistedProjectDirectoryRemoval(
+export async function restorePersistedProjectDirectoryRemoval(
   db: DatabaseConnection,
   removal: StagedProjectDirectoryRemoval
-): void {
+): Promise<void> {
   if (fs.existsSync(removal.source)) {
     if (fs.existsSync(removal.trash)) {
       throw new Error(`Unable to restore staged project directory because both locations exist: ${removal.source}`);
     }
-    clearPersistedProjectDirectoryRemoval(db, removal);
+    await clearPersistedProjectDirectoryRemoval(db, removal);
     return;
   }
   if (!fs.existsSync(removal.trash)) {
     throw new Error(`Unable to restore staged project directory because it is missing: ${removal.trash}`);
   }
   restoreStagedProjectDirectory(removal);
-  clearPersistedProjectDirectoryRemoval(db, removal);
+  await clearPersistedProjectDirectoryRemoval(db, removal);
 }
 
-function clearPersistedProjectDirectoryRemoval(db: DatabaseConnection, removal: StagedProjectDirectoryRemoval): void {
-  db.prepare("DELETE FROM project_directory_staging WHERE project_id = ? AND trash_name = ?")
-    .run(removal.projectId, removal.trashName);
+async function clearPersistedProjectDirectoryRemoval(db: DatabaseConnection, removal: StagedProjectDirectoryRemoval): Promise<void> {
+  await db.projectDirectoryStaging.clear(removal.projectId, removal.trashName);
 }
 
 export async function duplicateProjectFiles(config: Config, sourceProjectId: string, targetProjectId: string): Promise<void> {
@@ -453,14 +451,13 @@ export async function removeProjectDirectory(config: Config, projectId: string):
  * trash pruning, so an existing project always gets its source tree back.
  */
 export async function recoverProjectDirectoryStaging(config: Config, db: DatabaseConnection): Promise<void> {
-  const records = db.prepare("SELECT project_id, trash_name FROM project_directory_staging ORDER BY created_at, project_id")
-    .all() as Array<{ project_id: string; trash_name: string }>;
+  const records = await db.projectDirectoryStaging.list();
   const journaledTrash = new Set(records.map((record) => record.trash_name));
-  const projectExists = db.prepare("SELECT 1 FROM projects WHERE id = ?");
+  const projectExists = async (projectId: string): Promise<boolean> => await db.projects.projectExists(projectId);
   for (const record of records) {
     const removal = stagedProjectDirectoryRemoval(config, record.project_id, record.trash_name);
-    if (projectExists.get(removal.projectId)) {
-      restorePersistedProjectDirectoryRemoval(db, removal);
+    if (await projectExists(removal.projectId)) {
+      await restorePersistedProjectDirectoryRemoval(db, removal);
       continue;
     }
     if (fs.existsSync(removal.source)) {
@@ -468,18 +465,18 @@ export async function recoverProjectDirectoryStaging(config: Config, db: Databas
     }
     await purgePersistedProjectDirectoryRemoval(db, removal);
   }
-  recoverLegacyStagedProjectDirectories(config, journaledTrash, projectExists);
+  await recoverLegacyStagedProjectDirectories(config, journaledTrash, projectExists);
 }
 
 /**
  * Older releases staged trees without a database journal. Their names encode
  * the project UUID, so recover a live row before the general trash sweep.
  */
-function recoverLegacyStagedProjectDirectories(
+async function recoverLegacyStagedProjectDirectories(
   config: Config,
   journaledTrash: ReadonlySet<string>,
-  projectExists: { get: (projectId: string) => unknown }
-): void {
+  projectExists: (projectId: string) => Promise<boolean>
+): Promise<void> {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(projectTrashDirectory(config), { withFileTypes: true });
@@ -490,7 +487,7 @@ function recoverLegacyStagedProjectDirectories(
   for (const entry of entries) {
     if (!entry.isDirectory() || journaledTrash.has(entry.name)) continue;
     const match = legacyStagedProjectDirectoryName.exec(entry.name);
-    if (!match || !projectExists.get(match[1])) continue;
+    if (!match || !await projectExists(match[1])) continue;
     const removal = stagedProjectDirectoryRemoval(config, match[1], entry.name);
     if (fs.existsSync(removal.source)) continue;
     fs.renameSync(removal.trash, removal.source);

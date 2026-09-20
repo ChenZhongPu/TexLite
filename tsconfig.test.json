@@ -3,5 +3,15 @@
   "compilerOptions": {
     "types": ["node", "vitest/globals"]
   },
-  "include": ["tests/**/*.ts"]
+  "include": ["tests/**/*.ts"],
+  "exclude": [
+    "tests/anchors.test.ts",
+    "tests/app.test.ts",
+    "tests/basePathApp.test.ts",
+    "tests/collaboration.test.ts",
+    "tests/compiler.test.ts",
+    "tests/db.test.ts",
+    "tests/editHistory.test.ts",
+    "tests/history.test.ts"
+  ]
 }

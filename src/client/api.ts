@@ -82,6 +82,7 @@ export function localizedResponseError(body: unknown, status: number, fallbackKe
       AUTH_REQUIRED: "auth.sessionExpired",
       AUTH_DISABLED: "errors.codes.AUTH_DISABLED",
       EMAIL_ALREADY_IN_USE: "auth.emailAlreadyInUse",
+      USERNAME_INVALID: "auth.usernameInvalid",
       OAUTH_ACCESS_DENIED: "errors.codes.OAUTH_ACCESS_DENIED",
       OAUTH_CALLBACK_INVALID: "errors.codes.OAUTH_CALLBACK_INVALID",
       OAUTH_IDENTITY_ALREADY_LINKED: "auth.oauthIdentityAlreadyLinked",

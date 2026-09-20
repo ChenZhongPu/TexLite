@@ -28,12 +28,8 @@ export function createShareLinkSecret(config: Config): { token: string; tokenHas
   };
 }
 
-export function activeShareLinkForToken(db: DatabaseConnection, token: string): ActiveShareLink | null {
-  if (token.length < 32 || token.length > 256) return null;
-  const row = db.prepare(`SELECT id, project_id, permission, created_at, token_ciphertext
-    FROM project_share_links
-    WHERE token_hash = ? AND permission = 'read' AND revoked_at IS NULL`).get(digestToken(token)) as ActiveShareLink | undefined;
-  return row ?? null;
+export async function activeShareLinkForToken(db: DatabaseConnection, token: string): Promise<ActiveShareLink | null> {
+  return await db.shareLinks.findActiveByToken(token);
 }
 
 export function shareLinkPath(config: Config, token: string): string {

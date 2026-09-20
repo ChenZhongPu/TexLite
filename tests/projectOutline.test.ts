@@ -189,11 +189,11 @@ describe("project outline service", () => {
 function outlineConfig(root: string): Config {
   return {
     configPath: path.join(root, "config.json"), siteName: "TexLite", adminEmail: "", host: "127.0.0.1", port: 3000, basePath: "/",
-    dataDir: root, databasePath: path.join(root, "texlite.db"), projectsDir: path.join(root, "projects"),
+    dataDir: root, database: { driver: "postgresql", url: "postgresql://postgres@127.0.0.1:5432/texlite-test", sslMode: "disable" }, projectsDir: path.join(root, "projects"),
     clientDir: path.join(root, "client"), sessionDays: 1, compileTimeoutMs: 30_000, maxCompileJobs: 1,
     latexmk: "latexmk", defaultEngine: "pdflatex", allowedEngines: ["pdflatex", "xelatex", "lualatex"], extraArgs: [],
-    allowProjectLatexmkrc: true, maxUploadBytes: 50 * 1024 * 1024,
+    maxUploadBytes: 50 * 1024 * 1024,
     pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024, historyMaxVersions: 200,
-    historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024, git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com"
+    historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024
   };
 }

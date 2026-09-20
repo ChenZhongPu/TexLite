@@ -307,7 +307,7 @@ export async function captureCompileSnapshot(
   config: Config,
   projectId: string,
   runId: string,
-  settings: { mainFile: string; engine: string; latexmkrc?: string | null; extraArgs: string[]; generation?: string }
+  settings: { mainFile: string; engine: string; extraArgs: string[]; generation?: string }
 ): Promise<CompileSnapshot> {
   const root = compileRunRoot(config, projectId, runId);
   const snapshotSource = path.join(root, "source");
@@ -320,7 +320,7 @@ export async function captureCompileSnapshot(
   // The content revision remains independent from the cheap generation. A
   // metadata-only project update should still be able to reuse an identical
   // source snapshot after the generation check misses.
-  const { generation, latexmkrc: _legacyLatexmkrc, ...contentSettings } = settings;
+  const { generation, ...contentSettings } = settings;
   hash.update(JSON.stringify(contentSettings));
   try {
     const entries = (await listProjectFilesAsync(config, projectId)).sort((left, right) => left.path.localeCompare(right.path));
@@ -501,21 +501,18 @@ export function listPublishedCompileArtifacts(config: Config, projectId: string)
  * that latexmk produced a usable PDF, so the corresponding run must be
  * visible to latest/PDF endpoints after restart.
  */
-export function reconcilePublishedCompileRuns(config: Config, db: DatabaseConnection, projectId: string): void {
-  const recover = db.prepare(`UPDATE compile_runs
-    SET status = 'succeeded', log = CASE WHEN log = '' THEN ? ELSE log END, finished_at = ?
-    WHERE id = ? AND project_id = ?`);
-  const insert = db.prepare(`INSERT OR IGNORE INTO compile_runs
-    (id, project_id, requested_by, main_file, status, log, created_at, finished_at)
-    VALUES (?, ?, NULL, ?, 'succeeded', ?, ?, ?)`);
+export async function reconcilePublishedCompileRuns(config: Config, db: DatabaseConnection, projectId: string): Promise<void> {
   for (const artifact of listPublishedCompileArtifacts(config, projectId)) {
     let finishedAt = new Date().toISOString();
     try { finishedAt = fs.statSync(artifact.pdf).mtime.toISOString(); } catch { /* manifest validation already checked the file */ }
     const message = "Recovered a published PDF after a server restart.";
-    const existing = db.prepare("SELECT status FROM compile_runs WHERE id = ? AND project_id = ?")
-      .get(artifact.runId, projectId) as { status: string } | undefined;
-    if (!existing) insert.run(artifact.runId, projectId, artifact.mainFile, message, finishedAt, finishedAt);
-    else if (existing.status !== "succeeded") recover.run(message, finishedAt, artifact.runId, projectId);
+    await db.compileRuns.recoverPublishedRun({
+      runId: artifact.runId,
+      projectId,
+      mainFile: artifact.mainFile,
+      message,
+      finishedAt
+    });
   }
 }
 
@@ -763,8 +760,7 @@ export async function compileProject(
   snapshot: CompileSnapshot,
   mainFileInput: string,
   engine: "pdflatex" | "xelatex" | "lualatex",
-  /** Legacy positional argument retained for callers compiled against 0.9.x; it is ignored. */
-  _latexmkrcInput: string | null,
+  _legacyCompilerConfig: string | null,
   options: { signal?: AbortSignal } = {}
 ): Promise<CompileResult> {
   const { signal } = options;
@@ -784,8 +780,7 @@ export async function compileProject(
   const engineFlag = engine === "xelatex" ? "-xelatex" : engine === "lualatex" ? "-lualatex" : "-pdf";
   const args = [
     engineFlag,
-    // Never load a project-provided latexmkrc. This remains explicit even if a
-    // legacy source directory is encountered during a deployment migration.
+    // Never load project-provided compiler configuration from the source tree.
     "-norc",
     "-interaction=nonstopmode",
     "-file-line-error",

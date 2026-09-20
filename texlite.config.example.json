@@ -8,6 +8,14 @@
     "basePath": "/",
     "trustedProxyIps": ["127.0.0.1", "::1"]
   },
+  "storage": {
+    "dataDir": "./data"
+  },
+  "database": {
+    "driver": "postgresql",
+    "url": "postgresql://postgres:CHANGE_ME@127.0.0.1:5432/texlite-demo",
+    "sslMode": "disable"
+  },
   "uploads": {
     "maxFileSizeMB": 50
   },

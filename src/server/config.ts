@@ -9,6 +9,16 @@ export type LatexEngine = typeof LATEX_ENGINES[number];
 export const PDF_LOADING_STRATEGIES = ["auto", "full", "range"] as const;
 export type PdfLoadingStrategy = typeof PDF_LOADING_STRATEGIES[number];
 
+export const POSTGRES_SSL_MODES = ["disable", "require"] as const;
+export type PostgresSslMode = typeof POSTGRES_SSL_MODES[number];
+
+export interface PostgresDatabaseConfig {
+  driver: "postgresql";
+  /** PostgreSQL connection URL. Prefer TEXLITE_DATABASE_URL in production. */
+  url: string;
+  sslMode: PostgresSslMode;
+}
+
 export interface NuwaxOAuthConfig {
   clientId: string;
   clientSecret: string;
@@ -28,6 +38,7 @@ export const CONFIG_DEFAULTS = {
   trustedProxyIps: ["127.0.0.1", "::1"] as string[],
   dataDir: defaultDataDirectory(),
   clientDir: packageClientDirectory(),
+  postgresSslMode: "disable" as PostgresSslMode,
   sessionDays: 7,
   compileTimeoutSeconds: 120,
   maxCompileJobs: 10,
@@ -35,7 +46,6 @@ export const CONFIG_DEFAULTS = {
   defaultEngine: "xelatex" as LatexEngine,
   allowedEngines: [...LATEX_ENGINES] as LatexEngine[],
   extraArgs: [] as string[],
-  allowProjectLatexmkrc: true,
   maxFileSizeMB: 50,
   pdfLoadingStrategy: "auto" as PdfLoadingStrategy,
   pdfRangeThresholdMB: 5,
@@ -46,12 +56,7 @@ export const CONFIG_DEFAULTS = {
   // limits. These apply to source files owned by one account.
   maxProjectsPerUser: 100,
   maxSourceStorageMBPerUser: 2_048,
-  oauth: null as NuwaxOAuthConfig | null,
-  // Retained only so old Config fixtures and old config files can be read
-  // during migration. Project-level rc files are no longer honored.
-  git: "git",
-  gitOperationTimeoutSeconds: 120,
-  githubApiBaseUrl: "https://api.github.com"
+  oauth: null as NuwaxOAuthConfig | null
 } as const;
 
 const CONFIG_LIMITS = {
@@ -65,8 +70,7 @@ const CONFIG_LIMITS = {
   historyMaxStorageMB: [16, 102_400],
   editHistoryMaxStorageMB: [4, 102_400],
   maxProjectsPerUser: [1, 100_000],
-  maxSourceStorageMBPerUser: [16, 102_400],
-  gitOperationTimeoutSeconds: [1, 3_600]
+  maxSourceStorageMBPerUser: [16, 102_400]
 } as const;
 
 export interface Config {
@@ -79,7 +83,8 @@ export interface Config {
   /** Direct reverse-proxy IPs/CIDRs allowed to supply forwarding headers. */
   trustedProxyIps?: string[];
   dataDir: string;
-  databasePath: string;
+  /** PostgreSQL is the only supported application database. */
+  database: PostgresDatabaseConfig;
   projectsDir: string;
   clientDir: string;
   sessionDays: number;
@@ -100,12 +105,6 @@ export interface Config {
   /** Per-account aggregate source-byte ceiling; populated by loadConfig(). */
   maxSourceStorageBytesPerUser?: number;
   oauth?: NuwaxOAuthConfig | null;
-  /** @deprecated Kept for source compatibility; always ignored by compile paths. */
-  allowProjectLatexmkrc?: boolean;
-  /** @deprecated Kept for source compatibility; Git routes are no longer registered. */
-  git: string;
-  gitOperationTimeoutMs: number;
-  githubApiBaseUrl: string;
 }
 
 export function loadConfig(configPathOverride?: string): Config {
@@ -116,6 +115,7 @@ export function loadConfig(configPathOverride?: string): Config {
   const configDirectory = path.dirname(configPath);
   const configuredDataDir = setting("storage.dataDir", process.env.TEXLITE_DATA_DIR, fileConfig.storage?.dataDir, CONFIG_DEFAULTS.dataDir);
   const dataDir = resolveConfiguredPath("storage.dataDir", configuredDataDir, configDirectory);
+  const database = resolveDatabase(fileConfig, dataDir);
   const configuredClientDir = setting("TEXLITE_CLIENT_DIR", process.env.TEXLITE_CLIENT_DIR, undefined, CONFIG_DEFAULTS.clientDir);
   const clientDir = resolveConfiguredPath("TEXLITE_CLIENT_DIR", configuredClientDir, configDirectory);
 
@@ -181,10 +181,6 @@ export function loadConfig(configPathOverride?: string): Config {
     CONFIG_DEFAULTS.maxSourceStorageMBPerUser,
     CONFIG_LIMITS.maxSourceStorageMBPerUser
   );
-  const gitOperationTimeoutSeconds = integerSetting(
-    "git.operationTimeoutSeconds", process.env.TEXLITE_GIT_TIMEOUT,
-    fileConfig.git?.operationTimeoutSeconds, CONFIG_DEFAULTS.gitOperationTimeoutSeconds, CONFIG_LIMITS.gitOperationTimeoutSeconds
-  );
   const basePath = resolveBasePath(fileConfig);
   const trustedProxyIps = resolveTrustedProxyIps(fileConfig);
   const oauth = resolveNuwaxOAuth(fileConfig);
@@ -198,7 +194,7 @@ export function loadConfig(configPathOverride?: string): Config {
     basePath,
     trustedProxyIps,
     dataDir,
-    databasePath: path.join(dataDir, "texlite.db"),
+    database,
     projectsDir: path.join(dataDir, "projects"),
     clientDir,
     sessionDays: integerSetting("sessionDays", process.env.TEXLITE_SESSION_DAYS, fileConfig.sessionDays, CONFIG_DEFAULTS.sessionDays, CONFIG_LIMITS.sessionDays),
@@ -216,13 +212,7 @@ export function loadConfig(configPathOverride?: string): Config {
     editHistoryMaxStorageBytes: editHistoryMaxStorageMB * 1024 * 1024,
     maxProjectsPerUser,
     maxSourceStorageBytesPerUser: maxSourceStorageMBPerUser * 1024 * 1024,
-    oauth,
-    // Explicitly disable this legacy setting. It remains in the materialized
-    // shape only for callers compiled against the pre-public-deployment API.
-    allowProjectLatexmkrc: false,
-    git: stringSetting("git.binary", process.env.TEXLITE_GIT, fileConfig.git?.binary, CONFIG_DEFAULTS.git, { min: 1, max: 256 }),
-    gitOperationTimeoutMs: gitOperationTimeoutSeconds * 1000,
-    githubApiBaseUrl: stringSetting("git.githubApiBaseUrl", process.env.TEXLITE_GITHUB_API_URL, fileConfig.git?.githubApiBaseUrl, CONFIG_DEFAULTS.githubApiBaseUrl, { min: 1, max: 2_048 }).replace(/\/+$/, "")
+    oauth
   };
 
   validateConfig(config);
@@ -248,7 +238,7 @@ export function validateConfig(config: Config): void {
   }
   validateDirectoryTarget("storage.dataDir", config.dataDir, true);
   validateDirectoryTarget("projects directory", config.projectsDir, true);
-  validateFileTarget("database path", config.databasePath);
+  validateDatabaseConfig(config.database);
   validateDirectoryTarget("client directory", config.clientDir, false);
   if (config.oauth) {
     optionalString(config.oauth.clientId, "OAuth.clientId", { min: 1, max: 256 });
@@ -292,9 +282,6 @@ export function validateConfig(config: Config): void {
       CONFIG_LIMITS.maxSourceStorageMBPerUser
     );
   }
-  // Legacy Git settings are validated only for old Config objects. They no
-  // longer enable any application feature.
-  validateUrl("git.githubApiBaseUrl", config.githubApiBaseUrl);
 }
 
 interface FileConfig {
@@ -303,6 +290,11 @@ interface FileConfig {
   sessionDays?: number;
   server?: { host?: string; port?: number; basePath?: string; trustedProxyIps?: string[] };
   storage?: { dataDir?: string };
+  database?: {
+    driver?: string;
+    url?: string;
+    sslMode?: PostgresSslMode;
+  };
   latex?: {
     latexmk?: string;
     defaultEngine?: string;
@@ -310,7 +302,6 @@ interface FileConfig {
     maxCompileJobs?: number;
     allowedEngines?: string[];
     extraArgs?: string[];
-    allowProjectLatexmkrc?: boolean;
   };
   uploads?: { maxFileSizeMB?: number };
   pdf?: { loadingStrategy?: string; rangeThresholdMB?: number };
@@ -334,7 +325,6 @@ interface FileConfig {
     baseUrl?: string;
     baseURL?: string;
   };
-  git?: { binary?: string; operationTimeoutSeconds?: number; githubApiBaseUrl?: string };
 }
 
 function resolveBasePath(fileConfig: FileConfig): string {
@@ -359,12 +349,57 @@ function resolveTrustedProxyIps(fileConfig: FileConfig): string[] {
     : configured.map((address) => address.trim());
 }
 
+function resolveDatabase(fileConfig: FileConfig, _dataDir: string): PostgresDatabaseConfig {
+  const section = fileConfig.database;
+  const configuredUrl = process.env.TEXLITE_DATABASE_URL ?? section?.url;
+  const url = configuredUrl?.trim() ?? "";
+  if (!url) throw configurationError("database.url", "must be configured when database.driver is postgresql");
+  if (section?.driver && section.driver !== "postgresql") {
+    throw configurationError("database.driver", "SQLite is no longer supported; use postgresql");
+  }
+  validatePostgresUrl(url);
+  const sslMode = process.env.TEXLITE_DATABASE_SSL_MODE?.trim()
+    || section?.sslMode
+    || CONFIG_DEFAULTS.postgresSslMode;
+  if (!isPostgresSslMode(sslMode)) {
+    throw configurationError("database.sslMode", `must be one of ${POSTGRES_SSL_MODES.join(", ")}`);
+  }
+  return { driver: "postgresql", url, sslMode };
+}
+
+function validateDatabaseConfig(database: PostgresDatabaseConfig): void {
+  if (!database || database.driver !== "postgresql") {
+    throw configurationError("database.driver", "must be postgresql");
+  }
+  validatePostgresUrl(database.url);
+  if (!isPostgresSslMode(database.sslMode)) {
+    throw configurationError("database.sslMode", `must be one of ${POSTGRES_SSL_MODES.join(", ")}`);
+  }
+}
+
+function validatePostgresUrl(value: string): void {
+  try {
+    const parsed = new URL(value);
+    if (!(["postgres:", "postgresql:"] as string[]).includes(parsed.protocol) || !parsed.hostname || parsed.hash) {
+      throw new Error("must use a postgres:// or postgresql:// URL with a host and no fragment");
+    }
+  } catch {
+    // Never include the connection string in an error because it commonly
+    // contains the database password.
+    throw configurationError("database.url", "must be a valid postgres:// or postgresql:// connection URL");
+  }
+}
+
 function isEngine(value: unknown): value is LatexEngine {
   return typeof value === "string" && (LATEX_ENGINES as readonly string[]).includes(value);
 }
 
 function isPdfLoadingStrategy(value: unknown): value is PdfLoadingStrategy {
   return typeof value === "string" && (PDF_LOADING_STRATEGIES as readonly string[]).includes(value);
+}
+
+function isPostgresSslMode(value: unknown): value is PostgresSslMode {
+  return typeof value === "string" && (POSTGRES_SSL_MODES as readonly string[]).includes(value);
 }
 
 function readConfigFile(configPath: string): FileConfig {
@@ -392,6 +427,14 @@ function validateFileConfig(config: FileConfig): void {
   optionalTrustedProxyIps(server?.trustedProxyIps, "server.trustedProxyIps");
   const storage = optionalSection(config.storage, "storage");
   optionalString(storage?.dataDir, "storage.dataDir", { min: 1, max: 4_096 });
+  const database = optionalSection(config.database, "database");
+  if (database && Object.prototype.hasOwnProperty.call(database, "driver") && database.driver !== "postgresql") {
+    throw configurationError("database.driver", "SQLite is no longer supported; use postgresql");
+  }
+  optionalString(database?.url, "database.url", { min: 0, max: 4_096 });
+  if (database && Object.prototype.hasOwnProperty.call(database, "sslMode") && !isPostgresSslMode(database.sslMode)) {
+    throw configurationError("database.sslMode", `must be one of ${POSTGRES_SSL_MODES.join(", ")}`);
+  }
   const uploads = optionalSection(config.uploads, "uploads");
   optionalInteger(uploads?.maxFileSizeMB, "uploads.maxFileSizeMB", CONFIG_LIMITS.maxFileSizeMB);
   const pdf = optionalSection(config.pdf, "pdf");
@@ -451,17 +494,6 @@ function validateFileConfig(config: FileConfig): void {
     if (!Array.isArray(latex.extraArgs) || latex.extraArgs.some((item) => typeof item !== "string" || item.length > 512)) {
       throw configurationError("latex.extraArgs", "must be an array of strings, each no longer than 512 characters");
     }
-  }
-  if (latex && Object.prototype.hasOwnProperty.call(latex, "allowProjectLatexmkrc") && typeof latex.allowProjectLatexmkrc !== "boolean") {
-    throw configurationError("latex.allowProjectLatexmkrc", "must be true or false");
-  }
-
-  const git = optionalSection(config.git, "git");
-  optionalString(git?.binary, "git.binary", { min: 1, max: 256 });
-  optionalInteger(git?.operationTimeoutSeconds, "git.operationTimeoutSeconds", CONFIG_LIMITS.gitOperationTimeoutSeconds);
-  if (git && Object.prototype.hasOwnProperty.call(git, "githubApiBaseUrl")) {
-    optionalString(git.githubApiBaseUrl, "git.githubApiBaseUrl", { min: 1, max: 2_048 });
-    if (typeof git.githubApiBaseUrl === "string") validateUrl("git.githubApiBaseUrl", git.githubApiBaseUrl);
   }
 }
 

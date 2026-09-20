@@ -1,0 +1,2 @@
+ALTER TABLE "project_history_versions" DROP CONSTRAINT "project_history_versions_reason_check";--> statement-breakpoint
+ALTER TABLE "project_history_versions" ADD CONSTRAINT "project_history_versions_reason_check" CHECK ("project_history_versions"."reason" IN ('initial', 'autosave', 'file', 'settings', 'restore', 'checkpoint'));

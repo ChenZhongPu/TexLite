@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadBasePath, loadConfig } from "../src/server/config.js";
 
 describe("configuration", () => {
@@ -9,6 +9,7 @@ describe("configuration", () => {
     "TEXLITE_CONFIG", "TEXLITE_SITE_NAME", "TEXLITE_ADMIN_EMAIL", "TEXLITE_HOST", "TEXLITE_PORT", "TEXLITE_BASE_PATH",
     "TEXLITE_DATA_DIR", "TEXLITE_CLIENT_DIR", "TEXLITE_SESSION_DAYS", "TEXLITE_COMPILE_TIMEOUT",
     "TEXLITE_MAX_COMPILE_JOBS", "TEXLITE_LATEXMK", "TEXLITE_DEFAULT_ENGINE", "TEXLITE_MAX_UPLOAD_SIZE_MB",
+    "TEXLITE_DATABASE_DRIVER", "TEXLITE_DATABASE_URL", "TEXLITE_DATABASE_SSL_MODE",
     "TEXLITE_PDF_LOADING_STRATEGY", "TEXLITE_PDF_RANGE_THRESHOLD_MB",
     "TEXLITE_HISTORY_MAX_VERSIONS", "TEXLITE_HISTORY_MAX_STORAGE_MB",
     "TEXLITE_EDIT_HISTORY_MAX_STORAGE_MB",
@@ -19,6 +20,10 @@ describe("configuration", () => {
   ] as const;
   const originalEnvironment = new Map(envKeys.map((key) => [key, process.env[key]]));
   let root = "";
+
+  beforeEach(() => {
+    process.env.TEXLITE_DATABASE_URL = "postgresql://postgres@127.0.0.1:5432/texlite-test";
+  });
 
   afterEach(() => {
     for (const key of envKeys) {
@@ -43,8 +48,7 @@ describe("configuration", () => {
       history: { maxVersions: 120, maxStorageMB: 256 },
       editHistory: { maxStorageMB: 48 },
       projects: { maxProjectsPerUser: 240, maxSourceStorageMBPerUser: 4096 },
-      git: { binary: "/usr/local/bin/git", operationTimeoutSeconds: 45, githubApiBaseUrl: "https://github.example/api/v3/" },
-      latex: { defaultEngine: "lualatex", allowedEngines: ["lualatex"], allowProjectLatexmkrc: false }
+      latex: { defaultEngine: "lualatex", allowedEngines: ["lualatex"] }
     }));
     process.env.TEXLITE_CONFIG = configPath;
     const config = loadConfig();
@@ -52,9 +56,9 @@ describe("configuration", () => {
     expect(config.basePath).toBe("/tools/texlite");
     expect(config.trustedProxyIps).toEqual(["10.42.0.0/16", "::1"]);
     expect(config.dataDir).toBe(path.join(root, "data"));
+    expect(config.database).toEqual({ driver: "postgresql", url: "postgresql://postgres@127.0.0.1:5432/texlite-test", sslMode: "disable" });
     expect(config.defaultEngine).toBe("lualatex");
     expect(config.allowedEngines).toEqual(["lualatex"]);
-    expect(config.allowProjectLatexmkrc).toBe(false);
     expect(config.maxUploadBytes).toBe(25 * 1024 * 1024);
     expect(config.pdfLoadingStrategy).toBe("range");
     expect(config.pdfRangeThresholdBytes).toBe(7 * 1024 * 1024);
@@ -63,9 +67,6 @@ describe("configuration", () => {
     expect(config.editHistoryMaxStorageBytes).toBe(48 * 1024 * 1024);
     expect(config.maxProjectsPerUser).toBe(240);
     expect(config.maxSourceStorageBytesPerUser).toBe(4096 * 1024 * 1024);
-    expect(config.git).toBe("/usr/local/bin/git");
-    expect(config.gitOperationTimeoutMs).toBe(45_000);
-    expect(config.githubApiBaseUrl).toBe("https://github.example/api/v3");
   });
 
   it("uses TexLite as the default site name", () => {
@@ -85,8 +86,41 @@ describe("configuration", () => {
       historyMaxVersions: 0, historyMaxStorageBytes: 64 * 1024 * 1024,
       editHistoryMaxStorageBytes: 32 * 1024 * 1024,
       maxProjectsPerUser: 100, maxSourceStorageBytesPerUser: 2048 * 1024 * 1024,
-      git: "git", gitOperationTimeoutMs: 120_000, githubApiBaseUrl: "https://api.github.com"
+      database: { driver: "postgresql", url: "postgresql://postgres@127.0.0.1:5432/texlite-test", sslMode: "disable" }
     });
+  });
+
+  it("reads a PostgreSQL connection configuration without exposing its URL in validation errors", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-postgres-"));
+    const configPath = path.join(root, "texlite.config.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      storage: { dataDir: path.join(root, "data") },
+      database: {
+        driver: "postgresql",
+        url: "postgresql://texlite:password@db.example.test:5432/texlite",
+        sslMode: "require"
+      }
+    }));
+    process.env.TEXLITE_CONFIG = configPath;
+    delete process.env.TEXLITE_DATABASE_URL;
+    expect(loadConfig().database).toEqual({
+      driver: "postgresql",
+      url: "postgresql://texlite:password@db.example.test:5432/texlite",
+      sslMode: "require"
+    });
+    expect(loadConfig().dataDir).toBe(path.join(root, "data"));
+    // PostgreSQL owns its own data files; the configured source directory only
+    // contains projects and other application-managed files.
+    expect(fs.existsSync(path.join(root, "data", "texlite.db"))).toBe(false);
+  });
+
+  it("requires a PostgreSQL URL when that database driver is selected", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-postgres-url-"));
+    const configPath = path.join(root, "texlite.config.json");
+    fs.writeFileSync(configPath, JSON.stringify({ database: { driver: "postgresql" } }));
+    process.env.TEXLITE_CONFIG = configPath;
+    delete process.env.TEXLITE_DATABASE_URL;
+    expect(() => loadConfig()).toThrow(/database\.url.*configured/);
   });
 
   it("requires an explicit redirect URI when Nuwax OAuth is enabled", () => {

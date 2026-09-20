@@ -26,7 +26,7 @@ describe("instance lock", () => {
       host: "127.0.0.1",
       port: 3000,
       basePath: "/",
-      databasePath: path.join(dataDir, "texlite.db"),
+      database: { driver: "postgresql", url: "postgresql://postgres@127.0.0.1:5432/texlite-test", sslMode: "disable" },
       projectsDir: path.join(dataDir, "projects"),
       clientDir: "/test/client",
       siteName: "TexLite Test",
@@ -42,12 +42,8 @@ describe("instance lock", () => {
       defaultEngine: "xelatex",
       allowedEngines: ["pdflatex", "xelatex", "lualatex"],
       extraArgs: [],
-      allowProjectLatexmkrc: false,
       compileTimeoutMs: 60000,
       maxCompileJobs: 2,
-      git: "git",
-      gitOperationTimeoutMs: 15000,
-      githubApiBaseUrl: "https://api.github.com"
     };
   }
 

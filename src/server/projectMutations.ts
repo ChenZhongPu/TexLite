@@ -19,12 +19,8 @@ interface CompileExclusion {
 }
 
 interface ProjectMutationOptions {
-  /**
-   * Revalidate permissions and other request preconditions after waiting for
-   * the project queue. This callback must stay synchronous so no Yjs update
-   * can interleave between validation, the final flush, and maintenance.
-   */
-  preflight?: () => void;
+  /** Revalidate permissions and other request preconditions after queueing. */
+  preflight?: () => Promise<void> | void;
   /** Skip the final room flush when the source tree is about to be deleted. */
   flush?: boolean;
 }
@@ -56,8 +52,8 @@ export class ProjectMutationCoordinator {
    * receipt means that no room is currently loaded, so the source directory
    * is already authoritative for this request.
    */
-  flushProject(projectId: string): CollaborationSaveReceipt | null {
-    return this.requireSuccessfulFlush(this.collaboration.flushProject(projectId));
+  async flushProject(projectId: string): Promise<CollaborationSaveReceipt | null> {
+    return this.requireSuccessfulFlush(await this.collaboration.flushProject(projectId));
   }
 
   async runExclusive<T>(
@@ -77,10 +73,10 @@ export class ProjectMutationCoordinator {
       await previous;
       try {
         await this.collaboration.waitForReady?.(projectId);
-        options.preflight?.();
+        await options.preflight?.();
         // This call is synchronous. No WebSocket event can interleave between
         // the final flush and the maintenance flag being installed.
-        if (options.flush !== false) this.flushProject(projectId);
+        if (options.flush !== false) await this.flushProject(projectId);
         this.collaboration.beginMaintenance(projectId, reason);
         try {
           return await operation();
@@ -157,7 +153,7 @@ export class ProjectMutationCoordinator {
     options: ProjectMutationOptions = {}
   ): Promise<T> {
     return this.runQueued(projectId, async () => {
-      if (options.flush !== false) this.flushProject(projectId);
+      if (options.flush !== false) await this.flushProject(projectId);
       return operation();
     }, options);
   }
@@ -214,7 +210,7 @@ export class ProjectMutationCoordinator {
     await previous;
     try {
       await this.collaboration.waitForReady?.(projectId);
-      options.preflight?.();
+      await options.preflight?.();
       return await operation();
     } finally {
       release();
@@ -233,14 +229,14 @@ export class ProjectMutationCoordinator {
     let barrierStarted = false;
     try {
       if (waitForRoom) await this.collaboration.waitForReady?.(projectId);
-      options.preflight?.();
-      this.flushProject(projectId);
+      await options.preflight?.();
+      await this.flushProject(projectId);
       this.collaboration.beginSnapshotBarrier(projectId);
       barrierStarted = true;
       return await operation();
     } finally {
       try {
-        if (barrierStarted) this.requireSuccessfulFlush(this.collaboration.endSnapshotBarrier(projectId));
+        if (barrierStarted) this.requireSuccessfulFlush(await this.collaboration.endSnapshotBarrier(projectId));
       } finally {
         release();
         if (this.queues.get(projectId)?.tail === tail) this.queues.delete(projectId);

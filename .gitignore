@@ -28,6 +28,7 @@ logs/
 texlite.config.json
 texlite.config.json.bak
 /data/
+/data-postgres/
 /data-back/
 /TODO.md
 .DS_Store

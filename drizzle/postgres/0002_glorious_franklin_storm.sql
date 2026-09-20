@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "project_dictionary_words_project_word_ci_unique" ON "project_dictionary_words" USING btree ("project_id",lower("word"));

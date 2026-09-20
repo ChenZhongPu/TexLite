@@ -47,7 +47,7 @@ export function clearCurrentUserCache(request: FastifyRequest): void {
   requestUserCache.delete(request);
 }
 
-export function currentUser(request: FastifyRequest, db: DatabaseConnection): UserRow | null {
+export async function currentUser(request: FastifyRequest, db: DatabaseConnection): Promise<UserRow | null> {
   if (requestUserCache.has(request)) {
     return requestUserCache.get(request) ?? null;
   }
@@ -56,13 +56,9 @@ export function currentUser(request: FastifyRequest, db: DatabaseConnection): Us
     requestUserCache.set(request, null);
     return null;
   }
-  const row = db.prepare(`
-    SELECT u.*, s.id AS session_id, s.expires_at AS session_expires_at FROM sessions s
-    JOIN users u ON u.id = s.user_id
-    WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0
-  `).get(digestToken(token), new Date().toISOString()) as UserRow | undefined;
+  const row = await db.identity.findActiveSessionUser(digestToken(token), new Date().toISOString());
   const shareToken = request.cookies.texlite_share_token;
-  const shareLink = shareToken ? activeShareLinkForToken(db, shareToken) : null;
+  const shareLink = shareToken ? await activeShareLinkForToken(db, shareToken) : null;
   // A share URL never authenticates an anonymous request by itself. Once a
   // normal account is signed in, the active link is carried as request-scoped
   // context so project authorization can grant only that link's project.
@@ -71,12 +67,12 @@ export function currentUser(request: FastifyRequest, db: DatabaseConnection): Us
   return user;
 }
 
-export function requireUser(
+export async function requireUser(
   request: FastifyRequest,
   reply: FastifyReply,
   db: DatabaseConnection
-): UserRow | null {
-  const user = currentUser(request, db);
+): Promise<UserRow | null> {
+  const user = await currentUser(request, db);
   if (!user) {
     void apiError(reply, 401, "AUTH_REQUIRED");
     return null;
@@ -84,12 +80,12 @@ export function requireUser(
   return user;
 }
 
-export function requireAdmin(
+export async function requireAdmin(
   request: FastifyRequest,
   reply: FastifyReply,
   db: DatabaseConnection
-): UserRow | null {
-  const user = requireUser(request, reply, db);
+): Promise<UserRow | null> {
+  const user = await requireUser(request, reply, db);
   if (!user) return null;
   if (user.role !== "admin") {
     void apiError(reply, 403, "ADMIN_REQUIRED");

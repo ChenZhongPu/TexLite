@@ -4,6 +4,12 @@ import { ArrowLeft, CheckCircle2, KeyRound, LogIn, Save, UserRound } from "lucid
 import { api } from "../api";
 import { errorMessage } from "../errors";
 import type { SiteConfig, User } from "../types";
+import {
+  isUsernameSyntaxValid,
+  MAX_DISPLAY_NAME_LENGTH,
+  MAX_USERNAME_LENGTH,
+  MIN_USERNAME_LENGTH
+} from "../../shared/userIdentity";
 
 export function UserProfile({ site, user, onUser, onBack }: {
   site: SiteConfig;
@@ -23,10 +29,18 @@ export function UserProfile({ site, user, onUser, onBack }: {
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [passwordError, setPasswordError] = useState("");
   const [passwordSaved, setPasswordSaved] = useState(false);
+  const usernameValue = username.trim();
+  const usernameMayRemainShort = user.nuwaxConnected
+    && usernameValue === user.username
+    && usernameValue.length < MIN_USERNAME_LENGTH;
 
   const saveDisplayName = async (event: FormEvent) => {
     event.preventDefault();
     if (!displayName.trim() || displayNameBusy) return;
+    if (!isUsernameSyntaxValid(usernameValue, usernameMayRemainShort ? 1 : MIN_USERNAME_LENGTH)) {
+      setDisplayNameError(t("auth.usernameInvalid"));
+      return;
+    }
     setDisplayNameBusy(true);
     setDisplayNameError("");
     setDisplayNameSaved(false);
@@ -85,10 +99,12 @@ export function UserProfile({ site, user, onUser, onBack }: {
         <div className="profile-card-heading"><UserRound aria-hidden size={18} /><div><h2>{t("profile.identityTitle")}</h2><p>{t("profile.identityDescription")}</p></div></div>
         <form className="profile-form" onSubmit={(event) => void saveDisplayName(event)}>
           <label className="form-field">{t("profile.username")}
-            <input maxLength={50} value={username} onChange={(event) => { setUsername(event.target.value); setDisplayNameSaved(false); }} />
+            <input required minLength={usernameMayRemainShort ? 1 : MIN_USERNAME_LENGTH} maxLength={MAX_USERNAME_LENGTH} value={username} onChange={(event) => { setUsername(event.target.value); setDisplayNameSaved(false); }} />
+            <small className="field-hint">{t("profile.usernameHint")}</small>
           </label>
           <label className="form-field">{t("profile.displayName")}
-            <input maxLength={50} value={displayName} onChange={(event) => { setDisplayName(event.target.value); setDisplayNameSaved(false); }} />
+            <input required minLength={1} maxLength={MAX_DISPLAY_NAME_LENGTH} value={displayName} onChange={(event) => { setDisplayName(event.target.value); setDisplayNameSaved(false); }} />
+            <small className="field-hint">{t("profile.displayNameHint")}</small>
           </label>
           {displayNameError && <p className="error dialog-error">{displayNameError}</p>}
           {displayNameSaved && <p className="profile-success" role="status"><CheckCircle2 aria-hidden size={14} />{t("profile.saved")}</p>}

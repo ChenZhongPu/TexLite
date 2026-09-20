@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789900303202,
+      "tag": "0000_dizzy_guardsmen",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789903355483,
+      "tag": "0001_vengeful_siren",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789905901099,
+      "tag": "0002_glorious_franklin_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789910103296,
+      "tag": "0003_sour_siren",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789910240752,
+      "tag": "0004_bright_nextwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789910255632,
+      "tag": "0005_tricky_centennial",
+      "breakpoints": true
+    }
+  ]
+}

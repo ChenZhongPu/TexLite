@@ -9,17 +9,17 @@ const MAX_PENDING_BYTES = 16 * 1024 * 1024;
 export class EditHistoryRetry {
   private pending = new Map<string, { edits: EditHistorySegmentInput[]; bytes: number; attempts: number }>();
   private timer: ReturnType<typeof setTimeout> | undefined;
-  constructor(private readonly record: (id: string, edits: readonly EditHistorySegmentInput[]) => void,
-    private readonly exists: (id: string) => boolean,
+  constructor(private readonly record: (id: string, edits: readonly EditHistorySegmentInput[]) => Promise<void> | void,
+    private readonly exists: (id: string) => Promise<boolean> | boolean,
     private readonly report: (id: string, state: "ok" | "retrying" | "incomplete" | "discarded", error?: unknown) => void) {}
 
-  save(id: string, edits: readonly EditHistorySegmentInput[]): void {
+  async save(id: string, edits: readonly EditHistorySegmentInput[]): Promise<void> {
     if (!edits.length) return;
     const old = this.pending.get(id);
     if (!old) {
       // The queue limits protect only a failed retry buffer. A valid large
       // edit must always get its normal transactional write attempt first.
-      try { this.record(id, edits); }
+      try { await this.record(id, edits); }
       catch (error) { this.enqueue(id, [...edits], 0, error); }
       return;
     }
@@ -56,23 +56,27 @@ export class EditHistoryRetry {
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      for (const [id, batch] of this.pending) {
-        if (!this.exists(id)) {
-          this.pending.delete(id);
-          this.report(id, "discarded");
-          continue;
-        }
-        try {
-          this.record(id, batch.edits);
-          this.pending.delete(id); this.report(id, "ok");
-        } catch (error) {
-          if (++batch.attempts >= MAX_RETRIES) {
-            this.pending.delete(id); this.report(id, "incomplete", error);
-          } else this.report(id, "retrying", error);
-        }
-      }
-      if (this.pending.size) this.schedule();
+      void this.flushPending();
     }, RETRY_DELAY_MS);
     this.timer.unref?.();
+  }
+
+  private async flushPending(): Promise<void> {
+    for (const [id, batch] of this.pending) {
+      if (!(await this.exists(id))) {
+        this.pending.delete(id);
+        this.report(id, "discarded");
+        continue;
+      }
+      try {
+        await this.record(id, batch.edits);
+        this.pending.delete(id); this.report(id, "ok");
+      } catch (error) {
+        if (++batch.attempts >= MAX_RETRIES) {
+          this.pending.delete(id); this.report(id, "incomplete", error);
+        } else this.report(id, "retrying", error);
+      }
+    }
+    if (this.pending.size) this.schedule();
   }
 }

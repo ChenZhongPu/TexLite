@@ -42,23 +42,23 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
   const { config, db, history, editHistory, projectMutations, projectQuota, recordHistory } = context;
 
   app.get("/api/projects/:id/edit-history/stats", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (accessibleProject(db, id, user)?.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
+    if ((await accessibleProject(db, id, user))?.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
     return editHistory.stats(id);
   });
 
   app.delete("/api/projects/:id/edit-history", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (accessibleProject(db, id, user)?.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
+    if ((await accessibleProject(db, id, user))?.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
     return await projectMutations.runWrite(id, () => {
       editHistory.clear(id);
       context.clearPendingEdits(id);
       return editHistory.stats(id);
-    }, { preflight: () => { requireProjectOwnerPermission(db, id, user); } });
+    }, { preflight: async () => { await requireProjectOwnerPermission(db, id, user); } });
   });
 
   /**
@@ -67,10 +67,10 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
    * remain a separate concern.
    */
   app.get("/api/projects/:id/edit-history", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { path?: string; start?: string; end?: string; limit?: string; sourceHash?: string };
     if (typeof query.sourceHash !== "string" || !/^[a-f0-9]{64}$/.test(query.sourceHash)) return apiError(reply, 400, "REQUEST_INVALID");
     let filePath: string;
@@ -81,43 +81,43 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
     const end = parseOffset(query.end);
     if (start === null || end === null || start === end) return apiError(reply, 400, "REQUEST_INVALID");
     const requestedLimit = parseOffset(query.limit);
-    return await projectMutations.runConsistentRead(id, () => {
+    return await projectMutations.runConsistentRead(id, async () => {
       const source = resolveSourcePath(config, id, filePath);
       if (!fs.existsSync(source) || !fs.statSync(source).isFile()) return apiError(reply, 404, "FILE_NOT_FOUND", { path: filePath });
       if (fs.statSync(source).size > maxCollaborativeFileBytes(config)) return apiError(reply, 413, "FILE_TOO_LARGE", { path: filePath });
       const content = fs.readFileSync(source, "utf8");
       if (hashText(content) !== query.sourceHash) return apiError(reply, 409, "SELECTION_HISTORY_SOURCE_CHANGED");
       if (start > end || end > content.length) return apiError(reply, 400, "REQUEST_INVALID");
-      return editHistory.selectionHistory(id, filePath, content, start, end, requestedLimit ?? undefined);
-    }, { preflight: () => {
-      if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+      return await editHistory.selectionHistory(id, filePath, content, start, end, requestedLimit ?? undefined);
+    }, { preflight: async () => {
+      if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
     } });
   });
 
   app.get("/api/projects/:id/history", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { limit?: unknown; before?: unknown };
     if (query.before !== undefined && typeof query.before !== "string") return apiError(reply, 400, "REQUEST_INVALID");
     const limit = typeof query.limit === "string" ? Number.parseInt(query.limit, 10) : 100;
-    const page = history.listPage(id, Number.isFinite(limit) ? limit : 100, query.before);
+    const page = await history.listPage(id, Number.isFinite(limit) ? limit : 100, query.before);
     return {
       versions: page.versions,
       nextCursor: page.nextCursor,
-      stats: project.permission === "owner" ? history.stats(id) : null
+      stats: project.permission === "owner" ? await history.stats(id) : null
     };
   });
 
   app.get("/api/projects/:id/history/:versionId", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, versionId } = request.params as { id: string; versionId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
-    const version = history.version(versionId, id);
-    const manifest = history.manifest(id, versionId);
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    const version = await history.version(versionId, id);
+    const manifest = await history.manifest(id, versionId);
     if (!version || !manifest) return apiError(reply, 404, "HISTORY_VERSION_NOT_FOUND");
     return {
       version,
@@ -127,20 +127,20 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
   });
 
   app.get("/api/projects/:id/history/:versionId/file", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, versionId } = request.params as { id: string; versionId: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { path?: string; against?: string };
     const filePath = safeRelativePath(query.path ?? "");
-    return await projectMutations.runConsistentRead(id, () => {
-      const historical = history.readTextFile(id, versionId, filePath);
+    return await projectMutations.runConsistentRead(id, async () => {
+      const historical = await history.readTextFile(id, versionId, filePath);
       if (historical === null) return apiError(reply, 415, "HISTORY_FILE_PREVIEW_UNSUPPORTED", { path: filePath });
       let comparison = "";
-      const previousVersion = query.against === "__previous__" ? history.previousVersion(id, versionId) : null;
+      const previousVersion = query.against === "__previous__" ? await history.previousVersion(id, versionId) : null;
       const against = query.against === "__previous__" ? previousVersion?.id ?? "__none__" : query.against;
       if (query.against) {
-        comparison = history.readTextFile(id, against!, filePath) ?? "";
+        comparison = await history.readTextFile(id, against!, filePath) ?? "";
       } else {
         const current = resolveSourcePath(config, id, filePath);
         if (fs.existsSync(current) && fs.statSync(current).isFile() && fs.statSync(current).size <= MAX_TEXT_PREVIEW_BYTES) {
@@ -148,65 +148,65 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
         }
       }
       return { path: filePath, historical, comparison, against: against ?? "current", previousVersion };
-    }, { preflight: () => {
-      if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+    }, { preflight: async () => {
+      if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
     } });
   });
 
   app.patch("/api/projects/:id/history/:versionId", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, versionId } = request.params as { id: string; versionId: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { label?: unknown; snapshotHash?: unknown } | undefined;
     if (body?.snapshotHash !== undefined && (typeof body.snapshotHash !== "string" || !/^[a-f0-9]{64}$/.test(body.snapshotHash))) {
       return apiError(reply, 400, "REQUEST_INVALID");
     }
     const snapshotHash = typeof body?.snapshotHash === "string" ? body.snapshotHash : undefined;
-    history.assertSnapshotHash(id, versionId, snapshotHash);
+    await history.assertSnapshotHash(id, versionId, snapshotHash);
     const label = body?.label === null || body?.label === "" ? null : text(body?.label, 80);
-    const version = history.setLabel(id, versionId, label);
+    const version = await history.setLabel(id, versionId, label);
     if (!version) return apiError(reply, 404, "HISTORY_VERSION_NOT_FOUND");
     if (!label) context.scheduleHistoryRetention(id);
     return { version, retentionScheduled: !label, retentionRefreshAfterMs: !label ? HISTORY_RETENTION_DELAY_MS + 1_000 : 0,
-      stats: project.permission === "owner" ? history.stats(id) : null };
+      stats: project.permission === "owner" ? await history.stats(id) : null };
   });
 
   app.delete("/api/projects/:id/history/:versionId", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, versionId } = request.params as { id: string; versionId: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
-    return await projectMutations.runWrite(id, () => {
-      if (!history.deleteVersion(id, versionId)) return apiError(reply, 404, "HISTORY_VERSION_NOT_FOUND");
-      return { ok: true, stats: history.stats(id) };
-    }, { preflight: () => {
-      requireProjectOwnerPermission(db, id, user);
-      if (!history.version(versionId, id)) {
+    return await projectMutations.runWrite(id, async () => {
+      if (!await history.deleteVersion(id, versionId)) return apiError(reply, 404, "HISTORY_VERSION_NOT_FOUND");
+      return { ok: true, stats: await history.stats(id) };
+    }, { preflight: async () => {
+      await requireProjectOwnerPermission(db, id, user);
+      if (!await history.version(versionId, id)) {
         throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
       }
     } });
   });
 
   app.delete("/api/projects/:id/history", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
-    return await projectMutations.runWrite(id, () => {
-      history.clear(id);
-      return { ok: true, stats: history.stats(id) };
-    }, { preflight: () => { requireProjectOwnerPermission(db, id, user); } });
+    return await projectMutations.runWrite(id, async () => {
+      await history.clear(id);
+      return { ok: true, stats: await history.stats(id) };
+    }, { preflight: async () => { await requireProjectOwnerPermission(db, id, user); } });
   });
 
   app.post("/api/projects/:id/history/:versionId/restore", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, versionId } = request.params as { id: string; versionId: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "PROJECT_EDIT_FORBIDDEN");
     const body = request.body as { path?: unknown; snapshotHash?: unknown } | undefined;
     const filePath = typeof body?.path === "string" ? safeRelativePath(body.path) : undefined;
@@ -216,42 +216,42 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
       return apiError(reply, 400, "REQUEST_INVALID");
     }
     const snapshotHash = typeof body?.snapshotHash === "string" ? body.snapshotHash : undefined;
-    return await projectMutations.runExclusive(id, "history restore", () => {
-      const currentProject = requireEditableProject(db, id, user);
-      history.assertSnapshotHash(id, versionId, snapshotHash);
-      const manifest = history.manifest(id, versionId);
+    return await projectMutations.runExclusive(id, "history restore", async () => {
+      const currentProject = await requireEditableProject(db, id, user);
+      await history.assertSnapshotHash(id, versionId, snapshotHash);
+      const manifest = await history.manifest(id, versionId);
       if (!manifest) throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
       const restoredFile = filePath ? manifest.files[filePath] : null;
       if (filePath && !restoredFile) throw httpError(404, "HISTORY_FILE_NOT_FOUND");
-      const sourceBytesBefore = projectQuota.sourceBytes(currentProject.owner_id, id);
+      const sourceBytesBefore = await await projectQuota.sourceBytes(currentProject.owner_id, id);
       const restoredSourceBytes = filePath
         ? sourceBytesBefore
           - (fs.existsSync(resolveSourcePath(config, id, filePath)) ? fs.statSync(resolveSourcePath(config, id, filePath)).size : 0)
           + restoredFile!.size
         : Object.values(manifest.files).reduce((total, file) => total + file.size, 0);
-      projectQuota.assertCanStoreSource(currentProject.owner_id, id, restoredSourceBytes);
-      recordHistory(id, user.id, "checkpoint");
+      await projectQuota.assertCanStoreSource(currentProject.owner_id, id, restoredSourceBytes);
+      await recordHistory(id, user.id, "checkpoint");
       const before = projectTextSnapshot(config, id);
-      const restored = history.restore(id, versionId, filePath);
+      const restored = await history.restore(id, versionId, filePath);
       projectQuota.setSourceBytes(currentProject.owner_id, id, restoredSourceBytes);
-      reanchorProjectSnapshot(db, id, before, projectTextSnapshot(config, id));
-      touchProject(db, id, user.id);
-      recordHistory(id, user.id, "restore", filePath ? [filePath] : undefined);
+      await reanchorProjectSnapshot(db, id, before, projectTextSnapshot(config, id));
+      await touchProject(db, id, user.id);
+      await recordHistory(id, user.id, "restore", filePath ? [filePath] : undefined);
       return {
         ok: true,
         restoredPaths: restored.restoredPaths,
         project: projectJson(
-          accessibleProject(db, id, user) ?? currentProject,
-          tagsForProject(db, id, user.id),
-          commentsSummaryForProject(db, id)
+          (await accessibleProject(db, id, user)) ?? currentProject,
+          await tagsForProject(db, id, user.id),
+          await commentsSummaryForProject(db, id)
         )
       };
-    }, { preflight: () => {
-      requireEditableProject(db, id, user);
-      if (!history.version(versionId, id)) {
+    }, { preflight: async () => {
+      await requireEditableProject(db, id, user);
+      if (!await history.version(versionId, id)) {
         throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
       }
-      history.validateRestoreTarget(id, versionId, filePath);
+      await history.validateRestoreTarget(id, versionId, filePath);
     } });
   });
 }

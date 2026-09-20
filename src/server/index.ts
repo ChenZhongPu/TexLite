@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "./config.js";
-import { activeAdminCount, openDatabase } from "./db.js";
+import { activeAdminCount, openApplicationDatabase, type ApplicationDatabaseConnection } from "./db.js";
 import { buildApp } from "./app.js";
 import { assertEnvironment } from "./environment.js";
 import { acquireDataDirectoryLock } from "./instanceLock.js";
@@ -17,15 +17,18 @@ export interface RunningServer {
 export async function startServer(configPath?: string): Promise<RunningServer> {
   const config = loadConfig(configPath);
   const lock = acquireDataDirectoryLock(config);
-  let db: ReturnType<typeof openDatabase> | null = null;
+  let db: ApplicationDatabaseConnection | null = null;
+  let closeDatabase: (() => Promise<void>) | null = null;
   let app: FastifyInstance | null = null;
   const logs = process.env.TEXLITE_MANAGED_LOGS === "1"
     ? new LogRotation(config.dataDir, (error) => console.error("TexLite log rotation failed:", error)) : null;
   try {
     await logs?.start();
     const environment = await assertEnvironment(config);
-    db = openDatabase(config);
-    if (activeAdminCount(db) === 0) {
+    const database = await openApplicationDatabase(config);
+    db = database.db;
+    closeDatabase = database.close;
+    if (await activeAdminCount(db) === 0) {
       throw new Error("No active administrator found. Run `texlite init` first (or `npm run init` from a source checkout); the server will not start.");
     }
     app = await buildApp(config, db);
@@ -41,7 +44,7 @@ export async function startServer(configPath?: string): Promise<RunningServer> {
           if (app) await app.close();
         } finally {
           try {
-            db?.close();
+            await closeDatabase?.();
           } finally {
             await logs?.stop();
             lock.release();
@@ -54,7 +57,7 @@ export async function startServer(configPath?: string): Promise<RunningServer> {
       if (app) await app.close();
     } finally {
       try {
-        db?.close();
+        await closeDatabase?.();
       } finally {
         await logs?.stop();
         lock.release();

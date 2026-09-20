@@ -42,7 +42,7 @@ export function registerSystemRoutes(app: FastifyInstance, context: SystemRouteC
   app.get("/api/health", async () => ({ ok: true, pid: process.pid, latexmk: config.latexmk }));
 
   app.get("/api/health/metrics", async (request, reply) => {
-    if (!requireAdmin(request, reply, db)) return;
+    if (!(await requireAdmin(request, reply, db))) return;
     const memory = process.memoryUsage();
     return {
       uptimeSeconds: Math.round(process.uptime()),

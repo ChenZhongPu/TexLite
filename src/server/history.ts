@@ -3,11 +3,16 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import type { DatabaseConnection, ProjectRow } from "./db.js";
+import type {
+  HistoryListRow as RepositoryHistoryListRow,
+  HistoryPageRow as RepositoryHistoryPageRow,
+  HistoryStorageRow
+} from "./database/repositories/history.js";
 import { assertNoSourceSymlinks, listProjectFiles, outputRoot, projectRoot, resolveSourcePath, safeRelativePath, sourceRoot } from "./files.js";
 import { httpError } from "./http.js";
 import { MAX_TEXT_PREVIEW_BYTES } from "./limits.js";
 
-export type HistoryReason = "initial" | "autosave" | "file" | "settings" | "git" | "restore" | "checkpoint";
+export type HistoryReason = "initial" | "autosave" | "file" | "settings" | "restore" | "checkpoint";
 
 interface HistoryFile {
   digest: string;
@@ -20,21 +25,10 @@ export interface HistoryManifest {
   settings: {
     mainFile: string;
     engine: ProjectRow["engine"];
-    /** Legacy field accepted when reading old snapshots; never written now. */
-    latexmkrc?: string | null;
   };
 }
 
-interface HistoryRow {
-  id: string;
-  project_id: string;
-  author_id: string | null;
-  reason: HistoryReason;
-  label: string | null;
-  manifest_json: string;
-  changed_paths_json: string;
-  created_at: string;
-}
+type HistoryRow = HistoryStorageRow;
 
 export interface HistoryVersion {
   id: string;
@@ -90,26 +84,22 @@ interface HistoryCursor {
   rowId: number;
 }
 
-type HistoryListRow = HistoryRow & {
-  author_username: string | null;
-  author_name: string | null;
-};
-
-type HistoryPageRow = HistoryListRow & { history_rowid: number };
+type HistoryListRow = RepositoryHistoryListRow;
+type HistoryPageRow = RepositoryHistoryPageRow;
 
 export class ProjectHistoryService {
   constructor(private readonly config: Config, private readonly db: DatabaseConnection) {}
 
-  record(
+  async record(
     projectId: string,
     authorId: string | null,
     reason: HistoryReason,
     changedRoots?: readonly string[],
     options: HistoryRecordOptions = {}
-  ): HistoryVersion | null {
-    const project = this.project(projectId);
-    const previous = this.latestRow(projectId);
-    const previousManifest = this.baseline(projectId) ?? (previous ? parseManifest(previous.manifest_json) : null);
+  ): Promise<HistoryVersion | null> {
+    const project = await this.project(projectId);
+    const previous = await this.latestRow(projectId);
+    const previousManifest = await this.baseline(projectId) ?? (previous ? parseManifest(previous.manifest_json) : null);
     const manifest = previousManifest ? cloneManifest(previousManifest) : this.emptyManifest(project);
     manifest.settings = settings(project);
 
@@ -127,7 +117,7 @@ export class ProjectHistoryService {
 
     const changedPaths = previousManifest ? changedManifestPaths(previousManifest, manifest) : Object.keys(manifest.files).sort();
     if (previousManifest && changedPaths.length === 0 && JSON.stringify(previousManifest.settings) === JSON.stringify(manifest.settings)) {
-      this.saveBaseline(projectId, manifest);
+      await this.saveBaseline(projectId, manifest);
       return null;
     }
 
@@ -135,34 +125,41 @@ export class ProjectHistoryService {
     if (reason === "autosave" && previous?.reason === "autosave" && !previous.label
       && Date.parse(createdAt) - Date.parse(previous.created_at) < AUTOSAVE_COALESCE_MS) {
       const merged = [...new Set([...parseStringArray(previous.changed_paths_json), ...changedPaths])].sort();
-      this.db.prepare(`UPDATE project_history_versions
-        SET manifest_json = ?, changed_paths_json = ?, author_id = ? WHERE id = ?`)
-        .run(JSON.stringify(manifest), JSON.stringify(merged), previous.author_id === authorId ? authorId : null, previous.id);
-      this.saveBaseline(projectId, manifest);
+      const coalesced = await this.db.history.coalesceVersionAndBaseline({
+        versionId: previous.id,
+        projectId,
+        manifestJson: JSON.stringify(manifest),
+        changedPathsJson: JSON.stringify(merged),
+        authorId: previous.author_id === authorId ? authorId : null,
+        baselineJson: JSON.stringify(manifest),
+        baselineUpdatedAt: new Date().toISOString()
+      });
+      if (!coalesced) throw new Error("History version disappeared during autosave coalescing");
       if (!options.deferRetention) {
-        this.removeUnreferencedObjects(projectId, new Set(previousManifest
+        await this.removeUnreferencedObjects(projectId, new Set(previousManifest
           ? Object.values(previousManifest.files).map((file) => file.digest)
           : []));
-        this.pruneVersions(projectId);
+        await this.pruneVersions(projectId);
       }
-      return this.version(previous.id)!;
+      return await this.version(previous.id)!;
     }
 
     const id = randomUUID();
-    this.db.prepare(`INSERT INTO project_history_versions
-      (id, project_id, author_id, reason, manifest_json, changed_paths_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, projectId, authorId, reason, JSON.stringify(manifest), JSON.stringify(changedPaths), createdAt);
-    this.saveBaseline(projectId, manifest);
-    if (!options.deferRetention) this.pruneVersions(projectId);
-    return this.version(id)!;
+    await this.db.history.insertVersionAndBaseline({
+      id,
+      projectId,
+      authorId,
+      reason,
+      manifestJson: JSON.stringify(manifest),
+      changedPathsJson: JSON.stringify(changedPaths),
+      createdAt
+    }, JSON.stringify(manifest), createdAt);
+    if (!options.deferRetention) await this.pruneVersions(projectId);
+    return await this.version(id)!;
   }
 
-  list(projectId: string, limit = 100): HistoryVersion[] {
-    const rows = this.db.prepare(`SELECT history.*, user.username AS author_username, user.display_name AS author_name
-      FROM project_history_versions history LEFT JOIN users user ON user.id = history.author_id
-      WHERE history.project_id = ? ORDER BY history.created_at DESC, history.rowid DESC LIMIT ?`)
-      .all(projectId, Math.min(200, Math.max(1, limit))) as HistoryListRow[];
+  async list(projectId: string, limit = 100): Promise<HistoryVersion[]> {
+    const rows = await this.db.history.list(projectId, Math.min(200, Math.max(1, limit)));
     return rows.map((row) => versionJson(row));
   }
 
@@ -171,24 +168,12 @@ export class ProjectHistoryService {
    * is preferable to offsets here: concurrent saves/deletions cannot shift an
    * already loaded page or make the next request repeat a snapshot.
   */
-  listPage(projectId: string, limit = DEFAULT_HISTORY_PAGE_SIZE, cursorInput?: string): HistoryPage {
+  async listPage(projectId: string, limit = DEFAULT_HISTORY_PAGE_SIZE, cursorInput?: string): Promise<HistoryPage> {
     const requestedLimit = Number.isFinite(limit) ? Math.floor(limit) : DEFAULT_HISTORY_PAGE_SIZE;
     const limitValue = Math.min(MAX_HISTORY_PAGE_SIZE, Math.max(1, requestedLimit));
     const cursor = cursorInput === undefined ? null : decodeHistoryCursor(cursorInput);
     if (cursorInput !== undefined && !cursor) throw httpError(400, "REQUEST_INVALID");
-    const values: Array<string | number> = [projectId];
-    let cursorFilter = "";
-    if (cursor) {
-      cursorFilter = "AND (history.created_at < ? OR (history.created_at = ? AND history.rowid < ?))";
-      values.push(cursor.createdAt, cursor.createdAt, cursor.rowId);
-    }
-    values.push(limitValue + 1);
-    const rows = this.db.prepare(`SELECT history.*, history.rowid AS history_rowid,
-      user.username AS author_username, user.display_name AS author_name
-      FROM project_history_versions history LEFT JOIN users user ON user.id = history.author_id
-      WHERE history.project_id = ? ${cursorFilter}
-      ORDER BY history.created_at DESC, history.rowid DESC LIMIT ?`)
-      .all(...values) as HistoryPageRow[];
+    const rows = await this.db.history.listPage(projectId, limitValue + 1, cursor);
     const pageRows = rows.slice(0, limitValue);
     return {
       versions: pageRows.map((row) => versionJson(row)),
@@ -196,9 +181,8 @@ export class ProjectHistoryService {
     };
   }
 
-  stats(projectId: string): HistoryStats {
-    const rows = this.db.prepare(`SELECT * FROM project_history_versions
-      WHERE project_id = ? ORDER BY created_at DESC, rowid DESC`).all(projectId) as HistoryRow[];
+  async stats(projectId: string): Promise<HistoryStats> {
+    const rows = await this.db.history.all(projectId);
     const objects = new Map<string, number>();
     const protectedObjects = new Map<string, number>();
     let metadataBytes = 0;
@@ -216,7 +200,7 @@ export class ProjectHistoryService {
         if (protectedVersion) protectedObjects.set(file.digest, file.size);
       }
     }
-    const baseline = this.baseline(projectId);
+    const baseline = await this.baseline(projectId);
     if (baseline) {
       const baselineBytes = Buffer.byteLength(JSON.stringify(baseline), "utf8");
       metadataBytes += baselineBytes;
@@ -242,44 +226,36 @@ export class ProjectHistoryService {
     };
   }
 
-  enforceRetention(projectId: string): void {
-    this.pruneVersions(projectId);
+  async enforceRetention(projectId: string): Promise<void> {
+    await this.pruneVersions(projectId);
     // Deferred autosave maintenance can leave an object from a coalesced
     // version without any manifest referring to it. Scan the small
     // content-addressed object store here (never in the save path) so a
     // restart also recovers objects left behind before a timer could run.
-    this.removeUnreferencedObjects(projectId, this.storedObjectDigests(projectId));
+    await this.removeUnreferencedObjects(projectId, this.storedObjectDigests(projectId));
   }
 
-  deleteVersion(projectId: string, versionId: string): boolean {
-    const row = this.db.prepare("SELECT id, manifest_json FROM project_history_versions WHERE id = ? AND project_id = ?")
-      .get(versionId, projectId) as { id: string; manifest_json: string } | undefined;
-    if (!row) return false;
-    this.saveBaseline(projectId, this.snapshotCurrent(projectId));
-    this.deleteVersions(projectId, [row]);
+  async deleteVersion(projectId: string, versionId: string): Promise<boolean> {
+    const manifestJson = await this.db.history.manifest(projectId, versionId);
+    if (!manifestJson) return false;
+    await this.saveBaseline(projectId, await this.snapshotCurrent(projectId));
+    await this.deleteVersions(projectId, [{ id: versionId, manifest_json: manifestJson }]);
     return true;
   }
 
-  clear(projectId: string): void {
-    this.db.transaction(() => {
-      this.db.prepare("DELETE FROM project_history_state WHERE project_id = ?").run(projectId);
-      this.db.prepare("DELETE FROM project_history_versions WHERE project_id = ?").run(projectId);
-    })();
+  async clear(projectId: string): Promise<void> {
+    await this.db.history.deleteStateAndVersions(projectId);
     fs.rmSync(path.join(outputRoot(this.config, projectId), ".texlite", "history"), { recursive: true, force: true });
   }
 
-  version(id: string, projectId?: string): HistoryVersion | null {
-    const row = this.db.prepare(`SELECT history.*, user.username AS author_username, user.display_name AS author_name
-      FROM project_history_versions history LEFT JOIN users user ON user.id = history.author_id
-      WHERE history.id = ? ${projectId ? "AND history.project_id = ?" : ""}`)
-      .get(...(projectId ? [id, projectId] : [id])) as (HistoryRow & { author_username: string | null; author_name: string | null }) | undefined;
+  async version(id: string, projectId?: string): Promise<HistoryVersion | null> {
+    const row = await this.db.history.find(id, projectId);
     return row ? versionJson(row) : null;
   }
 
-  manifest(projectId: string, versionId: string): HistoryManifest | null {
-    const row = this.db.prepare("SELECT manifest_json FROM project_history_versions WHERE id = ? AND project_id = ?")
-      .get(versionId, projectId) as { manifest_json: string } | undefined;
-    return row ? parseManifest(row.manifest_json) : null;
+  async manifest(projectId: string, versionId: string): Promise<HistoryManifest | null> {
+    const manifestJson = await this.db.history.manifest(projectId, versionId);
+    return manifestJson ? parseManifest(manifestJson) : null;
   }
 
   /**
@@ -288,12 +264,11 @@ export class ProjectHistoryService {
    * it has not reviewed, so verify the manifest fingerprint immediately
    * before a restore mutates the project.
    */
-  assertSnapshotHash(projectId: string, versionId: string, expectedHash: string | undefined): void {
+  async assertSnapshotHash(projectId: string, versionId: string, expectedHash: string | undefined): Promise<void> {
     if (!expectedHash) return;
-    const row = this.db.prepare("SELECT manifest_json FROM project_history_versions WHERE id = ? AND project_id = ?")
-      .get(versionId, projectId) as { manifest_json: string } | undefined;
-    if (!row) throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
-    if (historySnapshotHash(row.manifest_json) !== expectedHash) {
+    const manifestJson = await this.db.history.manifest(projectId, versionId);
+    if (!manifestJson) throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
+    if (historySnapshotHash(manifestJson) !== expectedHash) {
       throw httpError(409, "HISTORY_VERSION_CHANGED");
     }
   }
@@ -303,9 +278,9 @@ export class ProjectHistoryService {
    * restore() repeats the target check while the exclusive operation is held
    * so a directory created between these two checks cannot be replaced.
    */
-  validateRestoreTarget(projectId: string, versionId: string, filePathInput?: string): void {
+  async validateRestoreTarget(projectId: string, versionId: string, filePathInput?: string): Promise<void> {
     if (!filePathInput) return;
-    const manifest = this.manifest(projectId, versionId);
+    const manifest = await this.manifest(projectId, versionId);
     if (!manifest) {
       throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
     }
@@ -316,30 +291,25 @@ export class ProjectHistoryService {
     this.assertRestoreTargetIsFile(projectId, filePath);
   }
 
-  previousVersion(projectId: string, versionId: string): HistoryVersion | null {
-    const row = this.db.prepare(`SELECT older.id FROM project_history_versions older
-      JOIN project_history_versions selected ON selected.id = ? AND selected.project_id = older.project_id
-      WHERE older.project_id = ? AND (older.created_at < selected.created_at
-        OR (older.created_at = selected.created_at AND older.rowid < selected.rowid))
-      ORDER BY older.created_at DESC, older.rowid DESC LIMIT 1`).get(versionId, projectId) as { id: string } | undefined;
-    return row ? this.version(row.id, projectId) : null;
+  async previousVersion(projectId: string, versionId: string): Promise<HistoryVersion | null> {
+    const id = await this.db.history.previousId(projectId, versionId);
+    return id ? await this.version(id, projectId) : null;
   }
 
-  setLabel(projectId: string, versionId: string, label: string | null): HistoryVersion | null {
-    const result = this.db.prepare("UPDATE project_history_versions SET label = ? WHERE id = ? AND project_id = ?")
-      .run(label, versionId, projectId);
-    return result.changes ? this.version(versionId, projectId) : null;
+  async setLabel(projectId: string, versionId: string, label: string | null): Promise<HistoryVersion | null> {
+    return await this.db.history.setLabel(projectId, versionId, label)
+      ? await this.version(versionId, projectId) : null;
   }
 
-  readTextFile(projectId: string, versionId: string, filePathInput: string): string | null {
+  async readTextFile(projectId: string, versionId: string, filePathInput: string): Promise<string | null> {
     const filePath = safeRelativePath(filePathInput);
-    const entry = this.manifest(projectId, versionId)?.files[filePath];
+    const entry = (await this.manifest(projectId, versionId))?.files[filePath];
     if (!entry || entry.size > MAX_TEXT_PREVIEW_BYTES) return null;
     return this.readStoredObject(projectId, entry.digest, filePath);
   }
 
-  restore(projectId: string, versionId: string, filePathInput?: string): { restoredPaths: string[]; manifest: HistoryManifest } {
-    const manifest = this.manifest(projectId, versionId);
+  async restore(projectId: string, versionId: string, filePathInput?: string): Promise<{ restoredPaths: string[]; manifest: HistoryManifest }> {
+    const manifest = await this.manifest(projectId, versionId);
     if (!manifest) throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
     if (filePathInput) {
       const filePath = safeRelativePath(filePathInput);
@@ -359,8 +329,7 @@ export class ProjectHistoryService {
       return { restoredPaths: [filePath], manifest };
     }
     this.restoreProjectTree(projectId, manifest);
-    this.db.prepare("UPDATE projects SET main_file = ?, engine = ?, latexmkrc = NULL WHERE id = ?")
-      .run(manifest.settings.mainFile, manifest.settings.engine, projectId);
+    await this.db.history.updateProjectSettings(projectId, manifest.settings.mainFile, manifest.settings.engine);
     return { restoredPaths: Object.keys(manifest.files).sort(), manifest };
   }
 
@@ -372,13 +341,12 @@ export class ProjectHistoryService {
     }
   }
 
-  private latestRow(projectId: string): HistoryRow | null {
-    return this.db.prepare(`SELECT * FROM project_history_versions WHERE project_id = ?
-      ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as HistoryRow | undefined ?? null;
+  private async latestRow(projectId: string): Promise<HistoryRow | null> {
+    return await this.db.history.latest(projectId);
   }
 
-  private project(projectId: string): ProjectRow {
-    const project = this.db.prepare("SELECT * FROM projects WHERE id = ?").get(projectId) as ProjectRow | undefined;
+  private async project(projectId: string): Promise<ProjectRow> {
+    const project = await this.db.projects.findById(projectId);
     if (!project) throw httpError(404, "PROJECT_NOT_FOUND");
     return project;
   }
@@ -387,21 +355,18 @@ export class ProjectHistoryService {
     return { version: 1, files: {}, settings: settings(project) };
   }
 
-  private snapshotCurrent(projectId: string): HistoryManifest {
-    const project = this.project(projectId);
+  private async snapshotCurrent(projectId: string): Promise<HistoryManifest> {
+    const project = await this.project(projectId);
     return { version: 1, files: this.snapshotAllFiles(projectId), settings: settings(project) };
   }
 
-  private baseline(projectId: string): HistoryManifest | null {
-    const row = this.db.prepare("SELECT manifest_json FROM project_history_state WHERE project_id = ?")
-      .get(projectId) as { manifest_json: string } | undefined;
-    return row ? parseManifest(row.manifest_json) : null;
+  private async baseline(projectId: string): Promise<HistoryManifest | null> {
+    const manifestJson = await this.db.history.baseline(projectId);
+    return manifestJson ? parseManifest(manifestJson) : null;
   }
 
-  private saveBaseline(projectId: string, manifest: HistoryManifest): void {
-    this.db.prepare(`INSERT INTO project_history_state (project_id, manifest_json, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(project_id) DO UPDATE SET manifest_json = excluded.manifest_json, updated_at = excluded.updated_at`)
-      .run(projectId, JSON.stringify(manifest), new Date().toISOString());
+  private async saveBaseline(projectId: string, manifest: HistoryManifest): Promise<void> {
+    await this.db.history.saveBaseline(projectId, JSON.stringify(manifest), new Date().toISOString());
   }
 
   private snapshotAllFiles(projectId: string): Record<string, HistoryFile> {
@@ -493,10 +458,8 @@ export class ProjectHistoryService {
     return digests;
   }
 
-  private pruneVersions(projectId: string): void {
-    const rows = this.db.prepare(`SELECT *
-      FROM project_history_versions WHERE project_id = ?
-      ORDER BY created_at DESC, rowid DESC`).all(projectId) as HistoryRow[];
+  private async pruneVersions(projectId: string): Promise<void> {
+    const rows = await this.db.history.all(projectId);
     if (!rows.length) return;
 
     // Parse manifests and build reference counts & object size tracking in a single pass
@@ -513,7 +476,7 @@ export class ProjectHistoryService {
       }
     }
 
-    const baseline = this.baseline(projectId);
+    const baseline = await this.baseline(projectId);
     if (baseline) {
       for (const file of Object.values(baseline.files)) {
         refCounts.set(file.digest, (refCounts.get(file.digest) ?? 0) + 1);
@@ -572,11 +535,8 @@ export class ProjectHistoryService {
 
     if (!toDeleteIds.size) return;
 
-    // 3. Batch delete rows in a single transaction
-    const remove = this.db.prepare("DELETE FROM project_history_versions WHERE id = ? AND project_id = ?");
-    this.db.transaction(() => {
-      for (const id of toDeleteIds) remove.run(id, projectId);
-    })();
+    // 3. Batch delete rows in one typed database operation.
+    await this.db.history.deleteVersions(projectId, [...toDeleteIds]);
 
     // 4. Remove unreferenced CAS objects on disk
     for (const [digest, count] of refCounts.entries()) {
@@ -584,26 +544,24 @@ export class ProjectHistoryService {
     }
   }
 
-  private deleteVersions(projectId: string, rows: Array<{ id: string; manifest_json: string }>): void {
+  private async deleteVersions(projectId: string, rows: Array<{ id: string; manifest_json: string }>): Promise<void> {
     if (!rows.length) return;
     const candidates = new Set<string>();
     for (const row of rows) {
       for (const file of Object.values(parseManifest(row.manifest_json).files)) candidates.add(file.digest);
     }
-    const remove = this.db.prepare("DELETE FROM project_history_versions WHERE id = ? AND project_id = ?");
-    this.db.transaction(() => { for (const row of rows) remove.run(row.id, projectId); })();
-    this.removeUnreferencedObjects(projectId, candidates);
+    await this.db.history.deleteVersions(projectId, rows.map((row) => row.id));
+    await this.removeUnreferencedObjects(projectId, candidates);
   }
 
-  private removeUnreferencedObjects(projectId: string, candidates: Set<string>): void {
+  private async removeUnreferencedObjects(projectId: string, candidates: Set<string>): Promise<void> {
     if (!candidates.size) return;
-    const rows = this.db.prepare("SELECT manifest_json FROM project_history_versions WHERE project_id = ?")
-      .all(projectId) as Array<{ manifest_json: string }>;
+    const rows = await this.db.history.all(projectId);
     for (const row of rows) {
       for (const file of Object.values(parseManifest(row.manifest_json).files)) candidates.delete(file.digest);
       if (!candidates.size) return;
     }
-    const baseline = this.baseline(projectId);
+    const baseline = await this.baseline(projectId);
     if (baseline) {
       for (const file of Object.values(baseline.files)) candidates.delete(file.digest);
     }

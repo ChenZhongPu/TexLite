@@ -84,27 +84,18 @@ export class NuwaxOAuthService {
     return profile;
   }
 
-  storeTokens(userId: string, tokens: NuwaxTokenSet): void {
+  async storeTokens(userId: string, tokens: NuwaxTokenSet): Promise<void> {
     const timestamp = new Date().toISOString();
     const expiresAt = new Date(Date.now() + tokens.expiresInSeconds * 1_000).toISOString();
-    this.db.prepare(`INSERT INTO nuwax_oauth_tokens
-      (user_id, access_token_ciphertext, access_token_expires_at, refresh_token_ciphertext, scope, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET
-        access_token_ciphertext = excluded.access_token_ciphertext,
-        access_token_expires_at = excluded.access_token_expires_at,
-        refresh_token_ciphertext = excluded.refresh_token_ciphertext,
-        scope = excluded.scope,
-        updated_at = excluded.updated_at`)
-      .run(
-        userId,
-        encryptToken(this.config, tokens.accessToken),
-        expiresAt,
-        encryptToken(this.config, tokens.refreshToken),
-        tokens.scope,
-        timestamp,
-        timestamp
-      );
+    await this.db.nuwaxTokens.upsert({
+      user_id: userId,
+      access_token_ciphertext: encryptToken(this.config, tokens.accessToken),
+      access_token_expires_at: expiresAt,
+      refresh_token_ciphertext: encryptToken(this.config, tokens.refreshToken),
+      scope: tokens.scope,
+      created_at: timestamp,
+      updated_at: timestamp
+    });
   }
 
   /** Return a profile found by exact phone match, without persisting the phone. */
@@ -124,8 +115,8 @@ export class NuwaxOAuthService {
     }
   }
 
-  clearTokens(userId: string): void {
-    this.db.prepare("DELETE FROM nuwax_oauth_tokens WHERE user_id = ?").run(userId);
+  async clearTokens(userId: string): Promise<void> {
+    await this.db.nuwaxTokens.deleteByUserId(userId);
   }
 
   private requireConfig(): NuwaxOAuthConfig {
@@ -134,12 +125,7 @@ export class NuwaxOAuthService {
   }
 
   private async accessTokenForUser(userId: string): Promise<string> {
-    const row = this.db.prepare(`SELECT access_token_ciphertext, access_token_expires_at, refresh_token_ciphertext
-      FROM nuwax_oauth_tokens WHERE user_id = ?`).get(userId) as {
-      access_token_ciphertext: string;
-      access_token_expires_at: string;
-      refresh_token_ciphertext: string;
-    } | undefined;
+    const row = await this.db.nuwaxTokens.findByUserId(userId);
     if (!row) throw new NuwaxOAuthError("reauth", "The user must sign in with Nuwax again before searching users");
     if (Date.parse(row.access_token_expires_at) > Date.now() + ACCESS_TOKEN_REFRESH_MARGIN_MS) {
       return decryptToken(this.config, row.access_token_ciphertext);
@@ -159,9 +145,7 @@ export class NuwaxOAuthService {
   private async refreshAccessTokenForUser(userId: string): Promise<string> {
     const pending = this.pendingRefreshes.get(userId);
     if (pending) return await pending;
-    const row = this.db.prepare("SELECT refresh_token_ciphertext FROM nuwax_oauth_tokens WHERE user_id = ?").get(userId) as {
-      refresh_token_ciphertext: string;
-    } | undefined;
+    const row = await this.db.nuwaxTokens.findByUserId(userId);
     if (!row) throw new NuwaxOAuthError("reauth", "The user must sign in with Nuwax again before searching users");
     const refresh = this.refreshAccessToken(userId, decryptToken(this.config, row.refresh_token_ciphertext));
     this.pendingRefreshes.set(userId, refresh);
@@ -187,10 +171,10 @@ export class NuwaxOAuthService {
         client_id: this.requireConfig().clientId,
         client_secret: this.requireConfig().clientSecret
       }));
-      this.storeTokens(userId, tokens);
+      await this.storeTokens(userId, tokens);
       return tokens.accessToken;
     } catch (error) {
-      this.clearTokens(userId);
+      await this.clearTokens(userId);
       if (error instanceof NuwaxOAuthError && error.failure === "scope") throw error;
       throw new NuwaxOAuthError("reauth", "The Nuwax session must be authorized again");
     }
@@ -232,7 +216,7 @@ export class NuwaxOAuthService {
     });
     const payload = await parseResponseJson(response);
     if (isRecord(payload) && (payload.code === "4010" || payload.code === 4010)) {
-      this.clearTokensForExpiredAccessToken(accessToken);
+      await this.clearTokensForExpiredAccessToken(accessToken);
       throw new NuwaxOAuthError("reauth", "The Nuwax access token is no longer valid");
     }
     if (isRecord(payload) && (payload.code === "4030" || payload.code === 4030)) {
@@ -244,18 +228,14 @@ export class NuwaxOAuthService {
     return payload;
   }
 
-  private clearTokensForExpiredAccessToken(accessToken: string): void {
+  private async clearTokensForExpiredAccessToken(accessToken: string): Promise<void> {
     // The token is never stored in plaintext. Mark the matching encrypted row
     // stale so the next call refreshes it without exposing the credential.
-    const rows = this.db.prepare("SELECT user_id, access_token_ciphertext FROM nuwax_oauth_tokens").all() as Array<{
-      user_id: string;
-      access_token_ciphertext: string;
-    }>;
+    const rows = await this.db.nuwaxTokens.list();
     for (const row of rows) {
       try {
         if (decryptToken(this.config, row.access_token_ciphertext) === accessToken) {
-          this.db.prepare("UPDATE nuwax_oauth_tokens SET access_token_expires_at = ? WHERE user_id = ?")
-            .run("1970-01-01T00:00:00.000Z", row.user_id);
+          await this.db.nuwaxTokens.expireAccessToken(row.user_id);
           return;
         }
       } catch {

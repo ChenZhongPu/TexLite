@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { LATEX_ENGINES, type Config } from "./config.js";
-import { httpError } from "./http.js";
 import { detachedProcessGroup, killProcessGroup } from "./processTree.js";
 
 export const MIN_NODE_MAJOR = 24;
@@ -89,12 +88,6 @@ export async function assertEnvironment(config: Config): Promise<EnvironmentComm
   return tools.map(({ name, command, version }) => ({ name, command, version: version ?? "available" }));
 }
 
-export async function assertGitAvailable(config: Config): Promise<EnvironmentCommand> {
-  const tool = await inspectTool(gitToolDefinition(config.git, Math.min(config.gitOperationTimeoutMs, commandProbeTimeoutMs)));
-  if (tool.status !== "installed") throw httpError(503, "GIT_UNAVAILABLE");
-  return { name: tool.name, command: tool.command, version: tool.version ?? "available" };
-}
-
 function requiredToolDefinitions(config: Config): EnvironmentToolDefinition[] {
   return [
     { id: "node", name: `Node.js ${MIN_NODE_MAJOR}+`, command: "node", requirement: "required", purpose: "TexLite runtime" },
@@ -132,10 +125,6 @@ function optionalToolDefinitions(): EnvironmentToolDefinition[] {
     { id: "biber", name: "Biber", command: "biber", requirement: "optional", purpose: "Biber bibliography builds" },
     { id: "makeindex", name: "MakeIndex", command: "makeindex", requirement: "optional", purpose: "Index generation", versionArgs: [] }
   ];
-}
-
-function gitToolDefinition(command: string, timeoutMs: number): EnvironmentToolDefinition {
-  return { id: "git", name: "Git", command, requirement: "optional", purpose: "Git and GitHub backup", timeoutMs };
 }
 
 async function inspectTool(tool: EnvironmentToolDefinition): Promise<EnvironmentTool> {

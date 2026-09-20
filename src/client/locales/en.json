@@ -9,12 +9,12 @@
   "auth": {
     "tagline": "A lightweight LaTeX writing environment", "loginTitle": "Sign in to {{site}}", "passwordLogin": "Sign in with username and password", "username": "Username", "password": "Password", "login": "Sign in",
     "contact": "Need an account? Contact {{email}}", "firstLogin": "Change your temporary password to continue",
-    "currentPassword": "Current password", "newPassword": "New password", "confirmPassword": "Confirm new password",
+    "currentPassword": "Current password", "newPassword": "New password", "confirmPassword": "Confirm new password", "usernameRules": "5–50 characters; letters, numbers, dots, hyphens, and underscores only.", "usernameInvalid": "A username must be 5–50 characters and may contain only letters, numbers, dots, hyphens, or underscores.",
     "updatePassword": "Update password", "mismatch": "The new passwords do not match", "passwordMinimum": "At least {{count}} characters", "sessionExpired": "Your session has expired. Please sign in again.", "logout": "Sign out", "or": "or", "nuwaxLogin": "Continue with Nuwax", "emailAlreadyInUse": "This email address is already linked to another account.", "oauthIdentityAlreadyLinked": "This account is already linked to a different OAuth identity.", "oauthNotConfigured": "Nuwax sign-in is not configured on this server."
   },
   "profile": {
     "title": "Account settings", "open": "Open account settings", "back": "Back to projects", "description": "Manage your display information and sign-in methods.",
-    "identityTitle": "Profile", "identityDescription": "Your username and display name appear in collaboration, comments, and history.", "displayName": "Display name", "username": "Username", "email": "Email", "signIn": "Sign-in method", "nuwax": "Nuwax", "localPassword": "Sign-in password", "saved": "Profile saved.",
+    "identityTitle": "Profile", "identityDescription": "Your username and display name appear in collaboration, comments, and history.", "displayName": "Display name", "username": "Username", "usernameHint": "Changed usernames must be 5–50 characters; shorter Nuwax-generated usernames can be kept.", "displayNameHint": "1–50 characters.", "email": "Email", "signIn": "Sign-in method", "nuwax": "Nuwax", "localPassword": "Sign-in password", "saved": "Profile saved.",
     "changePassword": "Change password", "changePasswordDescription": "Change the password used for username and password sign-in.", "setPassword": "Set a sign-in password", "setPasswordDescription": "After setting one, you can also sign in with your username and password; Nuwax sign-in remains available.", "passwordSaved": "Password updated.", "currentPasswordRequired": "Enter your current password."
   },
   "invitations": {

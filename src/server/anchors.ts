@@ -1,15 +1,6 @@
 import diff_match_patch from "diff-match-patch";
 import type { DatabaseConnection } from "./db.js";
 
-interface AnchorRow {
-  id: string;
-  selected_text: string;
-  start_offset: number;
-  end_offset: number;
-  context_before: string;
-  context_after: string;
-}
-
 const CONTEXT_SIZE = 48;
 
 export interface SourceAnchor {
@@ -27,21 +18,18 @@ export function createSourceAnchor(source: string, startInput: number, endInput:
   return anchorAt(source, startOffset, endOffset, false);
 }
 
-export function reanchorFileComments(
+export async function reanchorFileComments(
   db: DatabaseConnection,
   projectId: string,
   filePath: string,
   oldSource: string,
   newSource: string
-): void {
+): Promise<void> {
   if (oldSource === newSource) return;
   const dmp = new diff_match_patch();
   const diffs = dmp.diff_main(oldSource, newSource, true);
   dmp.diff_cleanupSemantic(diffs);
-  const comments = db.prepare(`SELECT id, selected_text, start_offset, end_offset, context_before, context_after
-    FROM comments WHERE project_id = ? AND file_path = ?`).all(projectId, filePath) as unknown as AnchorRow[];
-  const update = db.prepare(`UPDATE comments SET selected_text = ?, start_offset = ?, end_offset = ?,
-    context_before = ?, context_after = ?, orphaned = ?, updated_at = ? WHERE id = ?`);
+  const comments = await db.comments.listAnchors(projectId, filePath);
 
   for (const comment of comments) {
     const oldStart = clamp(comment.start_offset, 0, oldSource.length);
@@ -72,10 +60,16 @@ export function reanchorFileComments(
     if (hasSelectedRange && !comment.selected_text) orphaned = true;
 
     const anchor = anchorAt(newSource, start, end, orphaned);
-    update.run(
-      orphaned ? comment.selected_text : anchor.selectedText, anchor.startOffset, anchor.endOffset,
-      anchor.contextBefore, anchor.contextAfter, Number(anchor.orphaned), new Date().toISOString(), comment.id
-    );
+    await db.comments.updateAnchor({
+      id: comment.id,
+      selectedText: orphaned ? comment.selected_text : anchor.selectedText,
+      startOffset: anchor.startOffset,
+      endOffset: anchor.endOffset,
+      contextBefore: anchor.contextBefore,
+      contextAfter: anchor.contextAfter,
+      orphaned: Number(anchor.orphaned),
+      updatedAt: new Date().toISOString()
+    });
   }
 }
 

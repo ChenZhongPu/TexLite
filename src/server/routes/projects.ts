@@ -39,7 +39,6 @@ import {
   commentsSummaryForProject,
   commentsSummaryForProjects,
   dictionaryWord,
-  escapeLikePattern,
   now,
   ProjectTag,
   projectJson,
@@ -73,7 +72,7 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   // therefore does not have to bundle Lucide's entire icon catalogue merely
   // because an owner selected an icon outside the curated picker.
   app.get("/api/project-icons/:name", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { name } = request.params as { name: string };
     const iconName = resolveLucideIconName(name);
@@ -87,10 +86,9 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.get("/api/tags", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
-    const tags = db.prepare("SELECT id, name, color FROM user_tags WHERE user_id = ? ORDER BY name COLLATE NOCASE").all(user.id);
-    return { tags };
+    return { tags: await db.projectCatalog.listTags(user.id) };
   });
 
   /**
@@ -100,26 +98,15 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
    * management dialog.
    */
   app.get("/api/tags/management", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
-    const rows = db.prepare(`SELECT tag.id, tag.name, tag.color, COUNT(link.project_id) AS project_count
-      FROM user_tags tag
-      LEFT JOIN user_project_tag_links link ON link.tag_id = tag.id
-      WHERE tag.user_id = ?
-      GROUP BY tag.id
-      ORDER BY tag.name COLLATE NOCASE`).all(user.id) as Array<ProjectTag & { project_count: number }>;
     return {
-      tags: rows.map(({ id, name, color, project_count }) => ({
-        id,
-        name,
-        color,
-        projectCount: Number(project_count) || 0
-      }))
+      tags: await db.projectCatalog.listTagsManagement(user.id)
     };
   });
 
   app.post("/api/tags", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const body = (request.body ?? {}) as { name?: unknown; color?: unknown };
     const name = text(body.name, 32);
@@ -127,50 +114,44 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       ? body.color as typeof tagColors[number] : "gray";
     const tag: ProjectTag = { id: randomUUID(), name, color };
     const createdAt = now();
-    if (db.prepare("SELECT 1 FROM user_tags WHERE user_id = ? AND name = ?").get(user.id, tag.name)) {
+    if (await db.projectCatalog.tagNameTaken(user.id, tag.name)) {
       return apiError(reply, 409, "TAG_NAME_EXISTS");
     }
-    db.prepare("INSERT INTO user_tags (id, name, color, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(tag.id, tag.name, tag.color, user.id, createdAt, createdAt);
+    await db.projectCatalog.createTag({ id: tag.id, name: tag.name, color: tag.color, userId: user.id, createdAt });
     return reply.code(201).send({ tag });
   });
 
   app.patch("/api/tags/:tagId", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { tagId } = request.params as { tagId: string };
     const body = (request.body ?? {}) as { name?: unknown; color?: unknown };
     const name = text(body.name, 32);
     const color = tagColors.includes(body.color as typeof tagColors[number])
       ? body.color as typeof tagColors[number] : "gray";
-    const existing = db.prepare("SELECT id FROM user_tags WHERE id = ? AND user_id = ?").get(tagId, user.id);
+    const existing = await db.projectCatalog.userOwnsTag(user.id, tagId);
     if (!existing) return apiError(reply, 404, "TAG_NOT_FOUND");
-    if (db.prepare("SELECT 1 FROM user_tags WHERE user_id = ? AND name = ? AND id <> ?").get(user.id, name, tagId)) {
+    if (await db.projectCatalog.tagNameTaken(user.id, name, tagId)) {
       return apiError(reply, 409, "TAG_NAME_EXISTS");
     }
-    db.prepare("UPDATE user_tags SET name = ?, color = ?, updated_at = ? WHERE id = ? AND user_id = ?")
-      .run(name, color, now(), tagId, user.id);
+    await db.projectCatalog.updateTag({ id: tagId, name, color, updatedAt: now(), userId: user.id });
     return { tag: { id: tagId, name, color } satisfies ProjectTag };
   });
 
   app.delete("/api/tags/:tagId", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { tagId } = request.params as { tagId: string };
-    const tag = db.prepare(`SELECT tag.id, COUNT(link.project_id) AS project_count
-      FROM user_tags tag
-      LEFT JOIN user_project_tag_links link ON link.tag_id = tag.id
-      WHERE tag.id = ? AND tag.user_id = ?
-      GROUP BY tag.id`).get(tagId, user.id) as { id: string; project_count: number } | undefined;
+    const tag = await db.projectCatalog.findTag(user.id, tagId);
     if (!tag) return apiError(reply, 404, "TAG_NOT_FOUND");
     // Foreign-key cascading removes only this user's project/tag links. The
     // projects and their source files are deliberately left untouched.
-    db.prepare("DELETE FROM user_tags WHERE id = ? AND user_id = ?").run(tag.id, user.id);
-    return { deletedId: tag.id, projectCount: Number(tag.project_count) || 0 };
+    await db.projectCatalog.deleteTag(user.id, tag.id);
+    return { deletedId: tag.id, projectCount: tag.projectCount };
   });
 
   app.get("/api/projects", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const query = request.query as { archived?: string; page?: string; pageSize?: string; search?: string; tag?: string; sort?: string };
     const archivedOnly = query.archived === "1" || query.archived === "true";
@@ -180,53 +161,39 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     const pageSize = Math.min(100, Math.max(1, Number.isFinite(requestedPageSize) && requestedPageSize > 0 ? requestedPageSize : 20));
     const search = typeof query.search === "string" ? query.search.trim() : "";
     const tagId = typeof query.tag === "string" ? query.tag.trim() : "";
-    const sortColumn = query.sort === "created" ? "p.created_at" : "p.updated_at";
-    const archiveCondition = archivedOnly
-      ? "EXISTS (SELECT 1 FROM user_project_archives archive WHERE archive.project_id = p.id AND archive.user_id = :userId)"
-      : "NOT EXISTS (SELECT 1 FROM user_project_archives archive WHERE archive.project_id = p.id AND archive.user_id = :userId)";
     // A read link is an explicit entry point, not a project-membership grant.
     // Keep link-only projects out of the catalog; they are still available
     // through GET /share/:token and the project-scoped access checks.
-    const from = `FROM projects p JOIN users owner ON owner.id = p.owner_id
-      LEFT JOIN users modifier ON modifier.id = p.last_modified_by
-      LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = :userId`;
-    const conditions = [
-      "(p.owner_id = :userId OR pm.user_id IS NOT NULL)",
-      archiveCondition
-    ];
-    const params: Record<string, string | number> = { userId: user.id };
-    if (search) {
-      conditions.push("(p.name LIKE :search ESCAPE '\\' OR owner.username LIKE :search ESCAPE '\\' OR owner.display_name LIKE :search ESCAPE '\\')");
-      params.search = `%${escapeLikePattern(search)}%`;
-    }
-    if (tagId) {
-      conditions.push(`EXISTS (
-        SELECT 1 FROM user_project_tag_links tag_link
-        JOIN user_tags tag ON tag.id = tag_link.tag_id
-        WHERE tag_link.project_id = p.id AND tag.user_id = :userId AND tag.id = :tagId
-      )`);
-      params.tagId = tagId;
-    }
-    const where = `WHERE ${conditions.join(" AND ")}`;
-    const countRow = db.prepare(`SELECT COUNT(DISTINCT p.id) AS total ${from} ${where}`).get(params) as { total: number };
-    const total = Number(countRow.total);
+    const initialPage = await db.projectCatalog.listAccessibleProjects({
+      userId: user.id,
+      archivedOnly,
+      search,
+      tagId,
+      sort: query.sort === "created" ? "created" : "updated",
+      page,
+      pageSize
+    });
+    const total = initialPage.total;
     const totalPages = Math.ceil(total / pageSize);
     const currentPage = totalPages === 0 ? 1 : Math.min(page, totalPages);
-    const rowsParams = { ...params, limit: pageSize, offset: (currentPage - 1) * pageSize };
-    const select = `SELECT DISTINCT p.*,
-      CASE WHEN p.owner_id = :userId THEN 'owner'
-        WHEN pm.user_id IS NOT NULL THEN pm.permission
-        ELSE 'read' END AS permission,
-      owner.username AS owner_username, owner.display_name AS owner_display_name,
-      modifier.username AS last_modified_username, modifier.display_name AS last_modified_display_name`;
-    const rows = db.prepare(`${select} ${from} ${where}
-      ORDER BY ${sortColumn} DESC, p.name COLLATE NOCASE ASC
-      LIMIT :limit OFFSET :offset`).all(rowsParams);
-    const projects = rows as unknown as Array<ProjectRow & { permission: string }>;
+    const pageResult = currentPage === page
+      ? initialPage
+      : await db.projectCatalog.listAccessibleProjects({
+        userId: user.id,
+        archivedOnly,
+        search,
+        tagId,
+        sort: query.sort === "created" ? "created" : "updated",
+        page: currentPage,
+        pageSize
+      });
+    const projects = pageResult.rows;
     const projectIds = projects.map((project) => project.id);
-    const projectTags = tagsForProjects(db, projectIds, user.id);
-    const commentsSummaries = commentsSummaryForProjects(db, projectIds);
-    const unreadMentionCounts = unreadMentionCountsForProjects(db, projectIds, user.id);
+    const [projectTags, commentsSummaries, unreadMentionCounts] = await Promise.all([
+      tagsForProjects(db, projectIds, user.id),
+      commentsSummaryForProjects(db, projectIds),
+      unreadMentionCountsForProjects(db, projectIds, user.id)
+    ]);
     return {
       projects: projects.map((project) => projectJson(
         { ...project, archived: archivedOnly },
@@ -239,7 +206,7 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.post("/api/projects", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     if (user.role !== "admin" && !user.can_create_projects) {
       return apiError(reply, 403, "PROJECT_CREATE_FORBIDDEN");
@@ -249,18 +216,17 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       // administrative deletion. Re-check the durable account status after
       // acquiring that owner queue so a newly disabled account cannot create a
       // project from an already-authenticated request.
-      requireActiveUser(db, user);
+      await requireActiveUser(db, user);
       const initialSourceBytes = defaultProjectSourceBytes();
-      projectQuota.assertCanCreate(user.id, initialSourceBytes);
+      await projectQuota.assertCanCreate(user.id, initialSourceBytes);
       const body = request.body as Record<string, unknown>;
       const project: ProjectRow = {
         id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(body?.name, 120),
-        main_file: "main.tex", latexmkrc: null, engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
+        main_file: "main.tex", engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
       };
       createProjectFiles(config, project.id);
       try {
-        db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.latexmkrc, project.engine, project.created_at, project.updated_at);
+        await db.projectCatalog.createProject(project);
         projectQuota.setSourceBytes(user.id, project.id, initialSourceBytes);
       } catch (error) {
         await removeProjectDirectory(config, project.id);
@@ -275,7 +241,7 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.post("/api/projects/import", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     if (user.role !== "admin" && !user.can_create_projects) {
       return apiError(reply, 403, "PROJECT_CREATE_FORBIDDEN");
@@ -293,13 +259,13 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       return apiError(reply, 400, "ZIP_INVALID");
     }
     return await projectQuota.runForOwner(user.id, async () => {
-      requireActiveUser(db, user);
-      projectQuota.assertCanCreate(user.id, importedSourceBytes);
+      await requireActiveUser(db, user);
+      await projectQuota.assertCanCreate(user.id, importedSourceBytes);
       const query = request.query as { name?: string };
       const fallbackName = path.basename(part.filename, path.extname(part.filename));
       const project: ProjectRow = {
         id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(query.name || fallbackName, 120),
-        main_file: "", latexmkrc: null, engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
+        main_file: "", engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
       };
       fs.mkdirSync(sourceRoot(config, project.id), { recursive: true, mode: 0o700 });
       fs.mkdirSync(outputRoot(config, project.id), { recursive: true, mode: 0o700 });
@@ -309,10 +275,8 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
         // Extraction is asynchronous. Re-check immediately before the durable
         // insert so concurrent writes to this account cannot race the initial
         // preflight and exceed either aggregate quota.
-        projectQuota.assertCanCreate(user.id, importedSourceBytes);
-        db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
-          .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.engine, project.created_at, project.updated_at);
+        await projectQuota.assertCanCreate(user.id, importedSourceBytes);
+        await db.projectCatalog.createProject(project);
         // The archive was fully validated before the project row/directory was
         // created. Retain that authoritative byte count here instead of doing a
         // second filesystem walk that could throw after the database insert.
@@ -331,21 +295,21 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.post("/api/projects/:id/duplicate", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     if (user.role !== "admin" && !user.can_create_projects) {
       return apiError(reply, 403, "PROJECT_CREATE_FORBIDDEN");
     }
     const { id } = request.params as { id: string };
-    const source = accessibleProject(db, id, user);
+    const source = await accessibleProject(db, id, user);
     if (!source) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const body = request.body as { name?: unknown } | undefined;
     const requestedName = typeof body?.name === "string" && body.name.trim() ? body.name : `${source.name.slice(0, 115)} (1)`;
     return await projectQuota.runForOwner(user.id, async () => {
-      requireActiveUser(db, user);
+      await requireActiveUser(db, user);
       const project: ProjectRow = {
         id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(requestedName, 120),
-        main_file: source.main_file, latexmkrc: null, engine: source.engine, icon: source.icon, created_at: now(), updated_at: now()
+        main_file: source.main_file, engine: source.engine, icon: source.icon, created_at: now(), updated_at: now()
       };
       let duplicatedSourceBytes = 0;
       try {
@@ -353,26 +317,24 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
         // while a short source barrier prevents autosave from changing files
         // between directory entries. The copy is asynchronous, so a large
         // project does not block the Node.js event loop for its entire duration.
-        await projectMutations.runConsistentRead(source.id, () => {
+        await projectMutations.runConsistentRead(source.id, async () => {
           // The source tree is now durable and held behind the read barrier, so
           // use its exact byte count instead of trusting a pre-flush cache.
           duplicatedSourceBytes = projectQuota.refreshSourceBytes(source.owner_id, source.id);
-          projectQuota.assertCanCreate(user.id, duplicatedSourceBytes);
+          await projectQuota.assertCanCreate(user.id, duplicatedSourceBytes);
           return duplicateProjectFiles(config, source.id, project.id);
         }, {
-          preflight: () => {
-            requireActiveUser(db, user);
-            if (!accessibleProject(db, source.id, user)) {
+          preflight: async () => {
+            await requireActiveUser(db, user);
+            if (!(await accessibleProject(db, source.id, user))) {
               throw httpError(404, "PROJECT_NOT_FOUND");
             }
           }
         });
         // Copying can yield to other source mutations. Re-check right before
         // inserting the project row, when the database count is authoritative.
-        projectQuota.assertCanCreate(user.id, duplicatedSourceBytes);
-        db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, icon, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.latexmkrc, project.engine, project.icon, project.created_at, project.updated_at);
+        await projectQuota.assertCanCreate(user.id, duplicatedSourceBytes);
+        await db.projectCatalog.createProject(project);
         projectQuota.setSourceBytes(user.id, project.id, duplicatedSourceBytes);
       } catch (error) {
         await removeProjectDirectory(config, project.id);
@@ -387,26 +349,26 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.get("/api/projects/:id", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     return {
       project: projectJson(
         project,
-        tagsForProject(db, id, user.id),
-        commentsSummaryForProject(db, id)
+        await tagsForProject(db, id, user.id),
+        await commentsSummaryForProject(db, id)
       )
     };
   });
 
   /** Project icons are shared metadata, so only the project owner can change them. */
   app.patch("/api/projects/:id/icon", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
     const body = (request.body ?? {}) as { icon?: unknown };
     const icon = body.icon === null ? null : resolveLucideIconName(body.icon);
@@ -414,52 +376,49 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       return apiError(reply, 400, "PROJECT_ICON_INVALID");
     }
     const changedAt = now();
-    const updated = db.prepare("UPDATE projects SET icon = ?, updated_at = ?, last_modified_by = ? WHERE id = ? AND owner_id = ?")
-      .run(icon, changedAt, user.id, id, user.id);
-    if (!updated.changes) return apiError(reply, 403, "PROJECT_OWNER_ONLY");
+    if (!await db.projectCatalog.setIcon({ id, ownerId: user.id, icon, updatedAt: changedAt, lastModifiedBy: user.id })) {
+      return apiError(reply, 403, "PROJECT_OWNER_ONLY");
+    }
     return {
       project: projectJson(
-        accessibleProject(db, id, user)!,
-        tagsForProject(db, id, user.id),
-        commentsSummaryForProject(db, id)
+        (await accessibleProject(db, id, user))!,
+        await tagsForProject(db, id, user.id),
+        await commentsSummaryForProject(db, id)
       )
     };
   });
 
   app.put("/api/projects/:id/archive", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
-    db.prepare(`INSERT OR IGNORE INTO user_project_archives (user_id, project_id, archived_at) VALUES (?, ?, ?)`)
-      .run(user.id, id, now());
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    await db.projectCatalog.archive(user.id, id, now());
     return { ok: true, archived: true };
   });
 
   app.delete("/api/projects/:id/archive", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
-    db.prepare("DELETE FROM user_project_archives WHERE user_id = ? AND project_id = ?").run(user.id, id);
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    await db.projectCatalog.unarchive(user.id, id);
     return { ok: true, archived: false };
   });
 
   app.get("/api/projects/:id/dictionary", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
-    const rows = db.prepare(`SELECT word FROM project_dictionary_words
-      WHERE project_id = ? ORDER BY word COLLATE NOCASE`).all(id) as Array<{ word: string }>;
-    return { words: rows.map((row) => row.word) };
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    return { words: await db.projectCatalog.listDictionaryWords(id) };
   });
 
   app.post("/api/projects/:id/spellcheck", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    if (!accessibleProject(db, id, user)) return apiError(reply, 404, "PROJECT_NOT_FOUND");
+    if (!(await accessibleProject(db, id, user))) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const body = request.body as { path?: unknown; source?: unknown; clientId?: unknown; sequence?: unknown } | undefined;
     const source = body?.source;
     const sourcePath = body?.path;
@@ -510,47 +469,42 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.post("/api/projects/:id/dictionary", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     if (!canEdit(project)) return apiError(reply, 403, "DICTIONARY_EDIT_FORBIDDEN");
     const body = request.body as { word?: unknown } | undefined;
     const word = dictionaryWord(body?.word);
-    db.prepare(`INSERT OR IGNORE INTO project_dictionary_words (project_id, word, created_by, created_at)
-      VALUES (?, ?, ?, ?)`).run(id, word, user.id, now());
+    await db.projectCatalog.addDictionaryWord({ projectId: id, word, createdBy: user.id, createdAt: now() });
     collaboration.signalDictionary(id);
-    const words = db.prepare(`SELECT word FROM project_dictionary_words
-      WHERE project_id = ? ORDER BY word COLLATE NOCASE`).all(id) as Array<{ word: string }>;
-    return reply.code(201).send({ word, words: words.map((row) => row.word) });
+    return reply.code(201).send({ word, words: await db.projectCatalog.listDictionaryWords(id) });
   });
 
   app.delete("/api/projects/:id/dictionary/:word", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, word: rawWord } = request.params as { id: string; word: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     if (!canEdit(project)) return apiError(reply, 403, "DICTIONARY_EDIT_FORBIDDEN");
     const word = dictionaryWord(rawWord);
-    db.prepare("DELETE FROM project_dictionary_words WHERE project_id = ? AND word = ?").run(id, word);
+    await db.projectCatalog.removeDictionaryWord(id, word);
     collaboration.signalDictionary(id);
-    const words = db.prepare(`SELECT word FROM project_dictionary_words
-      WHERE project_id = ? ORDER BY word COLLATE NOCASE`).all(id) as Array<{ word: string }>;
-    return { words: words.map((row) => row.word) };
+    return { words: await db.projectCatalog.listDictionaryWords(id) };
   });
 
   app.patch("/api/projects/:id", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
     if (collaboration.isMaintaining(id)) return apiError(reply, 409, "PROJECT_BUSY");
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "PROJECT_OWNER_ONLY");
     const body = request.body as Record<string, unknown>;
     return await projectMutations.runWrite(id, async () => {
-      const currentProject = accessibleProject(db, id, user);
+      const currentProject = await accessibleProject(db, id, user);
       if (!currentProject || currentProject.permission !== "owner") {
         return apiError(reply, 403, "PROJECT_OWNER_ONLY");
       }
@@ -564,9 +518,6 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       }
       const engine = typeof body.engine === "string" && config.allowedEngines.includes(body.engine as typeof currentProject.engine)
         ? body.engine as typeof currentProject.engine : currentProject.engine;
-      if (Object.prototype.hasOwnProperty.call(body, "latexmkrc")) {
-        return apiError(reply, 400, "LATEXMKRC_DISABLED");
-      }
       if (!mainFile.toLocaleLowerCase().endsWith(".tex")) {
         return apiError(reply, 400, "MAIN_FILE_INVALID", { path: mainFile });
       }
@@ -586,75 +537,71 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       if (body.mainFile !== undefined && !await isMainDocumentCandidate(config, id, mainFile)) {
         return apiError(reply, 400, "MAIN_DOCUMENT_INVALID", { path: mainFile });
       }
-      db.prepare("UPDATE projects SET name = ?, main_file = ?, latexmkrc = NULL, engine = ?, updated_at = ?, last_modified_by = ? WHERE id = ?")
-        .run(name, mainFile, engine, now(), user.id, id);
+      await db.projectCatalog.updateSettings({ id, name, mainFile, engine, updatedAt: now(), lastModifiedBy: user.id });
       recordHistory(id, user.id, "settings", []);
       return {
         project: projectJson(
-          accessibleProject(db, id, user)!,
-          tagsForProject(db, id, user.id),
-          commentsSummaryForProject(db, id)
+          (await accessibleProject(db, id, user))!,
+          await tagsForProject(db, id, user.id),
+          await commentsSummaryForProject(db, id)
         )
       };
-    }, { preflight: () => { requireProjectOwnerPermission(db, id, user); } });
+    }, { preflight: async () => { await requireProjectOwnerPermission(db, id, user); } });
   });
 
   app.post("/api/projects/:id/tags", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const body = request.body as { tagId?: unknown };
-    if (typeof body.tagId !== "string" || !db.prepare("SELECT 1 FROM user_tags WHERE id = ? AND user_id = ?").get(body.tagId, user.id)) {
+    if (typeof body.tagId !== "string" || !(await db.projectCatalog.userOwnsTag(user.id, body.tagId))) {
       return apiError(reply, 404, "TAG_NOT_FOUND");
     }
-    db.prepare("INSERT OR IGNORE INTO user_project_tag_links (project_id, tag_id, created_at) VALUES (?, ?, ?)")
-      .run(id, body.tagId, now());
-    const tags = tagsForProject(db, id, user.id);
+    await db.projectCatalog.linkTag(id, body.tagId, now());
+    const tags = await tagsForProject(db, id, user.id);
     return reply.code(201).send({
       tags,
       project: projectJson(
-        accessibleProject(db, id, user)!,
+        (await accessibleProject(db, id, user))!,
         tags,
-        commentsSummaryForProject(db, id)
+        await commentsSummaryForProject(db, id)
       )
     });
   });
 
   app.delete("/api/projects/:id/tags/:tagId", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id, tagId } = request.params as { id: string; tagId: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
-    db.prepare(`DELETE FROM user_project_tag_links WHERE tag_id = ? AND project_id = ?
-      AND EXISTS (SELECT 1 FROM user_tags WHERE id = ? AND user_id = ?)`)
-      .run(tagId, id, tagId, user.id);
-    const tags = tagsForProject(db, id, user.id);
+    await db.projectCatalog.unlinkTag(user.id, id, tagId);
+    const tags = await tagsForProject(db, id, user.id);
     return {
       tags,
       project: projectJson(
-        accessibleProject(db, id, user)!,
+        (await accessibleProject(db, id, user))!,
         tags,
-        commentsSummaryForProject(db, id)
+        await commentsSummaryForProject(db, id)
       )
     };
   });
 
   app.get("/api/projects/:id/download", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const temporaryDirectory = path.join(config.dataDir, "tmp");
     const temporaryArchive = path.join(temporaryDirectory, `project-${id}-${randomUUID()}.zip`);
     try {
       await fs.promises.mkdir(temporaryDirectory, { recursive: true, mode: 0o700 });
       await projectMutations.runConsistentRead(id, () => writeProjectArchive(config, id, temporaryArchive), {
-        preflight: () => {
-          const current = accessibleProject(db, id, user);
+        preflight: async () => {
+          const current = await accessibleProject(db, id, user);
           if (!current) throw httpError(404, "PROJECT_NOT_FOUND");
         }
       });
@@ -673,10 +620,10 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
   });
 
   app.delete("/api/projects/:id", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     if (project.permission !== "owner") return apiError(reply, 403, "PROJECT_DELETE_FORBIDDEN");
     return await projectQuota.runForOwner(user.id, () => projectMutations.runExclusive(id, "project deletion", async () => {
@@ -686,11 +633,11 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       projectQuota.refreshSourceBytes(user.id, id);
       let staged: StagedProjectDirectoryRemoval | null = null;
       try {
-        staged = stagePersistedProjectDirectoryRemoval(config, db, id);
-        db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+        staged = await stagePersistedProjectDirectoryRemoval(config, db, id);
+        await db.projectCatalog.deleteProject(id);
       } catch (error) {
         if (staged) {
-          try { restorePersistedProjectDirectoryRemoval(db, staged); }
+          try { await restorePersistedProjectDirectoryRemoval(db, staged); }
           catch (restoreError) { throw new AggregateError([error, restoreError], `Unable to restore project directory: ${id}`); }
         }
         throw error;
@@ -702,6 +649,6 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
       latexCompletions.invalidate(id);
       projectOutlines.invalidate(id);
       return { ok: true };
-    }, { preflight: () => { requireProjectOwnerPermission(db, id, user); } }));
+    }, { preflight: async () => { await requireProjectOwnerPermission(db, id, user); } }));
   });
 }

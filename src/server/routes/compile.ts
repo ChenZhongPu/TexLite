@@ -46,7 +46,7 @@ interface CompileRouteContext {
   projectMutations: ProjectMutationCoordinator;
   compileCoordinator: ProjectCompileCoordinator;
   metrics: MetricRegistry;
-  pruneCompileRuns: (projectId: string) => void;
+  pruneCompileRuns: (projectId: string) => Promise<void> | void;
 }
 
 const now = (): string => new Date().toISOString();
@@ -91,32 +91,19 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
   const { config, db, collaboration, projectMutations, compileCoordinator, metrics, pruneCompileRuns } = context;
 
   app.get("/api/projects/:id/compile/latest", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: string };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
     if (!mainFile) return apiError(reply, 400, "MAIN_DOCUMENT_INVALID");
-    const latest = db.prepare(`SELECT run.id, run.status, run.log, run.created_at, run.finished_at,
-      run.requested_by, user.username AS requested_by_username, user.display_name AS requested_by_name
-      FROM compile_runs run LEFT JOIN users user ON user.id = run.requested_by
-      WHERE run.project_id = ? AND run.main_file = ?
-      ORDER BY CASE run.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, run.created_at DESC LIMIT 1`).get(id, mainFile) as {
-        id: string; status: string; log: string; created_at: string; finished_at: string | null;
-        requested_by: string | null; requested_by_username: string | null; requested_by_name: string | null;
-      } | undefined;
-    const latestSuccess = db.prepare(`SELECT id, finished_at FROM compile_runs
-      WHERE project_id = ? AND main_file = ? AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1`).get(id, mainFile) as {
-        id: string; finished_at: string | null;
-      } | undefined;
+    const latest = await db.compileRuns.latest(id, mainFile);
+    const latestSuccess = await db.compileRuns.latestSucceeded(id, mainFile);
     const pdf = availablePdf(config, id, mainFile, project.main_file);
     const published = publishedCompileArtifacts(config, id, mainFile, mainFile === project.main_file);
-    const publishedRun = published ? db.prepare(`SELECT id, finished_at FROM compile_runs
-      WHERE id = ? AND project_id = ? AND status = 'succeeded'`).get(published.runId, id) as {
-        id: string; finished_at: string | null;
-      } | undefined : undefined;
+    const publishedRun = published ? await db.compileRuns.findSucceeded(published.runId, id) : undefined;
     // A retained legacy PDF has no run bundle, so its file version (mtime) is
     // the only stable token that can be resolved back to those bytes.
     const pdfVersion = published?.runId ?? pdf?.version;
@@ -144,10 +131,10 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
   });
 
   app.get("/api/projects/:id/compile/artifacts", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: string; path?: string; download?: string };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
@@ -213,10 +200,10 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
   });
 
   app.post("/api/projects/:id/compile/clean", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "COMPILE_FORBIDDEN");
     const body = (request.body ?? {}) as { mainFile?: unknown; mode?: unknown };
     const mainFile = compileMainFile(config, id, project.main_file, body.mainFile);
@@ -224,10 +211,8 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
     if (body.mode !== "cache" && body.mode !== "artifacts") {
       return apiError(reply, 400, "REQUEST_INVALID");
     }
-    return await projectMutations.runCompileExclusive(id, () => {
-      const activeRun = db.prepare(`SELECT 1 AS active FROM compile_runs
-        WHERE project_id = ? AND main_file = ? AND status IN ('queued', 'running') LIMIT 1`).get(id, mainFile);
-      if (activeRun) return apiError(reply, 409, "COMPILE_CLEAN_BUSY");
+    return await projectMutations.runCompileExclusive(id, async () => {
+      if (await db.compileRuns.hasActive(id, mainFile)) return apiError(reply, 409, "COMPILE_CLEAN_BUSY");
       const requestedBy = { id: user.id, username: user.username, name: user.display_name };
       if (body.mode === "cache") {
         cleanCompileCache(config, id, mainFile);
@@ -241,12 +226,11 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
         });
         return { ok: true, mode: "cache", mainFile, retainedPdf: true };
       }
-      const currentProject = accessibleProject(db, id, user);
+      const currentProject = await accessibleProject(db, id, user);
       if (!currentProject || !canEdit(currentProject)) return apiError(reply, 403, "COMPILE_FORBIDDEN");
-      const runs = db.prepare(`SELECT id FROM compile_runs
-        WHERE project_id = ? AND main_file = ? AND status NOT IN ('queued', 'running')`).all(id, mainFile) as Array<{ id: string }>;
-      cleanCompileArtifacts(config, id, mainFile, currentProject.main_file, runs.map((run) => run.id));
-      db.prepare("DELETE FROM compile_runs WHERE project_id = ? AND main_file = ? AND status NOT IN ('queued', 'running')").run(id, mainFile);
+      const runIds = await db.compileRuns.finishedRunIds(id, mainFile);
+      cleanCompileArtifacts(config, id, mainFile, currentProject.main_file, runIds);
+      await db.compileRuns.deleteFinished(id, mainFile);
       pruneCompileRuns(id);
       collaboration.signalCompileState(id, {
         mainFile,
@@ -257,8 +241,8 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
         updatedAt: now()
       });
       return { ok: true, mode: "artifacts", mainFile, retainedPdf: false };
-    }, { preflight: () => {
-      const current = accessibleProject(db, id, user);
+    }, { preflight: async () => {
+      const current = await accessibleProject(db, id, user);
       if (!current || !canEdit(current)) throw httpError(403, "COMPILE_FORBIDDEN");
       const selected = compileMainFile(config, id, current.main_file, body.mainFile);
       if (!selected || selected !== mainFile) throw httpError(400, "MAIN_DOCUMENT_INVALID");
@@ -266,10 +250,10 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
   });
 
   app.get("/api/projects/:id/sync/pdf", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: string; path?: string; line?: string; column?: string };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
@@ -287,16 +271,16 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
       const artifacts = syncArtifacts(config, id, mainFile, project.main_file);
       if (!artifacts) return apiError(reply, 409, "SYNCTEX_NOT_AVAILABLE");
       return await sourceToPdf(artifacts.source, artifacts.pdf, sourcePath, line, column);
-    }, { preflight: () => {
-      if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+    }, { preflight: async () => {
+      if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
     } });
   });
 
   app.get("/api/projects/:id/sync/source", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: string; page?: string; x?: string; y?: string };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
@@ -317,16 +301,16 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
         return apiError(reply, 400, "SYNCTEX_EXTERNAL_PATH");
       }
       return { path: safeRelativePath(relative.replaceAll(path.sep, "/")), line: location.line, column: location.column };
-    }, { preflight: () => {
-      if (!accessibleProject(db, id, user)) throw httpError(404, "PROJECT_NOT_FOUND");
+    }, { preflight: async () => {
+      if (!(await accessibleProject(db, id, user))) throw httpError(404, "PROJECT_NOT_FOUND");
     } });
   });
 
   app.post("/api/projects/:id/compile/cancel", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project || !canEdit(project)) return apiError(reply, 403, "COMPILE_FORBIDDEN");
     const body = (request.body ?? {}) as { mainFile?: unknown };
     const mainFile = compileMainFile(config, id, project.main_file, body.mainFile);
@@ -337,10 +321,10 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
 
   app.post("/api/projects/:id/compile", async (request, reply) => {
     const requestStartedAt = performance.now();
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const initialProject = accessibleProject(db, id, user);
+    const initialProject = await accessibleProject(db, id, user);
     if (!initialProject || !canEdit(initialProject)) return apiError(reply, 403, "COMPILE_FORBIDDEN");
     const body = (request.body ?? {}) as { mainFile?: unknown };
     const requestedMainFile = typeof body.mainFile === "string" && body.mainFile ? body.mainFile : null;
@@ -352,8 +336,8 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
     // captureCompileSnapshot here: several collaborators can reach this
     // endpoint at the same time, and the coordinator needs to coalesce them
     // before any project files are copied or hashed.
-    const admission = await projectMutations.runSnapshot(id, () => {
-      const currentProject = accessibleProject(db, id, user);
+    const admission = await projectMutations.runSnapshot(id, async () => {
+      const currentProject = await accessibleProject(db, id, user);
       if (!currentProject || !canEdit(currentProject)) throw new Error("Project access changed while waiting for a source snapshot");
       const currentMainFile = compileMainFile(config, id, currentProject.main_file, body.mainFile);
       if (!currentMainFile) throw new Error("Selected main document is no longer available");
@@ -364,8 +348,8 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
       // edits. Its revision is stable for a no-op flush, so concurrent
       // admissions observe the same generation without reading file contents.
       const revisionBeforeFlush = collaboration.currentRevision(id);
-      const receipt = collaboration.hasPendingChanges(id) ? projectMutations.flushProject(id) : null;
-      const refreshedProject = accessibleProject(db, id, user);
+      const receipt = collaboration.hasPendingChanges(id) ? await projectMutations.flushProject(id) : null;
+      const refreshedProject = await accessibleProject(db, id, user);
       if (!refreshedProject || !canEdit(refreshedProject)) {
         throw new Error("Project access changed while preparing a compile request");
       }
@@ -383,8 +367,13 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
       // Insert the queued probe while the project lock is still held. A
       // concurrent clean request must observe this row before the compile
       // coordinator starts copying a snapshot.
-      db.prepare("INSERT INTO compile_runs (id, project_id, requested_by, main_file, status, created_at) VALUES (?, ?, ?, ?, 'queued', ?)")
-        .run(runId, id, user.id, currentMainFile, now());
+      await db.compileRuns.createQueued({
+        id: runId,
+        projectId: id,
+        requestedBy: user.id,
+        mainFile: currentMainFile,
+        createdAt: now()
+      });
       return admissionResult;
     });
     let project = admission.project;
@@ -393,13 +382,13 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
     let phase: "queued" | "running" | "succeeded" | "failed" = "queued";
     let snapshotStale = false;
     let snapshotGeneration: string | null = null;
-    const refreshSnapshotStale = () => {
+    const refreshSnapshotStale = async (): Promise<void> => {
       if (!snapshotGeneration) return;
       if (collaboration.hasPendingChanges(id)) {
         snapshotStale = true;
         return;
       }
-      const currentProject = accessibleProject(db, id, user);
+      const currentProject = await accessibleProject(db, id, user);
       if (!currentProject) return;
       const currentGeneration = compileRequestGeneration(
         currentProject,
@@ -424,12 +413,11 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
       onQueued: broadcast,
       onSelected: broadcast,
       onDiscarded: () => {
-        db.prepare("DELETE FROM compile_runs WHERE id = ? AND status = 'queued'").run(runId);
+        void db.compileRuns.deleteQueued(runId);
       },
       onCancelled: () => {
         phase = "failed";
-        db.prepare("UPDATE compile_runs SET status = 'failed', log = ?, finished_at = ? WHERE id = ? AND status IN ('queued', 'running')")
-          .run(new CompileCancelledError().message, now(), runId);
+        void db.compileRuns.markCancelled(runId, new CompileCancelledError().message, now());
         broadcast();
       },
       // The compile reservation protects the shared compiler cache and
@@ -446,9 +434,9 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           // in-memory collaboration revision to skip before a snapshot: it is
           // not a durable content version and can collide after a room restart
           // or reconnect.
-          await projectMutations.runSerialized(id, () => {
+          await projectMutations.runSerialized(id, async () => {
             throwIfCompileCancelled(signal);
-            const currentProject = accessibleProject(db, id, user);
+            const currentProject = await accessibleProject(db, id, user);
             if (!currentProject || !canEdit(currentProject)) {
               throw new Error("Project access changed while waiting for a source snapshot");
             }
@@ -460,7 +448,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           });
           const captured = await projectMutations.runSerialized(id, async () => {
             throwIfCompileCancelled(signal);
-            const currentProject = accessibleProject(db, id, user);
+            const currentProject = await accessibleProject(db, id, user);
             if (!currentProject || !canEdit(currentProject)) {
               throw new Error("Project access changed while waiting for a source snapshot");
             }
@@ -475,7 +463,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
             // directory while the asynchronous copy is in progress.
             for (let attempt = 0; attempt < MAX_SNAPSHOT_ATTEMPTS; attempt += 1) {
               const revisionBeforeFlush = collaboration.currentRevision(id);
-              const receipt = collaboration.hasPendingChanges(id) ? projectMutations.flushProject(id) : null;
+              const receipt = collaboration.hasPendingChanges(id) ? await projectMutations.flushProject(id) : null;
               const expectedRevision = receipt?.revision ?? revisionBeforeFlush;
               const generationKey = compileRequestGeneration(
                 project,
@@ -500,7 +488,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
                 captureError = error;
               }
               try {
-                const afterBarrier = collaboration.endSnapshotBarrier(id);
+                const afterBarrier = await collaboration.endSnapshotBarrier(id);
                 afterBarrierRevision = afterBarrier?.revision ?? collaboration.currentRevision(id);
               } catch (error) {
                 releaseError = error;
@@ -535,24 +523,17 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           metrics.record("compile.snapshot", snapshotMs);
 
           const published = publishedCompileArtifacts(config, id, mainFile, mainFile === project.main_file);
-          const publishedRun = published ? db.prepare(`SELECT id, status, log, finished_at
-            FROM compile_runs WHERE id = ? AND project_id = ?`).get(published.runId, id) as {
-              id: string; status: string; log: string; finished_at: string | null;
-            } | undefined : undefined;
+          const publishedRun = published ? await db.compileRuns.findSucceeded(published.runId, id) : undefined;
           // The current queued row is intentionally excluded. It is a request
           // probe, not evidence that the last successful compile is stale.
-          const latestRun = db.prepare(`SELECT id, status FROM compile_runs
-            WHERE project_id = ? AND main_file = ? AND id <> ? ORDER BY created_at DESC LIMIT 1`).get(id, mainFile, runId) as {
-              id: string; status: string;
-            } | undefined;
-          const activeRun = db.prepare(`SELECT 1 AS active FROM compile_runs
-            WHERE project_id = ? AND main_file = ? AND id <> ? AND status IN ('queued', 'running') LIMIT 1`).get(id, mainFile, runId);
+          const latestRun = await db.compileRuns.latestExcept(runId, id, mainFile);
+          const activeRun = await db.compileRuns.hasActive(id, mainFile, runId);
           if (!activeRun && published && publishedRun?.status === "succeeded"
             && latestRun?.id === publishedRun.id && snapshot.revision === published.revision
             && hasCompileCache(config, id, mainFile)) {
             discardCompileSnapshot(snapshot);
             snapshot = null;
-            db.prepare("DELETE FROM compile_runs WHERE id = ? AND status = 'queued'").run(runId);
+            await db.compileRuns.deleteQueued(runId);
             phase = "succeeded";
             // The probe row was deleted, so broadcast the retained run that
             // clients can actually resolve from SQLite and the manifest.
@@ -572,12 +553,12 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           }
 
           phase = "running";
-          db.prepare("UPDATE compile_runs SET status = 'running' WHERE id = ?").run(runId);
+          await db.compileRuns.markRunning(runId);
           broadcast();
           let compiled;
           try {
             compiled = await compileProject(config, snapshot, mainFile, project.engine, null, { signal });
-            refreshSnapshotStale();
+            await refreshSnapshotStale();
             if (compiled.ok && compiled.pdfPath) {
               throwIfCompileCancelled(signal);
               const publishStartedAt = performance.now();
@@ -585,14 +566,14 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
               // ordinary project queue so it cannot overlap a source-tree
               // archive/read or another output mutation. The long latexmk
               // process above remains outside that queue.
-              await projectMutations.runSerialized(id, () => {
+              await projectMutations.runSerialized(id, async () => {
                 throwIfCompileCancelled(signal);
-                if (!db.prepare("SELECT 1 FROM projects WHERE id = ?").get(id)) {
+                if (!await db.compileRuns.projectExists(id)) {
                   throw new Error("Project was deleted before compile artifacts could be published.");
                 }
                 publishCompileArtifacts(config, id, snapshot!, compiled!);
               }, { flush: false });
-              refreshSnapshotStale();
+              await refreshSnapshotStale();
               if (compiled.timings) {
                 compiled.timings.publishMs = performance.now() - publishStartedAt;
                 compiled.timings.totalMs += compiled.timings.publishMs;
@@ -619,8 +600,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           // partial state.
           if (compiled.cancelled) cleanCompileCache(config, id, mainFile);
           phase = compiled.ok ? "succeeded" : "failed";
-          db.prepare("UPDATE compile_runs SET status = ?, log = ?, finished_at = ? WHERE id = ?")
-            .run(phase, compiled.log, now(), runId);
+          await db.compileRuns.finish(runId, phase, compiled.log, now());
           broadcast();
           return { ...compiled, runId, revision: snapshot?.revision ?? admission.generation, stale: snapshotStale, snapshotMs };
         } catch (error) {
@@ -629,7 +609,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
             snapshotMs = performance.now() - snapshotStartedAt;
             metrics.record("compile.snapshot", snapshotMs);
             phase = "failed";
-            db.prepare("DELETE FROM compile_runs WHERE id = ? AND status = 'queued'").run(runId);
+            await db.compileRuns.deleteQueued(runId);
             broadcast();
             return {
               ok: false,
@@ -646,8 +626,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
           }
           const log = error instanceof Error ? error.message : String(error);
           phase = "failed";
-          db.prepare("UPDATE compile_runs SET status = 'failed', log = ?, finished_at = ? WHERE id = ?")
-            .run(log, now(), runId);
+          await db.compileRuns.finish(runId, "failed", log, now());
           broadcast();
           return {
             ok: false,
@@ -663,13 +642,11 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
         }
       }),
     });
-    const completed = db.prepare("SELECT finished_at FROM compile_runs WHERE id = ?").get(result.runId) as {
-      finished_at: string | null;
-    } | undefined;
+    const completed = { finished_at: await db.compileRuns.finishedAt(result.runId) };
     const requestMs = performance.now() - requestStartedAt;
     metrics.record("compile.request", requestMs);
     if (result.retryable) {
-      await projectMutations.runSerialized(id, () => { pruneCompileRuns(id); }, { flush: false });
+      await projectMutations.runSerialized(id, async () => { await pruneCompileRuns(id); }, { flush: false });
       reply.header("Retry-After", String(SNAPSHOT_RETRY_AFTER_SECONDS));
       reply.header("Server-Timing", [
         `snapshot;dur=${timingDuration(result.snapshotMs ?? 0)}`,
@@ -687,7 +664,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
       metrics.record("compile.latexmk", result.timings.latexmkMs);
       metrics.record("compile.artifactCopy", result.timings.artifactCopyMs);
     }
-    await projectMutations.runSerialized(id, () => { pruneCompileRuns(id); }, { flush: false });
+    await projectMutations.runSerialized(id, async () => { await pruneCompileRuns(id); }, { flush: false });
     const timings = result.timings
       ? { snapshotMs: result.snapshotMs ?? 0, ...result.timings, requestMs }
       : { snapshotMs: result.snapshotMs ?? 0, requestMs };
@@ -716,10 +693,10 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
   // server restart. The manifest and per-run bundle are swapped atomically,
   // so a concurrent cleanup can safely result in a normal 404 instead.
   app.get("/api/projects/:id/pdf", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const query = request.query as { mainFile?: string; download?: string; run?: string };
     const mainFile = compileMainFile(config, id, project.main_file, query.mainFile);
@@ -730,10 +707,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
     let versioned = false;
     if (query.run) {
       if (/^[a-f0-9-]{36}$/i.test(query.run)) {
-        const run = db.prepare(`SELECT main_file, status FROM compile_runs
-          WHERE id = ? AND project_id = ?`).get(query.run, id) as {
-            main_file: string; status: string;
-          } | undefined;
+        const run = await db.compileRuns.findRun(query.run, id);
         if (!run || run.status !== "succeeded" || run.main_file !== mainFile) {
           return apiError(reply, 404, "PDF_NOT_FOUND");
         }

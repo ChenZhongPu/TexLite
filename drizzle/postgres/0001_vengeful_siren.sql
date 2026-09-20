@@ -1,0 +1,4 @@
+ALTER TABLE "compile_runs" ADD COLUMN "rowid" integer NOT NULL GENERATED ALWAYS AS IDENTITY (sequence name "compile_runs_rowid_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START WITH 1 CACHE 1);--> statement-breakpoint
+ALTER TABLE "project_edit_segments" ADD COLUMN "rowid" integer NOT NULL GENERATED ALWAYS AS IDENTITY (sequence name "project_edit_segments_rowid_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START WITH 1 CACHE 1);--> statement-breakpoint
+ALTER TABLE "project_history_versions" ADD COLUMN "rowid" integer NOT NULL GENERATED ALWAYS AS IDENTITY (sequence name "project_history_versions_rowid_seq" INCREMENT BY 1 MINVALUE 1 MAXVALUE 2147483647 START WITH 1 CACHE 1);--> statement-breakpoint
+ALTER TABLE "projects" ADD COLUMN "latexmkrc" text;

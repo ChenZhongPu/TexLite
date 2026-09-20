@@ -10,7 +10,7 @@ export interface ProjectSearchOptions {
   wholeWord: boolean;
   maxFileBytes?: number;
   /** Runs after temporary replacements are staged, before any live file changes. */
-  beforeInstall?: (prepared: readonly ProjectReplacement[]) => void;
+  beforeInstall?: (prepared: readonly ProjectReplacement[]) => Promise<void> | void;
 }
 
 export interface ProjectReplacement {
@@ -103,7 +103,7 @@ export async function replaceProject(config: Config, projectId: string, options:
   }
   const installed: typeof staged = [];
   try {
-    options.beforeInstall?.(staged.map(({ path: filePath, previous, content, count }) => ({ path: filePath, previous, content, count })));
+    await options.beforeInstall?.(staged.map(({ path: filePath, previous, content, count }) => ({ path: filePath, previous, content, count })));
     for (const entry of staged) {
       // The caller's quota preflight runs immediately above. Keep the live
       // installation synchronous so another request cannot grow a different

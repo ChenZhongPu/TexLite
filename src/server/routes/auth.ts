@@ -13,6 +13,12 @@ import {
 } from "../security.js";
 import { apiError, ValidationError } from "../http.js";
 import { basePathHref, withBasePath, withoutBasePath } from "../../shared/basePath.js";
+import {
+  isUsernameSyntaxValid,
+  MAX_DISPLAY_NAME_LENGTH,
+  MAX_USERNAME_LENGTH,
+  MIN_USERNAME_LENGTH
+} from "../../shared/userIdentity.js";
 import { NuwaxOAuthService, type NuwaxProfile } from "../nuwaxOAuth.js";
 
 interface AuthRouteContext {
@@ -25,9 +31,7 @@ interface AuthRouteContext {
 
 const now = (): string => new Date().toISOString();
 const OAUTH_STATE_TTL_MS = 10 * 60_000;
-const NUWAX_ISSUER = "nuwax";
-export const MAX_USERNAME_LENGTH = 50;
-export const MAX_DISPLAY_NAME_LENGTH = 50;
+export { MAX_DISPLAY_NAME_LENGTH, MAX_USERNAME_LENGTH, MIN_USERNAME_LENGTH };
 
 function text(value: unknown, max = 200): string {
   if (typeof value !== "string" || !value.trim() || value.length > max) {
@@ -48,14 +52,14 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
     const rateLimitKey = `${ip}:${username.toLowerCase()}`;
     if (loginLimiter.isLocked(rateLimitKey)) return apiError(reply, 429, "AUTH_RATE_LIMITED");
     const password = typeof body?.password === "string" ? body.password : "";
-    const user = db.prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE").get(username) as UserRow | undefined;
+    const user = await db.identity.findUserByUsername(username);
     if (!user || user.disabled || !(await verifyPassword(password, user.password_hash))) {
       const result = loginLimiter.recordFailure(rateLimitKey);
       if (result.locked) return apiError(reply, 429, "AUTH_RATE_LIMITED");
       return apiError(reply, 401, "AUTH_INVALID");
     }
     loginLimiter.reset(rateLimitKey);
-    setSessionCookie(reply, request, config, db, user.id);
+    await setSessionCookie(reply, request, config, db, user.id);
     return { user: publicUser(user) };
   });
 
@@ -67,8 +71,9 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
     const expiresAt = new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
     const redirectUri = config.oauth?.redirectUri;
     if (!redirectUri) return apiError(reply, 404, "OAUTH_NOT_CONFIGURED");
-    db.prepare("INSERT INTO oauth_states (id, return_path, redirect_uri, expires_at, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(digestToken(state), returnPath, redirectUri, expiresAt, now());
+    await db.identity.createOAuthState({
+      id: digestToken(state), returnPath, redirectUri, expiresAt, createdAt: now()
+    });
     reply.setCookie("texlite_oauth_state", state, {
       path: basePathHref(config.basePath),
       httpOnly: true,
@@ -88,19 +93,17 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
     }
     const stateToken = query.state;
     const stateCookie = request.cookies.texlite_oauth_state;
-    const state = db.prepare("SELECT * FROM oauth_states WHERE id = ? AND expires_at > ?")
-      .get(digestToken(stateToken), now()) as { id: string; return_path: string; redirect_uri: string } | undefined;
-    db.prepare("DELETE FROM oauth_states WHERE id = ?").run(digestToken(stateToken));
+    const state = await db.identity.consumeOAuthState(digestToken(stateToken), now());
     reply.clearCookie("texlite_oauth_state", { path: basePathHref(config.basePath) });
     if (!state || !stateCookie || stateCookie !== stateToken) return apiError(reply, 400, "OAUTH_STATE_INVALID");
     try {
-      const tokens = await nuwaxOAuth.exchangeAuthorizationCode(query.code, state.redirect_uri);
+      const tokens = await nuwaxOAuth.exchangeAuthorizationCode(query.code, state.redirectUri);
       const profile = await nuwaxOAuth.fetchProfile(tokens.accessToken);
-      const user = upsertNuwaxUser(db, profile);
+      const user = await upsertNuwaxUser(db, profile);
       if (user.disabled) return apiError(reply, 403, "AUTH_DISABLED");
-      nuwaxOAuth.storeTokens(user.id, tokens);
-      setSessionCookie(reply, request, config, db, user.id);
-      return reply.redirect(withBasePath(config.basePath, state.return_path));
+      await nuwaxOAuth.storeTokens(user.id, tokens);
+      await setSessionCookie(reply, request, config, db, user.id);
+      return reply.redirect(withBasePath(config.basePath, state.returnPath));
     } catch (error) {
       if (error instanceof ValidationError) throw error;
       request.log.warn({ err: error }, "Nuwax OAuth sign-in failed");
@@ -112,8 +115,9 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
     const token = request.cookies.texlite_session;
     if (token) {
       const sessionId = digestToken(token);
-      db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
-      collaboration.disconnectSession(sessionId, "Signed out");
+      if (await db.identity.deleteSession(sessionId)) {
+        collaboration.disconnectSession(sessionId, "Signed out");
+      }
     }
     reply.clearCookie("texlite_session", { path: basePathHref(config.basePath) });
     reply.clearCookie("texlite_share_token", { path: basePathHref(config.basePath) });
@@ -121,29 +125,31 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
   });
 
   app.get("/api/me", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     return { user: publicUser(user) };
   });
 
   app.patch("/api/me", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const body = request.body as { username?: unknown; displayName?: unknown };
-    const username = body?.username === undefined ? user.username : text(body.username, MAX_USERNAME_LENGTH);
-    if (!isValidUsername(username)) return apiError(reply, 400, "USERNAME_INVALID");
+    const username = body?.username === undefined
+      ? user.username
+      : typeof body.username === "string" && body.username.length <= MAX_USERNAME_LENGTH
+        ? body.username.trim()
+        : "";
+    if (!isAllowedProfileUsername(username, user.username, user.nuwax_subject)) {
+      return apiError(reply, 400, "USERNAME_INVALID");
+    }
     const displayName = text(body?.displayName ?? user.display_name, MAX_DISPLAY_NAME_LENGTH);
-    const existing = db.prepare("SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?")
-      .get(username, user.id) as { id: string } | undefined;
-    if (existing) return apiError(reply, 409, "USERNAME_ALREADY_IN_USE");
-    db.prepare("UPDATE users SET username = ?, display_name = ? WHERE id = ?")
-      .run(username, displayName, user.id);
-    const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow;
-    return { user: publicUser(updated) };
+    if (await db.identity.usernameIsTaken(username, user.id)) return apiError(reply, 409, "USERNAME_ALREADY_IN_USE");
+    const updated = await db.identity.updateProfile(user.id, username, displayName);
+    return { user: publicUser(updated!) };
   });
 
   app.put("/api/me/password", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const body = request.body as { currentPassword?: unknown; newPassword?: unknown };
     const currentPassword = typeof body?.currentPassword === "string" ? body.currentPassword : "";
@@ -155,92 +161,74 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
       return apiError(reply, 400, "CURRENT_PASSWORD_INVALID");
     }
     const passwordHash = await hashPassword(newPassword);
-    db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
-      .run(passwordHash, user.id);
+    await db.identity.setPassword(user.id, passwordHash);
     const retainedSessionId = user.session_id ?? digestToken(request.cookies.texlite_session ?? "");
-    db.prepare("DELETE FROM sessions WHERE user_id = ? AND id != ?")
-      .run(user.id, retainedSessionId);
-    collaboration.disconnectUserSessionsExcept(user.id, retainedSessionId, "Password changed");
-    const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow;
-    return { user: publicUser(updated) };
+    const deletedSessionIds = await db.identity.deleteOtherSessions(user.id, retainedSessionId);
+    for (const sessionId of deletedSessionIds) collaboration.disconnectSession(sessionId, "Password changed");
+    const updated = await db.identity.findUserById(user.id);
+    return { user: publicUser(updated!) };
   });
 }
 
 /** Link an existing account found by Nuwax search, or provision a new one. */
-export function upsertNuwaxUser(db: DatabaseConnection, profile: NuwaxProfile): UserRow {
-  return db.transaction(() => {
-    let user = db.prepare("SELECT * FROM users WHERE nuwax_subject = ?").get(profile.subject) as UserRow | undefined;
-    if (!user) {
-      // The subject column is the primary association key. The identity row
-      // fallback also repairs a partially provisioned account atomically.
-      user = db.prepare(`SELECT account.* FROM auth_identities identity
-        JOIN users account ON account.id = identity.user_id
-        WHERE identity.issuer = ? AND identity.subject = ?`).get(NUWAX_ISSUER, profile.subject) as UserRow | undefined;
-    }
-    const timestamp = now();
-    if (user) {
-      db.prepare("UPDATE users SET nuwax_subject = ?, avatar_url = ? WHERE id = ?")
-        .run(profile.subject, profile.avatarUrl, user.id);
-      upsertAuthIdentity(db, user.id, profile, timestamp);
-      return db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow;
-    }
-
-    const id = randomUUID();
-    const username = uniqueLocalUsername(db, initialNuwaxUsername(profile.subject));
-    const displayName = profile.name ?? username;
-    db.prepare(`INSERT INTO users
-      (id, username, display_name, password_hash, email, github_id, nuwax_subject, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
-      VALUES (?, ?, ?, '', NULL, NULL, ?, ?, 'user', 0, 0, 1, ?)`)
-      .run(id, username, displayName, profile.subject, profile.avatarUrl, timestamp);
-    upsertAuthIdentity(db, id, profile, timestamp);
-    return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow;
-  })();
-}
-
-function upsertAuthIdentity(db: DatabaseConnection, userId: string, profile: NuwaxProfile, timestamp: string): void {
-  db.prepare(`
-    INSERT INTO auth_identities
-      (id, user_id, issuer, subject, provider_username, provider_email, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (issuer, subject) DO UPDATE SET
-      user_id = excluded.user_id,
-      provider_username = excluded.provider_username,
-      provider_email = excluded.provider_email,
-      updated_at = excluded.updated_at
-  `).run(randomUUID(), userId, NUWAX_ISSUER, profile.subject, profile.name, null, timestamp, timestamp);
+export async function upsertNuwaxUser(db: DatabaseConnection, profile: NuwaxProfile): Promise<UserRow> {
+  return await db.identity.upsertNuwaxUser({
+    subject: profile.subject,
+    name: profile.name,
+    avatarUrl: profile.avatarUrl
+  }, now(), randomUUID());
 }
 
 export function isValidUsername(value: string): boolean {
-  return value.length >= 1 && value.length <= MAX_USERNAME_LENGTH && /^[\p{L}\p{N}_.-]+$/u.test(value);
+  return isUsernameSyntaxValid(value);
+}
+
+/** Nuwax may provide a stable username shorter than the local minimum. */
+export function isValidNuwaxUsername(value: string): boolean {
+  return isUsernameSyntaxValid(value, 1);
+}
+
+/**
+ * A short Nuwax-generated username may be retained, but never chosen as a
+ * new local username. The current subject marker prevents short legacy names
+ * from being grandfathered in accidentally.
+ */
+export function isAllowedProfileUsername(value: string, currentUsername: string, nuwaxSubject: string | null): boolean {
+  return isValidUsername(value)
+    || (Boolean(nuwaxSubject) && value === currentUsername && isValidNuwaxUsername(value));
 }
 
 export function initialNuwaxUsername(subject: string): string {
-  if (isValidUsername(subject)) return subject;
+  if (isValidNuwaxUsername(subject)) return subject;
   return `nuwax-${createHash("sha256").update(subject).digest("hex").slice(0, 32)}`;
 }
 
-export function uniqueLocalUsername(db: DatabaseConnection, login: string): string {
+export async function uniqueLocalUsername(db: DatabaseConnection, login: string): Promise<string> {
   const base = login.replace(/[^\p{L}\p{N}_.-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, MAX_USERNAME_LENGTH) || "nuwax-user";
   let username = base;
   let suffix = 2;
-  while (db.prepare("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE").get(username)) {
+  while (await db.identity.usernameIsTaken(username)) {
     username = `${base.slice(0, Math.max(1, MAX_USERNAME_LENGTH - String(suffix).length - 1))}-${suffix}`;
     suffix += 1;
   }
   return username;
 }
 
-function setSessionCookie(
+async function setSessionCookie(
   reply: { setCookie: (name: string, value: string, options: Record<string, unknown>) => unknown },
   request: { protocol: string; headers: Record<string, string | string[] | undefined> },
   config: Config,
   db: DatabaseConnection,
   userId: string
-): void {
+): Promise<void> {
   const session = createSessionToken();
   const expires = new Date(Date.now() + config.sessionDays * 86_400_000);
-  db.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
-    .run(session.digest, userId, expires.toISOString(), now());
+  await db.identity.createSession({
+    id: session.digest,
+    userId,
+    expiresAt: expires.toISOString(),
+    createdAt: now()
+  });
   reply.setCookie("texlite_session", session.token, {
     path: basePathHref(config.basePath),
     httpOnly: true,

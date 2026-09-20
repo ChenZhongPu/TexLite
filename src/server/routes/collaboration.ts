@@ -15,8 +15,8 @@ interface CollaborationRouteContext {
 export function registerCollaborationRoutes(app: FastifyInstance, context: CollaborationRouteContext): void {
   const { db, collaboration, metrics } = context;
 
-  app.get("/api/collaboration/:id", { websocket: true }, (socket, request) => {
-    const user = currentUser(request, db);
+  app.get("/api/collaboration/:id", { websocket: true }, async (socket, request) => {
+    const user = await currentUser(request, db);
     if (!user) {
       socket.close(1008, "Authentication required");
       return;

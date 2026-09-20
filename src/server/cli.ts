@@ -2,12 +2,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DEFAULTS, loadConfig } from "./config.js";
-import { activeAdminCount, openDatabase } from "./db.js";
+import { openAdministrationDatabase, type AdministrationDatabase } from "./database/administration.js";
 import { hashPassword, MIN_PASSWORD_LENGTH } from "./security.js";
 import { assertEnvironment, hostRequirementsSatisfied, inspectHostEnvironment, inspectHostRequirements, type EnvironmentTool } from "./environment.js";
 import { serve } from "./index.js";
@@ -117,10 +116,19 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
   const configuredPort = Number.parseInt(process.env.TEXLITE_PORT ?? "", 10);
   const initialPort = Number.isInteger(configuredPort) && configuredPort >= 1 && configuredPort <= 65_535
     ? configuredPort : CONFIG_DEFAULTS.port;
+  // Never copy TEXLITE_DATABASE_URL into the file: it commonly contains a
+  // password. The selected driver is useful documentation, while the URL can
+  // remain in the process environment or an operator-managed secret file.
+  // PostgreSQL is the only supported application database. Keep the URL out
+  // of the generated file even when it was supplied through the environment.
+  const initialDatabase = {
+    driver: "postgresql",
+    sslMode: CONFIG_DEFAULTS.postgresSslMode
+  };
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   // Data parents are not guaranteed to exist on a fresh account. Create only
-  // the parent here; the configured data directory itself is created by
-  // openDatabase after configuration validation.
+  // the parent here; the configured data directory itself is created by the
+  // selected database bootstrap after configuration validation.
   for (const parent of new Set([path.dirname(dataDirectory), path.dirname(effectiveDataDirectory)])) {
     fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
   }
@@ -136,6 +144,7 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
       trustedProxyIps: CONFIG_DEFAULTS.trustedProxyIps
     },
     storage: { dataDir: configuredDataDirectory || dataDirectory },
+    database: initialDatabase,
     uploads: { maxFileSizeMB: CONFIG_DEFAULTS.maxFileSizeMB },
     pdf: {
       loadingStrategy: CONFIG_DEFAULTS.pdfLoadingStrategy,
@@ -175,7 +184,7 @@ async function initialize(options: CliOptions): Promise<void> {
   const configPath = configPathFor(options);
   const interactive = Boolean(stdin.isTTY);
   const rl = interactive ? createInterface({ input: stdin, output: stdout }) : null;
-  let db: ReturnType<typeof openDatabase> | null = null;
+  let db: AdministrationDatabase | null = null;
   try {
     if (!fs.existsSync(configPath)) {
       const configuredSiteName = process.env.TEXLITE_SITE_NAME;
@@ -199,8 +208,8 @@ async function initialize(options: CliOptions): Promise<void> {
     const config = loadConfig(configPath);
     const environment = await assertEnvironment(config);
     output(`Environment checks passed: ${environment.map((item) => `${item.name} ${item.version}`).join("; ")}`);
-    db = openDatabase(config);
-    if (activeAdminCount(db) > 0) {
+    db = await openAdministrationDatabase(config);
+    if (await db.activeAdminCount() > 0) {
       throw new Error("An active administrator already exists. Add additional administrators from the administration page.");
     }
     const username = process.env.TEXLITE_INIT_USERNAME
@@ -211,14 +220,20 @@ async function initialize(options: CliOptions): Promise<void> {
       ?? (rl ? await rl.question(`Administrator password (at least ${MIN_PASSWORD_LENGTH} characters; input is visible): `) : "");
     if (!password) throw new Error("Non-interactive initialization requires TEXLITE_INIT_PASSWORD to be set.");
     const timestamp = new Date().toISOString();
-    db.prepare(`INSERT INTO users
-      (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
-      VALUES (?, ?, ?, ?, ?, NULL, NULL, 'admin', 0, 0, 1, ?)`)
-      .run(randomUUID(), username, displayName, await hashPassword(password), config.adminEmail.trim().toLocaleLowerCase("en-US") || null, timestamp);
+    const created = await db.createInitialAdministrator({
+      username,
+      displayName,
+      passwordHash: await hashPassword(password),
+      email: config.adminEmail.trim().toLocaleLowerCase("en-US") || null,
+      createdAt: timestamp
+    });
+    if (!created) {
+      throw new Error("An active administrator already exists. Add additional administrators from the administration page.");
+    }
     output(`Administrator ${username} created. Configuration file: ${config.configPath}`);
     output(`Data directory: ${config.dataDir}`);
   } finally {
-    db?.close();
+    await db?.close();
     rl?.close();
   }
 }
@@ -230,17 +245,17 @@ async function loadValidatedConfig(options: CliOptions) {
 }
 
 async function assertAdmin(config: Awaited<ReturnType<typeof loadValidatedConfig>>["config"]): Promise<void> {
-  const db = openDatabase(config);
+  const db = await openAdministrationDatabase(config);
   try {
-    if (activeAdminCount(db) === 0) throw new Error("No active administrator found. Run `texlite init` first; the server will not start.");
+    if (await db.activeAdminCount() === 0) throw new Error("No active administrator found. Run `texlite init` first; the server will not start.");
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
 async function doctor(options: CliOptions): Promise<void> {
   const { config, configPath } = await loadValidatedConfig(options);
-  const application = inspectDoctorApplication(config, configPath);
+  const application = await inspectDoctorApplication(config, configPath);
   const hostTools = await inspectHostEnvironment(config);
   const report: DoctorReport = {
     configPath,
@@ -262,16 +277,16 @@ async function requirements(options: CliOptions): Promise<void> {
   if (!report.ok) process.exitCode = 2;
 }
 
-function inspectDoctorApplication(config: Awaited<ReturnType<typeof loadValidatedConfig>>["config"], configPath: string): DoctorApplicationCheck[] {
+async function inspectDoctorApplication(config: Awaited<ReturnType<typeof loadValidatedConfig>>["config"], configPath: string): Promise<DoctorApplicationCheck[]> {
   const checks: DoctorApplicationCheck[] = [
     { name: "Configuration", status: "passed", detail: `Valid: ${configPath}` },
     inspectClientAssets(config)
   ];
-  let db: ReturnType<typeof openDatabase> | null = null;
+  let db: AdministrationDatabase | null = null;
   try {
-    db = openDatabase(config);
-    checks.push({ name: "Data and database", status: "passed", detail: `Opened: ${config.databasePath}` });
-    const administrators = activeAdminCount(db);
+    db = await openAdministrationDatabase(config);
+    checks.push({ name: "Data and database", status: "passed", detail: `Opened: ${db.location}` });
+    const administrators = await db.activeAdminCount();
     checks.push(administrators > 0
       ? { name: "Administrator", status: "passed", detail: `${administrators} active administrator${administrators === 1 ? "" : "s"}` }
       : { name: "Administrator", status: "failed", detail: "No active administrator. Run `texlite init`." });
@@ -280,7 +295,7 @@ function inspectDoctorApplication(config: Awaited<ReturnType<typeof loadValidate
     checks.push({ name: "Data and database", status: "failed", detail });
     checks.push({ name: "Administrator", status: "failed", detail: "Could not inspect because the database is unavailable." });
   } finally {
-    db?.close();
+    await db?.close();
   }
   return checks;
 }
@@ -307,7 +322,13 @@ async function printConfig(options: CliOptions): Promise<void> {
     port: config.port,
     basePath: config.basePath,
     dataDir: config.dataDir,
-    databasePath: config.databasePath,
+    database: {
+      driver: "postgresql",
+      sslMode: config.database.sslMode,
+      // Intentionally do not print the database URL: it can contain a
+      // password. Operators can inspect the environment/secret manager.
+      urlConfigured: Boolean(config.database.url)
+    },
     projectsDir: config.projectsDir,
     clientDir: config.clientDir,
     sessionDays: config.sessionDays,

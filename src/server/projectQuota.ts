@@ -65,8 +65,8 @@ export class ProjectQuotaService {
   }
 
   /** Reject creation when the owner would exceed either durable quota. */
-  assertCanCreate(ownerId: string, initialSourceBytes: number): void {
-    const usage = this.usage(ownerId);
+  async assertCanCreate(ownerId: string, initialSourceBytes: number): Promise<void> {
+    const usage = await this.usage(ownerId);
     if (usage.projectCount >= this.maxProjectsPerUser) {
       throw httpError(403, "PROJECT_QUOTA_EXCEEDED", { maxProjects: this.maxProjectsPerUser });
     }
@@ -77,8 +77,8 @@ export class ProjectQuotaService {
    * Reject a source-tree replacement or file write if its resulting project
    * size would exceed the owner's aggregate source quota.
    */
-  assertCanStoreSource(ownerId: string, projectId: string, nextProjectBytes: number): void {
-    const usage = this.usage(ownerId);
+  async assertCanStoreSource(ownerId: string, projectId: string, nextProjectBytes: number): Promise<void> {
+    const usage = await this.usage(ownerId);
     const currentProjectBytes = usage.projectBytes.get(projectId) ?? 0;
     const next = normalizedBytes(nextProjectBytes);
     const nextTotal = usage.bytes - currentProjectBytes + next;
@@ -90,9 +90,9 @@ export class ProjectQuotaService {
   }
 
   /** Return whether an aggregate source update can become durable. */
-  canStoreSource(ownerId: string, projectId: string, nextProjectBytes: number): boolean {
+  async canStoreSource(ownerId: string, projectId: string, nextProjectBytes: number): Promise<boolean> {
     try {
-      this.assertCanStoreSource(ownerId, projectId, nextProjectBytes);
+      await this.assertCanStoreSource(ownerId, projectId, nextProjectBytes);
       return true;
     } catch (error) {
       if (isQuotaError(error)) return false;
@@ -101,8 +101,8 @@ export class ProjectQuotaService {
   }
 
   /** Current cached-or-scanned source bytes for one owned project. */
-  sourceBytes(ownerId: string, projectId: string): number {
-    return this.usage(ownerId).projectBytes.get(projectId) ?? 0;
+  async sourceBytes(ownerId: string, projectId: string): Promise<number> {
+    return (await this.usage(ownerId)).projectBytes.get(projectId) ?? 0;
   }
 
   /** Record the source size after a successful routed source mutation. */
@@ -111,8 +111,8 @@ export class ProjectQuotaService {
   }
 
   /** Record a known delta without re-walking the source tree. */
-  adjustSourceBytes(ownerId: string, projectId: string, delta: number): void {
-    const current = this.sourceBytes(ownerId, projectId);
+  async adjustSourceBytes(ownerId: string, projectId: string, delta: number): Promise<void> {
+    const current = await this.sourceBytes(ownerId, projectId);
     this.setSourceBytes(ownerId, projectId, Math.max(0, current + delta));
   }
 
@@ -123,9 +123,8 @@ export class ProjectQuotaService {
     return bytes;
   }
 
-  private usage(ownerId: string): OwnerUsage {
-    const projectIds = (this.db.prepare("SELECT id FROM projects WHERE owner_id = ?").all(ownerId) as Array<{ id: string }>)
-      .map((row) => row.id);
+  private async usage(ownerId: string): Promise<OwnerUsage> {
+    const projectIds = await this.db.projects.listOwnedProjectIds(ownerId);
     const activeIds = new Set(projectIds);
     for (const [projectId, cached] of this.cachedProjectBytes) {
       if (cached.ownerId === ownerId && !activeIds.has(projectId)) this.cachedProjectBytes.delete(projectId);

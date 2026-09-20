@@ -24,10 +24,10 @@ export function registerWordCountRoutes(app: FastifyInstance, context: WordCount
   const { config, db, projectMutations, texcount } = context;
 
   app.post("/api/projects/:id/word-count", async (request, reply) => {
-    const user = requireUser(request, reply, db);
+    const user = await requireUser(request, reply, db);
     if (!user) return;
     const { id } = request.params as { id: string };
-    const project = accessibleProject(db, id, user);
+    const project = await accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const body = (request.body ?? {}) as {
       mode?: unknown;
@@ -84,7 +84,7 @@ async function countDocument(
   user: UserRow,
   requestedMainFile: unknown
 ) {
-  const initialProject = accessibleProject(db, projectId, user);
+  const initialProject = await accessibleProject(db, projectId, user);
   if (!initialProject) throw httpError(404, "PROJECT_NOT_FOUND");
   const mainFile = compileMainFile(config, projectId, initialProject.main_file, requestedMainFile);
   if (!mainFile) throw httpError(400, "MAIN_DOCUMENT_INVALID");
@@ -95,8 +95,8 @@ async function countDocument(
     const counts = await texcount.countFile(sourceRoot(config, projectId), mainFile);
     return { mode: "full" as const, path: mainFile, ...counts };
   }, {
-    preflight: () => {
-      const current = accessibleProject(db, projectId, user);
+    preflight: async () => {
+      const current = await accessibleProject(db, projectId, user);
       if (!current) throw httpError(404, "PROJECT_NOT_FOUND");
       const selected = compileMainFile(config, projectId, current.main_file, requestedMainFile);
       if (!selected || selected !== mainFile) throw httpError(400, "MAIN_DOCUMENT_INVALID");

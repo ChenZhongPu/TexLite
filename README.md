@@ -44,6 +44,45 @@ fork 仓库地址为 [ChenZhongPu/TexLite](https://github.com/ChenZhongPu/TexLit
 
 本地测试不需要保留旧数据；删除 `data` 目录后重新启动即可按当前配置初始化。
 
+## PostgreSQL（全新部署）
+
+测试期不需要从 SQLite 导入数据。先在 PostgreSQL 中创建一个空数据库（例如 `texlite-demo`），
+然后以 [texlite.postgres.config.example.json](texlite.postgres.config.example.json) 为基础配置 PostgreSQL；
+表结构由 TexLite 的版本化迁移自动创建。
+
+```json
+{
+  "storage": {
+    "dataDir": "./data-postgres"
+  },
+  "database": {
+    "driver": "postgresql",
+    "url": "postgresql://postgres:CHANGE_ME@127.0.0.1:5432/texlite-demo",
+    "sslMode": "disable"
+  }
+}
+```
+
+连接串格式为：
+
+```text
+postgresql://<用户名>:<密码>@<主机>:<端口>/<数据库名>
+postgresql://postgres:CHANGE_ME@127.0.0.1:5432/texlite-demo
+             └用户名┘ └──密码──┘ └─主机──┘ └端口┘ └数据库名┘
+```
+
+因此，对本地已创建的 `texlite-demo`、用户为 `postgres` 的数据库，只需将示例中的
+`CHANGE_ME` 替换为 PostgreSQL 用户密码。不要把带密码的连接串提交到 Git；公网部署建议将完整
+连接串放在 `TEXLITE_DATABASE_URL` 环境变量中，配置文件可保留占位值以说明连接目标。若数据库
+要求 TLS，将 `sslMode` 设为 `require`。
+
+当前 fork 仅支持 PostgreSQL。`drizzle/postgres/` 中的版本化迁移会在应用启动时自动执行；首次部署
+前只需创建空数据库，然后运行 `npm run init` 创建首个管理员。测试阶段不提供旧 SQLite 数据迁移。
+
+`storage.dataDir` 只保存项目文件、编译产物、回收站和实例锁，数据库表由 PostgreSQL 服务管理。
+`npm run dev` 会把配置和文件数据固定在当前源码目录；本地配置中的数据库连接仍指向你配置的
+PostgreSQL 实例。切换数据库时建议使用新的 `dataDir`，避免文件目录与数据库中的项目记录不一致。
+
 ## 公网部署配额
 
 默认配置会限制每个账户最多拥有 100 个项目，且所有项目的源码、上传附件总量最多为

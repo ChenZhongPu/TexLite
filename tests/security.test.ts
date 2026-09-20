@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { FastifyRequest } from "fastify";
 import { hashPassword, MIN_PASSWORD_LENGTH, verifyPassword, LoginRateLimiter } from "../src/server/security.js";
 import { safeRelativePath } from "../src/server/files.js";
@@ -26,35 +26,29 @@ describe("security helpers", () => {
     expect(() => safeRelativePath("archive/.GIT/hooks/pre-commit")).toThrow("reserved");
   });
 
-  it("memoizes currentUser on repeated calls for the same request object", () => {
-    let prepareCalls = 0;
+  it("memoizes currentUser on repeated calls for the same request object", async () => {
+    const findActiveSessionUser = vi.fn().mockResolvedValue({ id: "user-1", username: "admin", role: "admin", disabled: 0 });
     const mockDb = {
-      prepare(_sql: string) {
-        prepareCalls += 1;
-        return {
-          get() {
-            return { id: "user-1", username: "admin", role: "admin", disabled: 0 };
-          }
-        };
-      }
+      identity: { findActiveSessionUser },
+      shareLinks: { findActiveByToken: vi.fn().mockResolvedValue(null) }
     } as unknown as Parameters<typeof currentUser>[1];
 
     const fakeRequest = {
       cookies: { texlite_session: "dummy-session-token" }
     } as unknown as FastifyRequest;
 
-    const first = currentUser(fakeRequest, mockDb);
+    const first = await currentUser(fakeRequest, mockDb);
     expect(first).toEqual({ id: "user-1", username: "admin", role: "admin", disabled: 0 });
-    expect(prepareCalls).toBe(1);
+    expect(findActiveSessionUser).toHaveBeenCalledTimes(1);
 
-    const second = currentUser(fakeRequest, mockDb);
+    const second = await currentUser(fakeRequest, mockDb);
     expect(second).toBe(first);
-    expect(prepareCalls).toBe(1);
+    expect(findActiveSessionUser).toHaveBeenCalledTimes(1);
 
     clearCurrentUserCache(fakeRequest);
-    const third = currentUser(fakeRequest, mockDb);
+    const third = await currentUser(fakeRequest, mockDb);
     expect(third).toEqual(first);
-    expect(prepareCalls).toBe(2);
+    expect(findActiveSessionUser).toHaveBeenCalledTimes(2);
   });
 
   it("limits consecutive failed login attempts and locks out after threshold", () => {

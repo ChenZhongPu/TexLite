@@ -1,0 +1,24 @@
+{
+  "siteName": "TexLite",
+  "adminEmail": "admin@example.com",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3000,
+    "basePath": "/",
+    "trustedProxyIps": ["127.0.0.1", "::1"]
+  },
+  "storage": {
+    "dataDir": "./data-postgres"
+  },
+  "database": {
+    "driver": "postgresql",
+    "url": "postgresql://postgres:CHANGE_ME@127.0.0.1:5432/texlite-demo",
+    "sslMode": "disable"
+  },
+  "OAuth": {
+    "baseURL": "https://testagent.xspaceagi.com",
+    "clientId": "",
+    "clientSecret": "",
+    "redirectUri": ""
+  }
+}

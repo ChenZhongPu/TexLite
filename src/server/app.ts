@@ -94,7 +94,7 @@ export async function buildApp(
   // interrupted filesystem/database deletion before another startup task can
   // inspect a project directory or sweep trash.
   await recoverProjectDirectoryStaging(config, db);
-  recoverInterruptedUserDeletions(db);
+  await recoverInterruptedUserDeletions(db);
   await pruneTrashDirectory(config);
 
   const trustedProxyIps = config.trustedProxyIps ?? [];
@@ -127,8 +127,8 @@ export async function buildApp(
   const failedSnapshots = new Set<string>();
   const failedEdits = new Map<string, "retrying" | "incomplete">();
   const signalHistory = (id: string) => collaboration.setHistoryWarning(id, failedSnapshots.has(id) || failedEdits.has(id));
-  const editRetry = new EditHistoryRetry((id, edits) => editHistory.record(id, edits),
-    (id) => Boolean(db.prepare("SELECT 1 FROM projects WHERE id = ?").get(id)),
+  const editRetry = new EditHistoryRetry(async (id, edits) => editHistory.record(id, edits),
+    async (id) => await db.projects.projectExists(id),
     (id, state, error) => {
       if (state === "discarded") {
         failedEdits.delete(id);
@@ -142,9 +142,9 @@ export async function buildApp(
       if (error) app.log.error({ err: error, projectId: id }, "Failed to record project edit history");
       signalHistory(id);
     });
-  const recordHistory = (projectId: string, userId: string | null, reason: HistoryReason, paths?: readonly string[]) => {
+  const recordHistory = async (projectId: string, userId: string | null, reason: HistoryReason, paths?: readonly string[]) => {
     try {
-      const version = history.record(projectId, userId, reason, failedSnapshots.has(projectId) ? undefined : paths, { deferRetention: reason === "autosave" });
+      const version = await history.record(projectId, userId, reason, failedSnapshots.has(projectId) ? undefined : paths, { deferRetention: reason === "autosave" });
       if (failedSnapshots.delete(projectId)) signalHistory(projectId);
       if (version && reason === "autosave") historyRetention.schedule(projectId);
       return version;
@@ -156,25 +156,21 @@ export async function buildApp(
       return null;
     }
   };
-  const collaboration = new CollaborationService(config, db, ({ projectId, userId, paths, edits, durationMs }) => {
+  const collaboration = new CollaborationService(config, db, async ({ projectId, userId, paths, edits, durationMs }) => {
     const started = performance.now();
-    editRetry.save(projectId, edits);
-    recordHistory(projectId, userId, "autosave", paths);
+    await editRetry.save(projectId, edits);
+    await recordHistory(projectId, userId, "autosave", paths);
     metrics.record("collaboration.persist", durationMs + performance.now() - started);
   }, projectQuota);
   const projectMutations = new ProjectMutationCoordinator(collaboration);
   const loginLimiter = new LoginRateLimiter();
-  for (const row of db.prepare("SELECT id FROM projects").all() as Array<{ id: string }>) {
-    reconcilePublishedCompileRuns(config, db, row.id);
+  for (const projectId of await db.projects.listProjectIds()) {
+    await reconcilePublishedCompileRuns(config, db, projectId);
   }
-  db.prepare(`UPDATE compile_runs SET status = 'failed',
-    log = CASE WHEN log = '' THEN 'Server restarted before compilation finished.' ELSE log END,
-    finished_at = ? WHERE status IN ('queued', 'running')`).run(now());
-  const pruneCompileRuns = (projectId: string): void => {
+  await db.compileRuns.failActiveRuns(now(), "Server restarted before compilation finished.");
+  const pruneCompileRuns = async (projectId: string): Promise<void> => {
     const keep = new Set(listPublishedCompileArtifacts(config, projectId).map((artifact) => artifact.runId));
-    const completed = db.prepare(`SELECT id, main_file FROM compile_runs
-      WHERE project_id = ? AND status NOT IN ('queued', 'running')
-      ORDER BY created_at DESC, rowid DESC`).all(projectId) as Array<{ id: string; main_file: string }>;
+    const completed = await db.compileRuns.completedForPrune(projectId);
     const latestTargets = new Set<string>();
     for (const run of completed) {
       if (!latestTargets.has(run.main_file)) {
@@ -182,16 +178,13 @@ export async function buildApp(
         keep.add(run.id);
       }
     }
-    const remove = db.prepare("DELETE FROM compile_runs WHERE id = ?");
-    db.transaction(() => {
-      for (const run of completed) if (!keep.has(run.id)) remove.run(run.id);
-    })();
+    for (const run of completed) if (!keep.has(run.id)) await db.compileRuns.deleteRun(run.id);
   };
-  for (const row of db.prepare("SELECT id FROM projects").all() as Array<{ id: string }>) {
-    history.enforceRetention(row.id);
-    editHistory.enforceRetention(row.id);
-    pruneCompileRuns(row.id);
-    pruneOrphanedCompileRuns(config, row.id);
+  for (const projectId of await db.projects.listProjectIds()) {
+    await history.enforceRetention(projectId);
+    await editHistory.enforceRetention(projectId);
+    await pruneCompileRuns(projectId);
+    await pruneOrphanedCompileRuns(config, projectId);
   }
   app.addHook("onClose", async () => {
     eventLoopDelay.disable();
@@ -260,9 +253,9 @@ export async function buildApp(
         && requestPath !== "/api/health"
         && requestPath !== "/api/config") {
         const token = request.cookies.texlite_session;
-        if (token && !currentUser(request, db)) {
+        if (token && !(await currentUser(request, db))) {
           const sessionId = digestToken(token);
-          db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+          await db.identity.deleteSession(sessionId);
           collaboration.disconnectSession(sessionId, "Sign-in session expired");
         }
       }
@@ -355,13 +348,13 @@ export async function buildApp(
     }
   }, { prefix: routePrefix });
 
-  const cleanupExpiredSessions = (): void => {
+  const cleanupExpiredSessions = async (): Promise<void> => {
     try {
       const asOf = now();
-      const expired = expiredSessionIds(db, asOf);
-      pruneExpiredSessions(db, asOf);
+      const expired = await expiredSessionIds(db, asOf);
+      await pruneExpiredSessions(db, asOf);
       for (const sessionId of expired) collaboration.disconnectSession(sessionId, "Sign-in session expired");
-      pruneExpiredOauthStates(db, asOf);
+      await pruneExpiredOauthStates(db, asOf);
       loginLimiter.prune();
     } catch (error) {
       app.log.error({ err: error }, "Failed to prune expired sessions");
@@ -369,8 +362,8 @@ export async function buildApp(
   };
   // Clean up at startup as well as periodically so long-running deployments do
   // not retain one row per historical login indefinitely.
-  cleanupExpiredSessions();
-  const sessionCleanupTimer = setInterval(cleanupExpiredSessions, SESSION_CLEANUP_INTERVAL_MS);
+  void cleanupExpiredSessions();
+  const sessionCleanupTimer = setInterval(() => { void cleanupExpiredSessions(); }, SESSION_CLEANUP_INTERVAL_MS);
   sessionCleanupTimer.unref();
   app.addHook("onClose", async () => { clearInterval(sessionCleanupTimer); });
 

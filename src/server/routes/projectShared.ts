@@ -36,63 +36,20 @@ export interface ProjectTag {
 
 export const tagColors = ["red", "orange", "yellow", "green", "blue", "purple", "gray"] as const;
 
-export function tagsForProject(db: DatabaseConnection, projectId: string, userId: string): ProjectTag[] {
-  return db.prepare(`SELECT tag.id, tag.name, tag.color
-    FROM user_tags tag JOIN user_project_tag_links link ON link.tag_id = tag.id
-    WHERE link.project_id = ? AND tag.user_id = ? ORDER BY tag.name COLLATE NOCASE`)
-    .all(projectId, userId) as unknown as ProjectTag[];
+export async function tagsForProject(db: DatabaseConnection, projectId: string, userId: string): Promise<ProjectTag[]> {
+  return await db.projectData.tagsForProject(projectId, userId);
 }
 
-export function tagsForProjects(db: DatabaseConnection, projectIds: string[], userId: string): Map<string, ProjectTag[]> {
-  const result = new Map(projectIds.map((projectId) => [projectId, [] as ProjectTag[]]));
-  for (let offset = 0; offset < projectIds.length; offset += 500) {
-    const chunk = projectIds.slice(offset, offset + 500);
-    const placeholders = chunk.map(() => "?").join(", ");
-    const rows = db.prepare(`SELECT link.project_id, tag.id, tag.name, tag.color
-      FROM user_project_tag_links link JOIN user_tags tag ON tag.id = link.tag_id
-      WHERE tag.user_id = ? AND link.project_id IN (${placeholders})
-      ORDER BY tag.name COLLATE NOCASE`).all(userId, ...chunk) as unknown as Array<ProjectTag & { project_id: string }>;
-    for (const row of rows) result.get(row.project_id)?.push({ id: row.id, name: row.name, color: row.color });
-  }
-  return result;
+export async function tagsForProjects(db: DatabaseConnection, projectIds: string[], userId: string): Promise<Map<string, ProjectTag[]>> {
+  return await db.projectData.tagsForProjects(projectIds, userId);
 }
 
-export function commentsSummaryForProjects(db: DatabaseConnection, projectIds: string[]): Map<string, { totalCount: number; unresolvedCount: number }> {
-  const result = new Map<string, { totalCount: number; unresolvedCount: number }>();
-  if (!projectIds.length) return result;
-  for (let index = 0; index < projectIds.length; index += 100) {
-    const chunk = projectIds.slice(index, index + 100);
-    const placeholders = chunk.map(() => "?").join(", ");
-    const rows = db.prepare(`
-      SELECT project_id,
-        COUNT(*) AS total_count,
-        SUM(CASE WHEN resolved = 0 THEN 1 ELSE 0 END) AS unresolved_count
-      FROM comments
-      WHERE project_id IN (${placeholders})
-      GROUP BY project_id
-    `).all(...chunk) as Array<{ project_id: string; total_count: number; unresolved_count: number }>;
-    for (const row of rows) {
-      result.set(row.project_id, {
-        totalCount: Number(row.total_count) || 0,
-        unresolvedCount: Number(row.unresolved_count) || 0
-      });
-    }
-  }
-  return result;
+export async function commentsSummaryForProjects(db: DatabaseConnection, projectIds: string[]): Promise<Map<string, { totalCount: number; unresolvedCount: number }>> {
+  return await db.projectData.commentsSummaryForProjects(projectIds);
 }
 
-export function commentsSummaryForProject(db: DatabaseConnection, projectId: string): { totalCount: number; unresolvedCount: number } {
-  const row = db.prepare(`
-    SELECT
-      COUNT(*) AS total_count,
-      SUM(CASE WHEN resolved = 0 THEN 1 ELSE 0 END) AS unresolved_count
-    FROM comments
-    WHERE project_id = ?
-  `).get(projectId) as { total_count: number; unresolved_count: number } | undefined;
-  return {
-    totalCount: Number(row?.total_count) || 0,
-    unresolvedCount: Number(row?.unresolved_count) || 0
-  };
+export async function commentsSummaryForProject(db: DatabaseConnection, projectId: string): Promise<{ totalCount: number; unresolvedCount: number }> {
+  return await db.projectData.commentsSummaryForProject(projectId);
 }
 
 export function projectJson(project: ProjectRow & {
@@ -128,13 +85,12 @@ export function projectJson(project: ProjectRow & {
   };
 }
 
-export function touchProject(db: DatabaseConnection, projectId: string, userId: string): void {
-  db.prepare("UPDATE projects SET updated_at = ?, last_modified_by = ? WHERE id = ?")
-    .run(now(), userId, projectId);
+export async function touchProject(db: DatabaseConnection, projectId: string, userId: string): Promise<void> {
+  await db.projectData.touchProject(projectId, userId, now());
 }
 
-export function requireActiveUser(db: DatabaseConnection, user: UserRow): void {
-  const current = db.prepare("SELECT disabled FROM users WHERE id = ?").get(user.id) as { disabled: number } | undefined;
+export async function requireActiveUser(db: DatabaseConnection, user: UserRow): Promise<void> {
+  const current = await db.identity.findUserById(user.id);
   if (!current || current.disabled) {
     throw httpError(401, "AUTH_REQUIRED");
   }
@@ -145,18 +101,18 @@ export function requireActiveUser(db: DatabaseConnection, user: UserRow): void {
  * project lock.  A member can be revoked, or ownership can be transferred,
  * while the request is waiting behind another filesystem operation.
  */
-export function requireEditableProject(db: DatabaseConnection, projectId: string, user: UserRow) {
-  requireActiveUser(db, user);
-  const project = accessibleProject(db, projectId, user);
+export async function requireEditableProject(db: DatabaseConnection, projectId: string, user: UserRow) {
+  await requireActiveUser(db, user);
+  const project = await accessibleProject(db, projectId, user);
   if (!project) throw httpError(404, "PROJECT_NOT_FOUND");
   if (!canEdit(project)) throw httpError(403, "PROJECT_EDIT_FORBIDDEN");
   return project;
 }
 
 /** Owner permission is granted only to the stored project owner. */
-export function requireProjectOwnerPermission(db: DatabaseConnection, projectId: string, user: UserRow) {
-  requireActiveUser(db, user);
-  const project = accessibleProject(db, projectId, user);
+export async function requireProjectOwnerPermission(db: DatabaseConnection, projectId: string, user: UserRow) {
+  await requireActiveUser(db, user);
+  const project = await accessibleProject(db, projectId, user);
   if (!project) throw httpError(404, "PROJECT_NOT_FOUND");
   if (project.permission !== "owner") {
     throw httpError(403, "PROJECT_OWNER_ONLY");
@@ -165,9 +121,9 @@ export function requireProjectOwnerPermission(db: DatabaseConnection, projectId:
 }
 
 /** Operations such as ownership transfer require the actual stored owner. */
-export function requireActualProjectOwner(db: DatabaseConnection, projectId: string, user: UserRow) {
-  requireActiveUser(db, user);
-  const project = accessibleProject(db, projectId, user);
+export async function requireActualProjectOwner(db: DatabaseConnection, projectId: string, user: UserRow) {
+  await requireActiveUser(db, user);
+  const project = await accessibleProject(db, projectId, user);
   if (!project) throw httpError(404, "PROJECT_NOT_FOUND");
   if (project.owner_id !== user.id) {
     throw httpError(403, "PROJECT_OWNER_ONLY");
@@ -182,9 +138,9 @@ export function projectTextSnapshot(config: Config, projectId: string): Map<stri
   }));
 }
 
-export function reanchorProjectSnapshot(db: DatabaseConnection, projectId: string, before: Map<string, string>, after: Map<string, string>): void {
+export async function reanchorProjectSnapshot(db: DatabaseConnection, projectId: string, before: Map<string, string>, after: Map<string, string>): Promise<void> {
   for (const filePath of new Set([...before.keys(), ...after.keys()])) {
-    reanchorFileComments(db, projectId, filePath, before.get(filePath) ?? "", after.get(filePath) ?? "");
+    await reanchorFileComments(db, projectId, filePath, before.get(filePath) ?? "", after.get(filePath) ?? "");
   }
 }
 
@@ -211,23 +167,8 @@ interface CommentRow {
   edited_at: string | null;
 }
 
-interface CommentReplyRow {
-  id: string;
-  author_id: string | null;
-  author_username: string | null;
-  author_display_name: string | null;
-  content: string;
-  created_at: string;
-  updated_at: string;
-  edited_at: string | null;
-}
-
-export function repliesForComment(db: DatabaseConnection, commentId: string) {
-  const rows = db.prepare(`SELECT reply.*, user.username AS author_username,
-      user.display_name AS author_display_name
-    FROM comment_replies reply LEFT JOIN users user ON user.id = reply.author_id
-    WHERE reply.comment_id = ? ORDER BY reply.created_at`)
-    .all(commentId) as unknown as CommentReplyRow[];
+export async function repliesForComment(db: DatabaseConnection, commentId: string) {
+  const rows = await db.comments.listReplies(commentId);
   return rows.map((reply) => ({
     id: reply.id,
     authorId: reply.author_id,
@@ -240,18 +181,11 @@ export function repliesForComment(db: DatabaseConnection, commentId: string) {
   }));
 }
 
-function commentsForScope(db: DatabaseConnection, config: Config, projectId: string, filePath?: string) {
-  const hasFileScope = typeof filePath === "string";
-  const fileClause = hasFileScope ? " AND c.file_path = ?" : "";
+async function commentsForScope(db: DatabaseConnection, config: Config, projectId: string, filePath?: string) {
   // File-scoped reads retain chronological order for backwards compatibility.
   // A project review is grouped by file and source position so next/previous
   // follows the manuscript rather than arbitrary database insertion order.
-  const commentOrder = hasFileScope
-    ? "c.created_at"
-    : "c.file_path COLLATE NOCASE, c.start_line, c.created_at";
-  const rows = db.prepare(`SELECT c.*, u.username AS author_username, u.display_name AS author_display_name FROM comments c
-    LEFT JOIN users u ON u.id = c.author_id WHERE c.project_id = ?${fileClause} ORDER BY ${commentOrder}`)
-    .all(projectId, ...(hasFileScope ? [filePath] : [])) as unknown as CommentRow[];
+  const rows = await db.comments.listComments(projectId, filePath);
   if (!rows.length) return [];
 
   const sourceByPath = new Map<string, string>();
@@ -261,13 +195,7 @@ function commentsForScope(db: DatabaseConnection, config: Config, projectId: str
     sourceByPath.set(row.file_path, fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8") : "");
   }
 
-  const replies = db.prepare(`SELECT reply.*, user.username AS author_username, user.display_name AS author_display_name
-    FROM comment_replies reply
-    JOIN comments c ON c.id = reply.comment_id
-    LEFT JOIN users user ON user.id = reply.author_id
-    WHERE c.project_id = ?${fileClause}
-    ORDER BY reply.created_at`)
-    .all(projectId, ...(hasFileScope ? [filePath] : [])) as unknown as Array<CommentReplyRow & { comment_id: string }>;
+  const replies = await db.comments.listRepliesForProject(projectId, filePath);
 
   const replyMap = new Map<string, Array<{
     id: string;
@@ -317,11 +245,11 @@ function commentsForScope(db: DatabaseConnection, config: Config, projectId: str
 }
 
 /** Comments anchored in one source file, used for editor decorations. */
-export function commentsForFile(db: DatabaseConnection, config: Config, projectId: string, filePath: string) {
-  return commentsForScope(db, config, projectId, filePath);
+export async function commentsForFile(db: DatabaseConnection, config: Config, projectId: string, filePath: string) {
+  return await commentsForScope(db, config, projectId, filePath);
 }
 
 /** All project comments, grouped in manuscript order for the review drawer. */
-export function commentsForProject(db: DatabaseConnection, config: Config, projectId: string) {
-  return commentsForScope(db, config, projectId);
+export async function commentsForProject(db: DatabaseConnection, config: Config, projectId: string) {
+  return await commentsForScope(db, config, projectId);
 }
