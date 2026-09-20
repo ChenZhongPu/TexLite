@@ -31,6 +31,13 @@ async function openPostgresOrmDatabase(config: PostgresDatabaseConfig): Promise<
     application_name: "texlite",
     ssl: config.sslMode === "require" ? { rejectUnauthorized: true } : undefined
   });
+  // node-postgres emits this event when an idle pooled connection fails. An
+  // EventEmitter without an error listener terminates the process, even
+  // though pg-pool has already discarded the affected connection and can
+  // establish a replacement for later requests.
+  client.on("error", (error) => {
+    console.error("PostgreSQL pool connection failed; the connection was discarded.", error);
+  });
   try {
     await client.query("SELECT 1");
   } catch (error) {

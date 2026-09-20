@@ -85,48 +85,31 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
     const admin = await requireAdmin(request, reply, db);
     if (!admin) return;
     const { id } = request.params as { id: string };
-    const target = await db.identity.findUserById(id);
-    if (!target) return apiError(reply, 404, "USER_NOT_FOUND");
     const body = request.body as Record<string, unknown>;
-    const role = body.role === "admin" ? "admin" : body.role === "user" ? "user" : target.role;
-    const disabled = typeof body.disabled === "boolean" ? Number(body.disabled) : target.disabled;
-    const canCreateProjects = typeof body.canCreateProjects === "boolean"
-      ? Number(body.canCreateProjects) : target.can_create_projects;
-    if (target.role === "admin" && (!role || role !== "admin" || disabled) && (await db.administrators.activeAdminCount()) <= 1) {
-      return apiError(reply, 400, "LAST_ADMIN");
-    }
-    const displayName = typeof body.displayName === "string" ? text(body.displayName, MAX_DISPLAY_NAME_LENGTH) : target.display_name;
-    let passwordHash = target.password_hash;
-    let mustChange = target.must_change_password;
-    if (typeof body.password === "string" && body.password) {
-      passwordHash = await hashPassword(body.password);
-      mustChange = 1;
-      for (const sessionId of await db.identity.deleteAllSessions(id)) {
-        collaboration.disconnectSession(sessionId, "Administrator reset password");
-      }
-    }
-    const updatedUser = await db.administrators.updateUser({
+    const passwordReset = typeof body.password === "string" && Boolean(body.password);
+    const updated = await db.administrators.patchUser({
       id,
-      displayName,
-      role,
-      disabled,
-      passwordHash,
-      mustChangePassword: mustChange,
-      canCreateProjects
+      ...(typeof body.displayName === "string" ? { displayName: text(body.displayName, MAX_DISPLAY_NAME_LENGTH) } : {}),
+      ...(body.role === "admin" || body.role === "user" ? { role: body.role } : {}),
+      ...(typeof body.disabled === "boolean" ? { disabled: Number(body.disabled) } : {}),
+      ...(typeof body.canCreateProjects === "boolean" ? { canCreateProjects: Number(body.canCreateProjects) } : {}),
+      ...(passwordReset ? { passwordHash: await hashPassword(body.password as string), mustChangePassword: 1 } : {})
     });
-    if (!updatedUser) return apiError(reply, 404, "USER_NOT_FOUND");
+    if (updated.status === "not_found") return apiError(reply, 404, "USER_NOT_FOUND");
+    if (updated.status === "last_admin") return apiError(reply, 400, "LAST_ADMIN");
+    if (updated.status === "deletion_pending") return apiError(reply, 409, "USER_DELETION_PENDING");
     // A disabled account must not regain access by being re-enabled while an
     // old cookie is still within its normal lifetime. Password resets already
     // revoke sessions above; disabling does the same for every active token.
-    if (disabled === 1) {
+    if (body.disabled === true || passwordReset) {
       for (const sessionId of await db.identity.deleteAllSessions(id)) {
-        collaboration.disconnectSession(sessionId, "Administrator disabled account");
+        collaboration.disconnectSession(sessionId, body.disabled === true ? "Administrator disabled account" : "Administrator reset password");
       }
     }
-    if (disabled === 1 || (typeof body.password === "string" && body.password)) {
+    if (body.disabled === true || passwordReset) {
       collaboration.disconnectUser(id, "user-disabled-or-reset");
     }
-    return { user: publicUser(updatedUser) };
+    return { user: publicUser(updated.user) };
   });
 
   app.delete("/api/admin/users/:id", async (request, reply) => {
@@ -137,9 +120,6 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
     const target = await db.identity.findUserById(id);
     if (!target) return apiError(reply, 404, "USER_NOT_FOUND");
     if (target.id === admin.id) return apiError(reply, 400, "SELF_DELETE_FORBIDDEN");
-    if (target.role === "admin" && (await db.administrators.activeAdminCount()) <= 1) {
-      return apiError(reply, 400, "LAST_ADMIN");
-    }
     return await projectQuota.runForOwner(id, async () => {
       const owned = (await db.projects.listOwnedProjectIds(id)).map((projectId) => ({ id: projectId }));
       // Ownership transfer is intentionally not supported. An administrator
@@ -165,6 +145,7 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
       const suspension = await db.administrators.suspendUserForDeletion(id, now());
       if (suspension.status === "not_found") throw httpError(404, "USER_NOT_FOUND");
       if (suspension.status === "last_admin") throw httpError(400, "LAST_ADMIN");
+      if (suspension.status === "deletion_pending") throw httpError(409, "USER_DELETION_PENDING");
       suspended = true;
       collaboration.disconnectUser(id, "user-deletion-pending");
 

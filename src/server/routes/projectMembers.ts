@@ -159,16 +159,13 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     const target = await upsertNuwaxUser(db, profile);
     if (target.disabled) return apiError(reply, 404, "INVITATION_RECIPIENT_NOT_FOUND");
     if (target.id === project.owner_id) return apiError(reply, 400, "INVITATION_OWNER_FORBIDDEN");
-    if (await db.projects.hasMember(id, target.id)) {
-      return apiError(reply, 409, "INVITATION_MEMBER_EXISTS");
-    }
     // The phone is used only for this exact Nuwax lookup. The durable
     // invitation stores the returned TexLite user ID and never stores the phone.
     const recipientUserId = target.id;
     const email = target.email;
     const permission = body.permission === "edit" ? "edit" : "read";
     const createdAt = now();
-    const invitationId = await db.projectMembers.upsertInvitation({
+    const invitation = await db.projectMembers.upsertInvitation({
       id: randomUUID(),
       projectId: id,
       recipientUserId,
@@ -177,9 +174,10 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
       invitedBy: user.id,
       createdAt
     });
+    if (invitation.status === "member_exists") return apiError(reply, 409, "INVITATION_MEMBER_EXISTS");
     await touchProject(db, id, user.id);
     return reply.code(201).send({ invitation: {
-      id: invitationId,
+      id: invitation.invitationId,
       email: email ?? null,
       permission,
       createdAt,
@@ -277,13 +275,14 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     const body = request.body as { permission?: unknown };
     const permission = body.permission === "edit" ? "edit" : "read";
     const changedAt = now();
-    await db.projectMembers.setMemberPermission({
+    const changed = await db.projectMembers.setMemberPermission({
       projectId: id,
       userId,
       permission,
       email: target.email,
       changedAt
     });
+    if (!changed) return apiError(reply, 404, "PROJECT_MEMBER_NOT_FOUND");
     await touchProject(db, id, user.id);
     collaboration.notifyPermissionChanged(id, userId, permission);
     return { ok: true };
@@ -296,13 +295,15 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
     const project = await accessibleProject(db, id, user);
     if (!project || project.permission !== "owner") return apiError(reply, 403, "MEMBERS_MANAGE_FORBIDDEN");
     const target = await db.identity.findUserById(userId);
+    if (!target) return apiError(reply, 404, "PROJECT_MEMBER_NOT_FOUND");
     const changedAt = now();
-    await db.projectMembers.removeMember({
+    const removed = await db.projectMembers.removeMember({
       projectId: id,
       userId,
-      email: target?.email ?? null,
+      email: target.email,
       changedAt
     });
+    if (!removed) return apiError(reply, 404, "PROJECT_MEMBER_NOT_FOUND");
     await touchProject(db, id, user.id);
     collaboration.notifyPermissionChanged(id, userId, "revoked");
     return { ok: true };

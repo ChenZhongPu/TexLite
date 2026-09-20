@@ -1,8 +1,11 @@
-import { and, count, desc, eq, ilike, or, sql } from "drizzle-orm";
-import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import { and, count, desc, eq, ilike, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
+import type { NodePgDatabase, NodePgTransaction } from "drizzle-orm/node-postgres";
 import type { UserRow } from "../../db.js";
 import * as schema from "../schema/postgres.js";
 import { toUserRow } from "./identity.js";
+
+type AdministratorTransaction = NodePgTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
+const ADMINISTRATOR_STATE_LOCK = "texlite:active-administrator-state";
 
 export interface InitialAdministrator {
   id: string;
@@ -31,7 +34,24 @@ export interface CreateManagedUser {
 export type UserDeletionSuspension =
   | { status: "not_found" }
   | { status: "last_admin" }
+  | { status: "deletion_pending" }
   | { status: "suspended"; originalDisabled: number };
+
+export interface ManagedUserPatch {
+  id: string;
+  displayName?: string;
+  role?: "admin" | "user";
+  disabled?: number;
+  passwordHash?: string;
+  mustChangePassword?: number;
+  canCreateProjects?: number;
+}
+
+export type ManagedUserPatchResult =
+  | { status: "not_found" }
+  | { status: "last_admin" }
+  | { status: "deletion_pending" }
+  | { status: "updated"; user: UserRow };
 
 /**
  * Small, PostgreSQL-only repository used before the HTTP data-access
@@ -121,35 +141,68 @@ export class PostgresAdministratorRepository {
     return toUserRow(row!);
   }
 
-  async updateUser(input: {
-    id: string;
-    displayName: string;
-    role: "admin" | "user";
-    disabled: number;
-    passwordHash: string;
-    mustChangePassword: number;
-    canCreateProjects: number;
-  }): Promise<UserRow | null> {
-    const [row] = await this.db.update(schema.users).set({
-      displayName: input.displayName,
-      role: input.role,
-      disabled: input.disabled,
-      passwordHash: input.passwordHash,
-      mustChangePassword: input.mustChangePassword,
-      canCreateProjects: input.canCreateProjects
-    }).where(eq(schema.users.id, input.id)).returning();
-    return row ? toUserRow(row) : null;
+  /**
+   * Apply only fields requested by an administrator. The global advisory lock
+   * serializes changes that may remove the final active administrator and
+   * prevents a concurrent role toggle from overwriting a password reset.
+   */
+  async patchUser(input: ManagedUserPatch): Promise<ManagedUserPatchResult> {
+    return await this.db.transaction(async (tx) => {
+      await lockAdministratorState(tx);
+      const [target] = await tx.select().from(schema.users).where(eq(schema.users.id, input.id)).limit(1);
+      if (!target) return { status: "not_found" };
+      const [stagedDeletion] = await tx.select({ userId: schema.userDeletionStaging.userId })
+        .from(schema.userDeletionStaging)
+        .where(eq(schema.userDeletionStaging.userId, input.id))
+        .limit(1);
+      if (stagedDeletion) return { status: "deletion_pending" };
+
+      const role = input.role ?? target.role;
+      const disabled = input.disabled ?? target.disabled;
+      if (target.role === "admin" && target.disabled === 0 && (role !== "admin" || disabled !== 0)) {
+        const [countRow] = await tx.select({ count: sql<string>`count(*)` })
+          .from(schema.users)
+          .where(and(eq(schema.users.role, "admin"), eq(schema.users.disabled, 0)));
+        if (Number(countRow?.count ?? 0) <= 1) return { status: "last_admin" };
+      }
+
+      const changes: {
+        displayName?: string;
+        role?: "admin" | "user";
+        disabled?: number;
+        passwordHash?: string;
+        mustChangePassword?: number;
+        canCreateProjects?: number;
+      } = {};
+      if (input.displayName !== undefined) changes.displayName = input.displayName;
+      if (input.role !== undefined) changes.role = input.role;
+      if (input.disabled !== undefined) changes.disabled = input.disabled;
+      if (input.passwordHash !== undefined) changes.passwordHash = input.passwordHash;
+      if (input.mustChangePassword !== undefined) changes.mustChangePassword = input.mustChangePassword;
+      if (input.canCreateProjects !== undefined) changes.canCreateProjects = input.canCreateProjects;
+      if (!Object.keys(changes).length) return { status: "updated", user: toUserRow(target) };
+
+      const [updated] = await tx.update(schema.users).set(changes)
+        .where(eq(schema.users.id, input.id)).returning();
+      return { status: "updated", user: toUserRow(updated!) };
+    });
   }
 
   async suspendUserForDeletion(userId: string, createdAt: string): Promise<UserDeletionSuspension> {
     return await this.db.transaction(async (tx) => {
+      await lockAdministratorState(tx);
       const [target] = await tx.select({
         id: schema.users.id,
         role: schema.users.role,
         disabled: schema.users.disabled
       }).from(schema.users).where(eq(schema.users.id, userId)).limit(1);
       if (!target) return { status: "not_found" };
-      if (target.role === "admin") {
+      const [stagedDeletion] = await tx.select({ userId: schema.userDeletionStaging.userId })
+        .from(schema.userDeletionStaging)
+        .where(eq(schema.userDeletionStaging.userId, userId))
+        .limit(1);
+      if (stagedDeletion) return { status: "deletion_pending" };
+      if (target.role === "admin" && target.disabled === 0) {
         const [countRow] = await tx.select({ count: sql<string>`count(*)` })
           .from(schema.users)
           .where(and(eq(schema.users.role, "admin"), eq(schema.users.disabled, 0)));
@@ -170,6 +223,7 @@ export class PostgresAdministratorRepository {
 
   async finalizeUserDeletion(userId: string): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
+      await lockAdministratorState(tx);
       await tx.delete(schema.projects).where(eq(schema.projects.ownerId, userId));
       const deleted = await tx.delete(schema.users).where(eq(schema.users.id, userId)).returning({ id: schema.users.id });
       await tx.delete(schema.userDeletionStaging).where(eq(schema.userDeletionStaging.userId, userId));
@@ -179,6 +233,7 @@ export class PostgresAdministratorRepository {
 
   async restoreStagedUserDeletion(userId: string): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await lockAdministratorState(tx);
       const [staged] = await tx.select({ originalDisabled: schema.userDeletionStaging.originalDisabled })
         .from(schema.userDeletionStaging)
         .where(eq(schema.userDeletionStaging.userId, userId))
@@ -192,6 +247,7 @@ export class PostgresAdministratorRepository {
 
   async recoverInterruptedUserDeletions(): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await lockAdministratorState(tx);
       const rows = await tx.select({
         userId: schema.userDeletionStaging.userId,
         originalDisabled: schema.userDeletionStaging.originalDisabled
@@ -204,6 +260,10 @@ export class PostgresAdministratorRepository {
       }
     });
   }
+}
+
+async function lockAdministratorState(tx: AdministratorTransaction): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${ADMINISTRATOR_STATE_LOCK}))`);
 }
 
 function escapeLikePattern(value: string): string {

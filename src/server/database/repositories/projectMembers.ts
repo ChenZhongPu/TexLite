@@ -53,6 +53,10 @@ export interface UpsertInvitationInput {
   createdAt: string;
 }
 
+export type UpsertInvitationResult =
+  | { status: "pending"; invitationId: string }
+  | { status: "member_exists" };
+
 /** Typed access to project membership and invitation state. */
 export class PostgresProjectMemberRepository {
   private readonly invitationRecipient = alias(schema.users, "invitation_recipient");
@@ -127,6 +131,15 @@ export class PostgresProjectMemberRepository {
     respondedAt: string;
   }): Promise<{ projectId: string; permission: MemberPermission } | null> {
     return await this.db.transaction(async (tx) => {
+      const [reference] = await tx.select({ projectId: schema.projectInvitations.projectId })
+        .from(schema.projectInvitations)
+        .where(and(
+          eq(schema.projectInvitations.id, input.invitationId),
+          invitationRecipientCondition(input.userId, input.email)
+        ))
+        .limit(1);
+      if (!reference) return null;
+      await lockProjectMembership(tx, reference.projectId);
       const [invitation] = await tx.select({
         id: schema.projectInvitations.id,
         projectId: schema.projectInvitations.projectId,
@@ -178,6 +191,15 @@ export class PostgresProjectMemberRepository {
     respondedAt: string;
   }): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
+      const [reference] = await tx.select({ projectId: schema.projectInvitations.projectId })
+        .from(schema.projectInvitations)
+        .where(and(
+          eq(schema.projectInvitations.id, input.invitationId),
+          invitationRecipientCondition(input.userId, input.email)
+        ))
+        .limit(1);
+      if (!reference) return false;
+      await lockProjectMembership(tx, reference.projectId);
       const updated = await tx.update(schema.projectInvitations)
         .set({ status: "declined", respondedAt: input.respondedAt, recipientUserId: input.userId })
         .where(and(
@@ -230,8 +252,17 @@ export class PostgresProjectMemberRepository {
     return rows.map((row) => ({ ...row, permission: asPermission(row.permission) }));
   }
 
-  async upsertInvitation(input: UpsertInvitationInput): Promise<string> {
+  async upsertInvitation(input: UpsertInvitationInput): Promise<UpsertInvitationResult> {
     return await this.db.transaction(async (tx) => {
+      await lockProjectMembership(tx, input.projectId);
+      const [member] = await tx.select({ projectId: schema.projectMembers.projectId })
+        .from(schema.projectMembers)
+        .where(and(
+          eq(schema.projectMembers.projectId, input.projectId),
+          eq(schema.projectMembers.userId, input.recipientUserId)
+        ))
+        .limit(1);
+      if (member) return { status: "member_exists" };
       const [pending] = await tx.select({ id: schema.projectInvitations.id })
         .from(schema.projectInvitations)
         .where(and(
@@ -250,7 +281,10 @@ export class PostgresProjectMemberRepository {
           invitedBy: input.invitedBy,
           createdAt: input.createdAt,
           respondedAt: null
-        }).where(eq(schema.projectInvitations.id, invitationId));
+        }).where(and(
+          eq(schema.projectInvitations.id, invitationId),
+          eq(schema.projectInvitations.status, "pending")
+        ));
       } else {
         await tx.insert(schema.projectInvitations).values({
           id: invitationId,
@@ -265,20 +299,23 @@ export class PostgresProjectMemberRepository {
         });
       }
       await revokePendingInvitations(tx, input.projectId, input.recipientUserId, input.email, input.createdAt, invitationId);
-      return invitationId;
+      return { status: "pending", invitationId };
     });
   }
 
   async revokeInvitation(projectId: string, invitationId: string, respondedAt: string): Promise<boolean> {
-    const rows = await this.db.update(schema.projectInvitations)
-      .set({ status: "revoked", respondedAt })
-      .where(and(
-        eq(schema.projectInvitations.id, invitationId),
-        eq(schema.projectInvitations.projectId, projectId),
-        eq(schema.projectInvitations.status, "pending")
-      ))
-      .returning({ id: schema.projectInvitations.id });
-    return rows.length > 0;
+    return await this.db.transaction(async (tx) => {
+      await lockProjectMembership(tx, projectId);
+      const rows = await tx.update(schema.projectInvitations)
+        .set({ status: "revoked", respondedAt })
+        .where(and(
+          eq(schema.projectInvitations.id, invitationId),
+          eq(schema.projectInvitations.projectId, projectId),
+          eq(schema.projectInvitations.status, "pending")
+        ))
+        .returning({ id: schema.projectInvitations.id });
+      return rows.length > 0;
+    });
   }
 
   async setMemberPermission(input: {
@@ -287,18 +324,19 @@ export class PostgresProjectMemberRepository {
     permission: MemberPermission;
     email: string | null;
     changedAt: string;
-  }): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.insert(schema.projectMembers).values({
-        projectId: input.projectId,
-        userId: input.userId,
-        permission: input.permission,
-        createdAt: input.changedAt
-      }).onConflictDoUpdate({
-        target: [schema.projectMembers.projectId, schema.projectMembers.userId],
-        set: { permission: input.permission }
-      });
+  }): Promise<boolean> {
+    return await this.db.transaction(async (tx) => {
+      await lockProjectMembership(tx, input.projectId);
+      const updated = await tx.update(schema.projectMembers)
+        .set({ permission: input.permission })
+        .where(and(
+          eq(schema.projectMembers.projectId, input.projectId),
+          eq(schema.projectMembers.userId, input.userId)
+        ))
+        .returning({ projectId: schema.projectMembers.projectId });
+      if (!updated.length) return false;
       await revokePendingInvitations(tx, input.projectId, input.userId, input.email, input.changedAt);
+      return true;
     });
   }
 
@@ -307,15 +345,22 @@ export class PostgresProjectMemberRepository {
     userId: string;
     email: string | null;
     changedAt: string;
-  }): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.delete(schema.projectMembers).where(and(
+  }): Promise<boolean> {
+    return await this.db.transaction(async (tx) => {
+      await lockProjectMembership(tx, input.projectId);
+      const removed = await tx.delete(schema.projectMembers).where(and(
         eq(schema.projectMembers.projectId, input.projectId),
         eq(schema.projectMembers.userId, input.userId)
-      ));
+      )).returning({ projectId: schema.projectMembers.projectId });
+      if (!removed.length) return false;
       await revokePendingInvitations(tx, input.projectId, input.userId, input.email, input.changedAt);
+      return true;
     });
   }
+}
+
+async function lockProjectMembership(tx: ProjectMemberTransaction, projectId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`texlite:project-members:${projectId}`}))`);
 }
 
 function invitationRecipientCondition(userId: string, email: string | null) {

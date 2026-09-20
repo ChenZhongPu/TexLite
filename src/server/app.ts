@@ -34,7 +34,7 @@ import { HistoryRetentionScheduler } from "./historyRetention.js";
 import { EditHistoryRetry } from "./editHistoryRetry.js";
 import { ProjectOutlineService } from "./projectOutline.js";
 import { MetricRegistry } from "./metrics.js";
-import { apiError, HttpError } from "./http.js";
+import { apiError, HttpError, postgresConflictCode } from "./http.js";
 import { registerCompileRoutes } from "./routes/compile.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerCollaborationRoutes } from "./routes/collaboration.js";
@@ -217,6 +217,11 @@ export async function buildApp(
   });
 
   app.setErrorHandler((error, _request, reply) => {
+    const databaseConflict = postgresConflictCode(error);
+    if (databaseConflict) {
+      app.log.warn({ err: error, code: databaseConflict }, "PostgreSQL request conflict");
+      return apiError(reply, 409, databaseConflict);
+    }
     app.log.error(error);
     const rawStatus = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
       ? error.statusCode

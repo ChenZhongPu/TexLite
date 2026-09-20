@@ -6,7 +6,7 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     // These suites target the removed synchronous SQLite runtime. Their
     // PostgreSQL replacements are integration tests gated by
-    // TEXLITE_TEST_DATABASE_URL (see databaseAdministration.test.ts).
+    // TEXLITE_TEST_DATABASE_URL (see postgresConcurrency.test.ts).
     exclude: [
       "tests/anchors.test.ts",
       "tests/app.test.ts",

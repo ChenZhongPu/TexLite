@@ -79,6 +79,13 @@ postgresql://postgres:CHANGE_ME@127.0.0.1:5432/texlite-demo
 当前 fork 仅支持 PostgreSQL。`drizzle/postgres/` 中的版本化迁移会在应用启动时自动执行；首次部署
 前只需创建空数据库，然后运行 `npm run init` 创建首个管理员。测试阶段不提供旧 SQLite 数据迁移。
 
+可选的 PostgreSQL 并发集成测试使用 `TEXLITE_TEST_DATABASE_URL` 指向一个控制数据库；测试会为
+每个用例创建并删除独立临时数据库，不会写入该控制数据库。该连接账号需具备 `CREATEDB` 权限：
+
+```bash
+TEXLITE_TEST_DATABASE_URL='postgresql://postgres:密码@127.0.0.1:5432/postgres' npm test
+```
+
 `storage.dataDir` 只保存项目文件、编译产物、回收站和实例锁，数据库表由 PostgreSQL 服务管理。
 `npm run dev` 会把配置和文件数据固定在当前源码目录；本地配置中的数据库连接仍指向你配置的
 PostgreSQL 实例。切换数据库时建议使用新的 `dataDir`，避免文件目录与数据库中的项目记录不一致。
