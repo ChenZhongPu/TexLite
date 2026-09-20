@@ -47,6 +47,7 @@ describe("project collaboration", () => {
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], extraArgs: [], allowProjectLatexmkrc: true,
       maxUploadBytes: 50 * 1024 * 1024, pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
       historyMaxVersions: 200, historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024,
+      maxProjectsPerUser: 1_000, maxSourceStorageBytesPerUser: 2 * 1024 * 1024 * 1024,
       git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com"
     };
     db = openDatabase(config);
@@ -576,6 +577,27 @@ describe("project collaboration", () => {
     } finally { peer.destroy(); }
   }, 15_000);
 
+  it("rejects a live edit that would exceed the owning account's source quota", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Collaborative quota" }
+    });
+    const projectId = created.json().project.id as string;
+    const sourcePath = path.join(config.projectsDir, projectId, "source", "main.tex");
+    const sourceContent = fs.readFileSync(sourcePath, "utf8");
+    const previousLimit = config.maxSourceStorageBytesPerUser;
+    config.maxSourceStorageBytesPerUser = Buffer.byteLength(sourceContent, "utf8") + 8;
+    const peer = await TestPeer.connect(app, projectId, adminCookie, { id: adminId, username: "admin", name: "Administrator" });
+    try {
+      peer.doc.getText("source:main.tex").insert(0, "% this edit exceeds the quota\n");
+      await expect(peer.flush()).rejects.toMatchObject({ failedPaths: ["main.tex"] });
+      await waitFor(() => peer.doc.getText("source:main.tex").toString() === sourceContent);
+      expect(fs.readFileSync(sourcePath, "utf8")).toBe(sourceContent);
+    } finally {
+      config.maxSourceStorageBytesPerUser = previousLimit;
+      peer.destroy();
+    }
+  });
+
   it("disconnects a user's active WebSocket connection across rooms when disabled by admin", async () => {
     const created = await app.inject({
       method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Disabled user disconnect" }
@@ -604,6 +626,89 @@ describe("project collaboration", () => {
       expect(peer.connected).toBe(false);
     } finally {
       peer.destroy();
+    }
+  });
+
+  it("closes a live collaboration connection when its browser session logs out", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Logout websocket disconnect" }
+    });
+    const projectId = created.json().project.id as string;
+    const user = await createUser(app, adminCookie, "ws-logout-user", "Logout User");
+    const userCookie = await login(app, "ws-logout-user", "reader-password");
+    await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/members/${user.id}`,
+      headers: { cookie: adminCookie }, payload: { permission: "edit" }
+    });
+    const peer = await TestPeer.connect(app, projectId, userCookie, {
+      id: user.id, username: "ws-logout-user", name: "Logout User"
+    });
+    try {
+      expect(peer.connected).toBe(true);
+      const logout = await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie: userCookie } });
+      expect(logout.statusCode).toBe(200);
+      await waitFor(() => !peer.connected, 3000);
+      expect(peer.connected).toBe(false);
+    } finally {
+      peer.destroy();
+    }
+  });
+
+  it("closes a connection whose concrete session was revoked outside the logout route", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Revoked session websocket" }
+    });
+    const projectId = created.json().project.id as string;
+    const user = await createUser(app, adminCookie, "ws-revoked-session", "Revoked Session");
+    const userCookie = await login(app, "ws-revoked-session", "reader-password");
+    await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/members/${user.id}`,
+      headers: { cookie: adminCookie }, payload: { permission: "edit" }
+    });
+    const peer = await TestPeer.connect(app, projectId, userCookie, {
+      id: user.id, username: "ws-revoked-session", name: "Revoked Session"
+    });
+    try {
+      db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
+      // A normal protocol packet must revalidate the exact session, rather
+      // than trusting only that the user account still exists.
+      peer.awareness.setLocalStateField("cursor", { anchor: {}, head: {} });
+      await waitFor(() => !peer.connected, 3000);
+      expect(peer.connected).toBe(false);
+    } finally {
+      peer.destroy();
+    }
+  });
+
+  it("keeps the password-changing session but closes the user's older websocket sessions", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: adminCookie }, payload: { name: "Password session revoke" }
+    });
+    const projectId = created.json().project.id as string;
+    const user = await createUser(app, adminCookie, "ws-password-user", "Password User");
+    const olderCookie = await login(app, "ws-password-user", "reader-password");
+    const currentCookie = await login(app, "ws-password-user", "reader-password");
+    await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/members/${user.id}`,
+      headers: { cookie: adminCookie }, payload: { permission: "edit" }
+    });
+    const older = await TestPeer.connect(app, projectId, olderCookie, {
+      id: user.id, username: "ws-password-user", name: "Password User"
+    });
+    const current = await TestPeer.connect(app, projectId, currentCookie, {
+      id: user.id, username: "ws-password-user", name: "Password User"
+    });
+    try {
+      const changed = await app.inject({
+        method: "PUT", url: "/api/me/password", headers: { cookie: currentCookie },
+        payload: { currentPassword: "reader-password", newPassword: "new-reader-password" }
+      });
+      expect(changed.statusCode).toBe(200);
+      await waitFor(() => !older.connected, 3000);
+      expect(current.connected).toBe(true);
+    } finally {
+      older.destroy();
+      current.destroy();
     }
   });
 

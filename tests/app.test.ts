@@ -10,10 +10,14 @@ import type { FastifyInstance } from "fastify";
 import { buildApp, escapeGlobPattern } from "../src/server/app.js";
 import { CollaborationService } from "../src/server/collaboration.js";
 import type { Config } from "../src/server/config.js";
-import { openDatabase, type DatabaseConnection } from "../src/server/db.js";
+import { openDatabase, recoverInterruptedUserDeletions, type DatabaseConnection } from "../src/server/db.js";
 import { MAX_CITATION_BIBTEX_BYTES } from "../src/server/limits.js";
 import { hashPassword, MIN_PASSWORD_LENGTH } from "../src/server/security.js";
-import { sourceRoot } from "../src/server/files.js";
+import {
+  recoverProjectDirectoryStaging,
+  sourceRoot,
+  stagePersistedProjectDirectoryRemoval
+} from "../src/server/files.js";
 
 function citationPayload(citationKey: string, title: string, bibtex: string, extras: Record<string, unknown> = {}): Record<string, unknown> {
   return { bibtex, citationKey, entryType: "article", title, authors: null, year: "2026", ...extras };
@@ -52,8 +56,9 @@ describe("texLite application", () => {
       compileTimeoutMs: 30_000, maxCompileJobs: 1, latexmk: "latexmk", defaultEngine: "pdflatex",
       allowedEngines: ["pdflatex", "xelatex", "lualatex"], extraArgs: [], allowProjectLatexmkrc: true,
       maxUploadBytes: 50 * 1024 * 1024, pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
-      historyMaxVersions: 200, historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024
-      , git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com",
+      historyMaxVersions: 200, historyMaxStorageBytes: 512 * 1024 * 1024, editHistoryMaxStorageBytes: 32 * 1024 * 1024,
+      maxProjectsPerUser: 1_000, maxSourceStorageBytesPerUser: 2 * 1024 * 1024 * 1024,
+      git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com",
       githubOAuth: {
         clientId: "oauth-test-client", clientSecret: "oauth-test-secret",
         redirectUri: "http://localhost:3001/auth/github/callback",
@@ -248,6 +253,120 @@ describe("texLite application", () => {
     expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: oauthUserCookie } })).statusCode).toBe(200);
   });
 
+  it("retires legacy email invitations when an account is accepted or removed", async () => {
+    const project = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Legacy invitation cleanup" }
+    });
+    const projectId = project.json().project.id as string;
+    const external = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie },
+      payload: { email: "legacy-invitee@example.test", permission: "read" }
+    });
+    expect(external.statusCode).toBe(201);
+    const externalInvitationId = external.json().invitation.id as string;
+
+    const created = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: "legacy-invitee", displayName: "Legacy Invitee", password: "legacy-invitee-password" }
+    });
+    const recipientId = created.json().user.id as string;
+    db.prepare("UPDATE users SET email = ? WHERE id = ?").run("legacy-invitee@example.test", recipientId);
+    // Emulate the two pending rows that an older deployment could retain:
+    // one email-only invitation and one newer account-bound invitation.
+    const boundInvitationId = randomUUID();
+    const adminId = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string }).id;
+    db.prepare(`INSERT INTO project_invitations
+      (id, project_id, recipient_user_id, email, permission, invited_by, status, created_at, responded_at)
+      VALUES (?, ?, ?, ?, 'edit', ?, 'pending', ?, NULL)`)
+      .run(boundInvitationId, projectId, recipientId, "legacy-invitee@example.test", adminId, new Date().toISOString());
+
+    const normalized = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/invitations`, headers: { cookie },
+      payload: { email: "legacy-invitee@example.test", permission: "edit" }
+    });
+    expect(normalized.statusCode).toBe(201);
+    expect(normalized.json().invitation.id).toBe(boundInvitationId);
+    expect(db.prepare("SELECT status FROM project_invitations WHERE id = ?").get(externalInvitationId))
+      .toEqual({ status: "revoked" });
+
+    const login = await app.inject({
+      method: "POST", url: "/api/auth/login", payload: { username: "legacy-invitee", password: "legacy-invitee-password" }
+    });
+    const recipientCookie = sessionCookie(login.headers);
+    expect((await app.inject({
+      method: "POST", url: `/api/invitations/${boundInvitationId}/accept`, headers: { cookie: recipientCookie }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "DELETE", url: `/api/projects/${projectId}/members/${recipientId}`, headers: { cookie }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST", url: `/api/invitations/${externalInvitationId}/accept`, headers: { cookie: recipientCookie }
+    })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie: recipientCookie } })).statusCode).toBe(404);
+  });
+
+  it("enforces per-account project-count and source-storage quotas", async () => {
+    const originalProjectLimit = config.maxProjectsPerUser;
+    const originalStorageLimit = config.maxSourceStorageBytesPerUser;
+    try {
+      config.maxProjectsPerUser = 1;
+      config.maxSourceStorageBytesPerUser = 2 * 1024 * 1024 * 1024;
+      const countUser = await app.inject({
+        method: "POST", url: "/api/admin/users", headers: { cookie },
+        payload: { username: "quota-count-user", displayName: "Quota Count User", password: "quota-count-password", canCreateProjects: true }
+      });
+      const countCookie = sessionCookie((await app.inject({
+        method: "POST", url: "/api/auth/login", payload: { username: "quota-count-user", password: "quota-count-password" }
+      })).headers);
+      const first = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie: countCookie }, payload: { name: "Quota first" } });
+      expect(first.statusCode).toBe(201);
+      const second = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie: countCookie }, payload: { name: "Quota second" } });
+      expect(second.statusCode).toBe(403);
+      expect(second.json().code).toBe("PROJECT_QUOTA_EXCEEDED");
+      const duplicate = await app.inject({
+        method: "POST", url: `/api/projects/${first.json().project.id}/duplicate`, headers: { cookie: countCookie }, payload: {}
+      });
+      expect(duplicate.statusCode).toBe(403);
+      expect(duplicate.json().code).toBe("PROJECT_QUOTA_EXCEEDED");
+
+      config.maxProjectsPerUser = 20;
+      const storageUser = await app.inject({
+        method: "POST", url: "/api/admin/users", headers: { cookie },
+        payload: { username: "quota-storage-user", displayName: "Quota Storage User", password: "quota-storage-password", canCreateProjects: true }
+      });
+      expect(storageUser.statusCode).toBe(201);
+      const storageCookie = sessionCookie((await app.inject({
+        method: "POST", url: "/api/auth/login", payload: { username: "quota-storage-user", password: "quota-storage-password" }
+      })).headers);
+      const storageProject = await app.inject({
+        method: "POST", url: "/api/projects", headers: { cookie: storageCookie }, payload: { name: "Quota storage" }
+      });
+      expect(storageProject.statusCode).toBe(201);
+      const storageProjectId = storageProject.json().project.id as string;
+      const initialBytes = fs.statSync(path.join(sourceRoot(config, storageProjectId), "main.tex")).size;
+      config.maxSourceStorageBytesPerUser = initialBytes + 8;
+      const oversizedWrite = await app.inject({
+        method: "POST", url: `/api/projects/${storageProjectId}/file`, headers: { cookie: storageCookie },
+        payload: { path: "attachment.txt", content: "this does not fit" }
+      });
+      expect(oversizedWrite.statusCode).toBe(413);
+      expect(oversizedWrite.json().code).toBe("PROJECT_STORAGE_QUOTA_EXCEEDED");
+
+      // A deployment can enable a lower quota after users already have data.
+      // Such an account must be able to reduce its footprint rather than
+      // becoming unable to edit anything until an administrator intervenes.
+      config.maxSourceStorageBytesPerUser = initialBytes - 1;
+      const reduction = await app.inject({
+        method: "PUT", url: `/api/projects/${storageProjectId}/file`, headers: { cookie: storageCookie },
+        payload: { path: "main.tex", content: "x" }
+      });
+      expect(reduction.statusCode).toBe(200);
+    } finally {
+      config.maxProjectsPerUser = originalProjectLimit;
+      config.maxSourceStorageBytesPerUser = originalStorageLimit;
+    }
+  });
+
   it("links a verified GitHub email to an existing account and allows email-less OAuth accounts", async () => {
     const local = await app.inject({
       method: "POST", url: "/api/admin/users", headers: { cookie },
@@ -385,6 +504,37 @@ describe("texLite application", () => {
     });
     expect(response.statusCode).toBe(413);
     expect(response.json()).toMatchObject({ code: "FILE_TOO_LARGE" });
+  });
+
+  it("sandboxes inline SVG source and bounds non-editor text previews", async () => {
+    const created = await app.inject({ method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Safe source preview" } });
+    const projectId = created.json().project.id as string;
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>window.pwned = true</script></svg>';
+    expect((await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/file`, headers: { cookie },
+      payload: { path: "unsafe.svg", content: svg }
+    })).statusCode).toBe(200);
+
+    const raw = await app.inject({
+      method: "GET", url: `/api/projects/${projectId}/file/raw?path=unsafe.svg`, headers: { cookie }
+    });
+    expect(raw.statusCode).toBe(200);
+    expect(raw.headers["content-type"]).toContain("image/svg+xml");
+    expect(raw.headers["x-content-type-options"]).toBe("nosniff");
+    expect(raw.headers["content-security-policy"]).toContain("sandbox");
+    expect(raw.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(raw.rawPayload.toString()).toBe(svg);
+
+    const largeCsv = "x".repeat(2 * 1024 * 1024 + 1);
+    expect((await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/file`, headers: { cookie },
+      payload: { path: "large.csv", content: largeCsv }
+    })).statusCode).toBe(200);
+    const preview = await app.inject({
+      method: "GET", url: `/api/projects/${projectId}/file?path=large.csv`, headers: { cookie }
+    });
+    expect(preview.statusCode).toBe(413);
+    expect(preview.json()).toMatchObject({ code: "FILE_TOO_LARGE" });
   });
 
   it("creates, edits, compiles and comments on a project", async () => {
@@ -1929,6 +2079,117 @@ Second version.
     expect((db.prepare("SELECT COUNT(*) AS count FROM project_history_state WHERE project_id = ?").get(projectId) as { count: number }).count).toBe(0);
   });
 
+  it("keeps the user and projects intact when staging an account deletion fails", async () => {
+    const suffix = randomUUID().slice(0, 8);
+    const username = `failed-account-delete-${suffix}`;
+    const createdUser = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username, displayName: "Failed Account Delete", password: "owner-password", canCreateProjects: true }
+    });
+    const ownerId = createdUser.json().user.id as string;
+    const login = await app.inject({
+      method: "POST", url: "/api/auth/login", payload: { username, password: "owner-password" }
+    });
+    const ownerCookie = sessionCookie(login.headers);
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: ownerCookie }, payload: { name: "Staged account deletion" }
+    });
+    const projectId = created.json().project.id as string;
+    const secondCreated = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: ownerCookie }, payload: { name: "Second staged account deletion" }
+    });
+    const secondProjectId = secondCreated.json().project.id as string;
+    // The deletion route locks in ID order. Fail the second stage so the first
+    // project has already moved to trash and must be restored under its lock.
+    const failingProjectId = [projectId, secondProjectId].sort()[1];
+    const restoredProjectId = projectId === failingProjectId ? secondProjectId : projectId;
+    const flushedDraft = "\\documentclass{article}\\n\\begin{document}Draft preserved after failed deletion\\end{document}\\n";
+
+    const originalRename = fs.renameSync.bind(fs);
+    const originalFlushProject = CollaborationService.prototype.flushProject;
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((oldPath, newPath) => {
+      if (String(oldPath).includes(failingProjectId)) throw Object.assign(new Error("simulated EBUSY"), { code: "EBUSY" });
+      return originalRename(oldPath, newPath);
+    });
+    const flushSpy = vi.spyOn(CollaborationService.prototype, "flushProject").mockImplementation(function(this: CollaborationService, flushedProjectId: string) {
+      const receipt = originalFlushProject.call(this, flushedProjectId);
+      if (flushedProjectId === restoredProjectId) {
+        fs.writeFileSync(path.join(config.projectsDir, restoredProjectId, "source", "main.tex"), flushedDraft);
+      }
+      return receipt;
+    });
+    try {
+      const failed = await app.inject({
+        method: "DELETE", url: `/api/admin/users/${ownerId}`, headers: { cookie }, payload: { deleteProjects: true }
+      });
+      expect(failed.statusCode).toBe(500);
+      expect(db.prepare("SELECT disabled FROM users WHERE id = ?").get(ownerId)).toMatchObject({ disabled: 0 });
+      expect(db.prepare("SELECT id FROM projects WHERE id = ?").get(projectId)).toMatchObject({ id: projectId });
+      expect(db.prepare("SELECT id FROM projects WHERE id = ?").get(secondProjectId)).toMatchObject({ id: secondProjectId });
+      expect(fs.existsSync(path.join(config.projectsDir, projectId, "source", "main.tex"))).toBe(true);
+      expect(fs.existsSync(path.join(config.projectsDir, secondProjectId, "source", "main.tex"))).toBe(true);
+      expect(fs.readFileSync(path.join(config.projectsDir, restoredProjectId, "source", "main.tex"), "utf8")).toBe(flushedDraft);
+      expect(flushSpy).toHaveBeenCalledWith(projectId);
+      expect(flushSpy).toHaveBeenCalledWith(secondProjectId);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM project_directory_staging").get()).toEqual({ count: 0 });
+      expect((await app.inject({ method: "GET", url: "/api/me", headers: { cookie: ownerCookie } })).statusCode).toBe(200);
+    } finally {
+      renameSpy.mockRestore();
+      flushSpy.mockRestore();
+    }
+
+    const deleted = await app.inject({
+      method: "DELETE", url: `/api/admin/users/${ownerId}`, headers: { cookie }, payload: { deleteProjects: true }
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(db.prepare("SELECT id FROM users WHERE id = ?").get(ownerId)).toBeUndefined();
+    expect(fs.existsSync(path.join(config.projectsDir, projectId))).toBe(false);
+    expect(fs.existsSync(path.join(config.projectsDir, secondProjectId))).toBe(false);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM project_directory_staging").get()).toEqual({ count: 0 });
+  });
+
+  it("recovers or purges journaled project directories after an interrupted deletion", async () => {
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie }, payload: { name: "Recover staged directory" }
+    });
+    const projectId = created.json().project.id as string;
+    const stagedForRestore = stagePersistedProjectDirectoryRemoval(config, db, projectId);
+    if (!stagedForRestore) throw new Error("Expected project directory to be staged");
+    expect(fs.existsSync(path.join(config.projectsDir, projectId))).toBe(false);
+    expect(db.prepare("SELECT project_id, trash_name FROM project_directory_staging WHERE project_id = ?").get(projectId))
+      .toMatchObject({ project_id: projectId, trash_name: stagedForRestore.trashName });
+
+    await recoverProjectDirectoryStaging(config, db);
+    expect(fs.existsSync(path.join(config.projectsDir, projectId, "source", "main.tex"))).toBe(true);
+    expect(fs.existsSync(stagedForRestore.trash)).toBe(false);
+    expect(db.prepare("SELECT project_id FROM project_directory_staging WHERE project_id = ?").get(projectId)).toBeUndefined();
+
+    const stagedForPurge = stagePersistedProjectDirectoryRemoval(config, db, projectId);
+    if (!stagedForPurge) throw new Error("Expected project directory to be staged");
+    db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+    await recoverProjectDirectoryStaging(config, db);
+    expect(fs.existsSync(stagedForPurge.trash)).toBe(false);
+    expect(db.prepare("SELECT project_id FROM project_directory_staging WHERE project_id = ?").get(projectId)).toBeUndefined();
+  });
+
+  it("restores an account's prior state after an interrupted user deletion", async () => {
+    const username = `recover-user-delete-${randomUUID().slice(0, 8)}`;
+    const createdUser = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username, displayName: "Recover User Deletion", password: "user-password" }
+    });
+    const userId = createdUser.json().user.id as string;
+    db.transaction(() => {
+      db.prepare("INSERT INTO user_deletion_staging (user_id, original_disabled, created_at) VALUES (?, 0, ?)")
+        .run(userId, new Date().toISOString());
+      db.prepare("UPDATE users SET disabled = 1 WHERE id = ?").run(userId);
+    })();
+
+    recoverInterruptedUserDeletions(db);
+    expect(db.prepare("SELECT disabled FROM users WHERE id = ?").get(userId)).toEqual({ disabled: 0 });
+    expect(db.prepare("SELECT user_id FROM user_deletion_staging WHERE user_id = ?").get(userId)).toBeUndefined();
+  });
+
   it("records the shared user who last changed project source", async () => {
     const createdUser = await app.inject({
       method: "POST", url: "/api/admin/users", headers: { cookie },
@@ -1953,6 +2214,67 @@ Second version.
     expect(details.json().project).toMatchObject({
       ownerUsername: "admin", lastModifiedUsername: "last-editor", lastModifiedDisplayName: "Last Editor"
     });
+  });
+
+  it("does not overwrite the last editor when an administrator removes a project owner", async () => {
+    const suffix = randomUUID().slice(0, 8);
+    const ownerName = `transferred-owner-${suffix}`;
+    const editorName = `transferred-editor-${suffix}`;
+    const owner = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: ownerName, displayName: "Transferred Owner", password: "owner-password", canCreateProjects: true }
+    });
+    const editor = await app.inject({
+      method: "POST", url: "/api/admin/users", headers: { cookie },
+      payload: { username: editorName, displayName: "Transferred Editor", password: "editor-password" }
+    });
+    const ownerId = owner.json().user.id as string;
+    const editorId = editor.json().user.id as string;
+    const ownerLogin = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: ownerName, password: "owner-password" } });
+    const editorLogin = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: editorName, password: "editor-password" } });
+    const ownerCookie = sessionCookie(ownerLogin.headers);
+    const editorCookie = sessionCookie(editorLogin.headers);
+    const created = await app.inject({
+      method: "POST", url: "/api/projects", headers: { cookie: ownerCookie }, payload: { name: "Transferred project attribution" }
+    });
+    const projectId = created.json().project.id as string;
+    expect((await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/members/${editorId}`, headers: { cookie: ownerCookie }, payload: { permission: "edit" }
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "PUT", url: `/api/projects/${projectId}/file`, headers: { cookie: editorCookie },
+      payload: { path: "main.tex", content: "\\documentclass{article}\\n\\begin{document}Editor\\end{document}\\n" }
+    })).statusCode).toBe(200);
+
+    // A live collaboration room may contain a newer draft than the source
+    // tree. Transferring ownership must take the same exclusive, flushing
+    // lock as destructive account deletion before the old owner disappears.
+    const flushedDraft = "\\\\documentclass{article}\\\\n\\\\begin{document}Draft before ownership transfer\\\\end{document}\\\\n";
+    const originalFlushProject = CollaborationService.prototype.flushProject;
+    let flushedProject = false;
+    const flushSpy = vi.spyOn(CollaborationService.prototype, "flushProject").mockImplementation(function(this: CollaborationService, flushedProjectId: string) {
+      const receipt = originalFlushProject.call(this, flushedProjectId);
+      if (flushedProjectId === projectId) {
+        flushedProject = true;
+        fs.writeFileSync(path.join(config.projectsDir, projectId, "source", "main.tex"), flushedDraft);
+      }
+      return receipt;
+    });
+    try {
+      const deleted = await app.inject({
+        method: "DELETE", url: `/api/admin/users/${ownerId}`, headers: { cookie }, payload: { deleteProjects: false }
+      });
+      expect(deleted.statusCode).toBe(200);
+      expect(flushedProject).toBe(true);
+      expect(fs.readFileSync(path.join(config.projectsDir, projectId, "source", "main.tex"), "utf8")).toBe(flushedDraft);
+    } finally {
+      flushSpy.mockRestore();
+    }
+    const administratorId = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: string }).id;
+    expect(db.prepare("SELECT owner_id, last_modified_by FROM projects WHERE id = ?").get(projectId))
+      .toMatchObject({ owner_id: administratorId, last_modified_by: editorId });
+    const details = await app.inject({ method: "GET", url: `/api/projects/${projectId}`, headers: { cookie } });
+    expect(details.json().project).toMatchObject({ lastModifiedUsername: editorName, lastModifiedDisplayName: "Transferred Editor" });
   });
 
   it("preserves comments and replies with a deleted-user author marker", async () => {

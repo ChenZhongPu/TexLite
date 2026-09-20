@@ -20,6 +20,25 @@ export interface ExtractedProject {
   mainFile: string;
 }
 
+/**
+ * Validate an archive and estimate the bytes that would become project source
+ * files.  Callers use this before creating a destination directory so an
+ * account quota cannot be bypassed by a compressed ZIP import.
+ */
+export async function projectZipSourceBytes(buffer: Buffer, maxFileBytes: number): Promise<number> {
+  const maxTotalBytes = Math.max(MAX_TOTAL_BYTES, maxFileBytes);
+  const entries = await inspectZip(buffer, maxFileBytes, maxTotalBytes);
+  const prefix = commonRootPrefix(entries.filter((entry) => !entry.directory).map((entry) => entry.fileName));
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.directory) continue;
+    const stripped = prefix && entry.fileName.startsWith(prefix) ? entry.fileName.slice(prefix.length) : entry.fileName;
+    if (!stripped || stripped.startsWith("__MACOSX/") || stripped.endsWith("/.DS_Store") || stripped === ".DS_Store") continue;
+    total += entry.uncompressedSize;
+  }
+  return total;
+}
+
 /** A ZIP validation error whose stable code is safe to return from the API. */
 export class ZipValidationError extends Error {
   constructor(

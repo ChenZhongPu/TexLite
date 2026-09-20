@@ -8,12 +8,17 @@ import type { Config } from "../config.js";
 import type { DatabaseConnection, ProjectRow } from "../db.js";
 import {
   createProjectFiles,
+  defaultProjectSourceBytes,
   duplicateProjectFiles,
   outputRoot,
+  purgePersistedProjectDirectoryRemoval,
   removeProjectDirectory,
+  restorePersistedProjectDirectoryRemoval,
   resolveSourcePath,
   safeRelativePath,
-  sourceRoot
+  stagePersistedProjectDirectoryRemoval,
+  sourceRoot,
+  type StagedProjectDirectoryRemoval
 } from "../files.js";
 import type { HistoryReason } from "../history.js";
 import { apiError, contentDisposition, httpError } from "../http.js";
@@ -21,10 +26,11 @@ import { isMainDocumentCandidate } from "../latexRoot.js";
 import { lucideIconSvg, resolveLucideIconName } from "../lucideIcons.js";
 import type { LatexCompletionService } from "../latexCompletion.js";
 import type { ProjectMutationCoordinator } from "../projectMutations.js";
+import type { ProjectQuotaService } from "../projectQuota.js";
 import type { ProjectOutlineService } from "../projectOutline.js";
 import { accessibleProject, canEdit } from "../projects.js";
 import { writeProjectArchive } from "../archive.js";
-import { extractProjectZip, ZipValidationError } from "../zip.js";
+import { extractProjectZip, projectZipSourceBytes, ZipValidationError } from "../zip.js";
 import { HarperLintSupersededError, HarperUnavailableError, type HarperService } from "../harper.js";
 import { digestToken } from "../security.js";
 import { supportsWritingChecks } from "../../shared/writingChecks.js";
@@ -37,6 +43,7 @@ import {
   now,
   ProjectTag,
   projectJson,
+  requireActiveUser,
   requireProjectOwnerPermission,
   tagColors,
   tagsForProject,
@@ -52,6 +59,7 @@ interface ProjectCatalogRouteContext {
   latexCompletions: LatexCompletionService;
   projectOutlines: ProjectOutlineService;
   harper: HarperService;
+  projectQuota: ProjectQuotaService;
   recordHistory: (projectId: string, userId: string | null, reason: HistoryReason, paths?: readonly string[]) => unknown;
 }
 
@@ -59,7 +67,7 @@ const clientIdPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 /** Register project catalog, metadata, archive, dictionary, tag, export, and deletion routes. */
 export function registerProjectCatalogRoutes(app: FastifyInstance, context: ProjectCatalogRouteContext): void {
-  const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines, harper, recordHistory } = context;
+  const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines, harper, projectQuota, recordHistory } = context;
 
   // Advanced project icons are served as cacheable SVG masks. The browser
   // therefore does not have to bundle Lucide's entire icon catalogue merely
@@ -236,24 +244,34 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     if (user.role !== "admin" && !user.can_create_projects) {
       return apiError(reply, 403, "PROJECT_CREATE_FORBIDDEN");
     }
-    const body = request.body as Record<string, unknown>;
-    const project: ProjectRow = {
-      id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(body?.name, 120),
-      main_file: "main.tex", latexmkrc: null, engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
-    };
-    createProjectFiles(config, project.id);
-    try {
-      db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.latexmkrc, project.engine, project.created_at, project.updated_at);
-    } catch (error) {
-      removeProjectDirectory(config, project.id);
-      throw error;
-    }
-    recordHistory(project.id, user.id, "initial");
-    return reply.code(201).send({ project: projectJson({
-      ...project, permission: "owner", owner_username: user.username, owner_display_name: user.display_name,
-      last_modified_username: user.username, last_modified_display_name: user.display_name
-    }) });
+    return await projectQuota.runForOwner(user.id, async () => {
+      // A catalog operation may have waited behind an import, duplication, or
+      // administrative deletion. Re-check the durable account status after
+      // acquiring that owner queue so a newly disabled account cannot create a
+      // project from an already-authenticated request.
+      requireActiveUser(db, user);
+      const initialSourceBytes = defaultProjectSourceBytes();
+      projectQuota.assertCanCreate(user.id, initialSourceBytes);
+      const body = request.body as Record<string, unknown>;
+      const project: ProjectRow = {
+        id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(body?.name, 120),
+        main_file: "main.tex", latexmkrc: null, engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
+      };
+      createProjectFiles(config, project.id);
+      try {
+        db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.latexmkrc, project.engine, project.created_at, project.updated_at);
+        projectQuota.setSourceBytes(user.id, project.id, initialSourceBytes);
+      } catch (error) {
+        await removeProjectDirectory(config, project.id);
+        throw error;
+      }
+      recordHistory(project.id, user.id, "initial");
+      return reply.code(201).send({ project: projectJson({
+        ...project, permission: "owner", owner_username: user.username, owner_display_name: user.display_name,
+        last_modified_username: user.username, last_modified_display_name: user.display_name
+      }) });
+    });
   });
 
   app.post("/api/projects/import", async (request, reply) => {
@@ -266,30 +284,50 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     if (!part || !part.filename.toLowerCase().endsWith(".zip")) {
       return apiError(reply, 400, "ZIP_ONLY");
     }
-    const query = request.query as { name?: string };
-    const fallbackName = path.basename(part.filename, path.extname(part.filename));
-    const project: ProjectRow = {
-      id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(query.name || fallbackName, 120),
-      main_file: "", latexmkrc: null, engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
-    };
-    fs.mkdirSync(sourceRoot(config, project.id), { recursive: true, mode: 0o700 });
-    fs.mkdirSync(outputRoot(config, project.id), { recursive: true, mode: 0o700 });
+    const archive = await part.toBuffer();
+    let importedSourceBytes: number;
     try {
-      const extracted = await extractProjectZip(await part.toBuffer(), sourceRoot(config, project.id), config.maxUploadBytes);
-      project.main_file = extracted.mainFile;
-      db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
-        .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.engine, project.created_at, project.updated_at);
+      importedSourceBytes = await projectZipSourceBytes(archive, config.maxUploadBytes);
     } catch (error) {
-      removeProjectDirectory(config, project.id);
       if (error instanceof ZipValidationError) return apiError(reply, 400, error.code, error.details);
       return apiError(reply, 400, "ZIP_INVALID");
     }
-    recordHistory(project.id, user.id, "initial");
-    return reply.code(201).send({ project: projectJson({
-      ...project, permission: "owner", owner_username: user.username, owner_display_name: user.display_name,
-      last_modified_username: user.username, last_modified_display_name: user.display_name
-    }) });
+    return await projectQuota.runForOwner(user.id, async () => {
+      requireActiveUser(db, user);
+      projectQuota.assertCanCreate(user.id, importedSourceBytes);
+      const query = request.query as { name?: string };
+      const fallbackName = path.basename(part.filename, path.extname(part.filename));
+      const project: ProjectRow = {
+        id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(query.name || fallbackName, 120),
+        main_file: "", latexmkrc: null, engine: config.defaultEngine, icon: null, created_at: now(), updated_at: now()
+      };
+      fs.mkdirSync(sourceRoot(config, project.id), { recursive: true, mode: 0o700 });
+      fs.mkdirSync(outputRoot(config, project.id), { recursive: true, mode: 0o700 });
+      try {
+        const extracted = await extractProjectZip(archive, sourceRoot(config, project.id), config.maxUploadBytes);
+        project.main_file = extracted.mainFile;
+        // Extraction is asynchronous. Re-check immediately before the durable
+        // insert so concurrent writes to this account cannot race the initial
+        // preflight and exceed either aggregate quota.
+        projectQuota.assertCanCreate(user.id, importedSourceBytes);
+        db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
+          .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.engine, project.created_at, project.updated_at);
+        // The archive was fully validated before the project row/directory was
+        // created. Retain that authoritative byte count here instead of doing a
+        // second filesystem walk that could throw after the database insert.
+        projectQuota.setSourceBytes(user.id, project.id, importedSourceBytes);
+      } catch (error) {
+        await removeProjectDirectory(config, project.id);
+        if (error instanceof ZipValidationError) return apiError(reply, 400, error.code, error.details);
+        throw error;
+      }
+      recordHistory(project.id, user.id, "initial");
+      return reply.code(201).send({ project: projectJson({
+        ...project, permission: "owner", owner_username: user.username, owner_display_name: user.display_name,
+        last_modified_username: user.username, last_modified_display_name: user.display_name
+      }) });
+    });
   });
 
   app.post("/api/projects/:id/duplicate", async (request, reply) => {
@@ -303,34 +341,49 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     if (!source) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     const body = request.body as { name?: unknown } | undefined;
     const requestedName = typeof body?.name === "string" && body.name.trim() ? body.name : `${source.name.slice(0, 115)} (1)`;
-    const project: ProjectRow = {
-      id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(requestedName, 120),
-      main_file: source.main_file, latexmkrc: null, engine: source.engine, icon: source.icon, created_at: now(), updated_at: now()
-    };
-    try {
-      // Duplicate the source tree only after flushing the live Yjs room and
-      // while a short source barrier prevents autosave from changing files
-      // between directory entries. The copy is asynchronous, so a large
-      // project does not block the Node.js event loop for its entire duration.
-      await projectMutations.runConsistentRead(source.id, () => duplicateProjectFiles(config, source.id, project.id), {
-        preflight: () => {
-          if (!accessibleProject(db, source.id, user)) {
-            throw httpError(404, "PROJECT_NOT_FOUND");
+    return await projectQuota.runForOwner(user.id, async () => {
+      requireActiveUser(db, user);
+      const project: ProjectRow = {
+        id: randomUUID(), owner_id: user.id, last_modified_by: user.id, name: text(requestedName, 120),
+        main_file: source.main_file, latexmkrc: null, engine: source.engine, icon: source.icon, created_at: now(), updated_at: now()
+      };
+      let duplicatedSourceBytes = 0;
+      try {
+        // Duplicate the source tree only after flushing the live Yjs room and
+        // while a short source barrier prevents autosave from changing files
+        // between directory entries. The copy is asynchronous, so a large
+        // project does not block the Node.js event loop for its entire duration.
+        await projectMutations.runConsistentRead(source.id, () => {
+          // The source tree is now durable and held behind the read barrier, so
+          // use its exact byte count instead of trusting a pre-flush cache.
+          duplicatedSourceBytes = projectQuota.refreshSourceBytes(source.owner_id, source.id);
+          projectQuota.assertCanCreate(user.id, duplicatedSourceBytes);
+          return duplicateProjectFiles(config, source.id, project.id);
+        }, {
+          preflight: () => {
+            requireActiveUser(db, user);
+            if (!accessibleProject(db, source.id, user)) {
+              throw httpError(404, "PROJECT_NOT_FOUND");
+            }
           }
-        }
-      });
-      db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, icon, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.latexmkrc, project.engine, project.icon, project.created_at, project.updated_at);
-    } catch (error) {
-      removeProjectDirectory(config, project.id);
-      throw error;
-    }
-    recordHistory(project.id, user.id, "initial");
-    return reply.code(201).send({ project: projectJson({
-      ...project, permission: "owner", owner_username: user.username, owner_display_name: user.display_name,
-      last_modified_username: user.username, last_modified_display_name: user.display_name
-    }) });
+        });
+        // Copying can yield to other source mutations. Re-check right before
+        // inserting the project row, when the database count is authoritative.
+        projectQuota.assertCanCreate(user.id, duplicatedSourceBytes);
+        db.prepare(`INSERT INTO projects (id, owner_id, last_modified_by, name, main_file, latexmkrc, engine, icon, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(project.id, project.owner_id, project.last_modified_by, project.name, project.main_file, project.latexmkrc, project.engine, project.icon, project.created_at, project.updated_at);
+        projectQuota.setSourceBytes(user.id, project.id, duplicatedSourceBytes);
+      } catch (error) {
+        await removeProjectDirectory(config, project.id);
+        throw error;
+      }
+      recordHistory(project.id, user.id, "initial");
+      return reply.code(201).send({ project: projectJson({
+        ...project, permission: "owner", owner_username: user.username, owner_display_name: user.display_name,
+        last_modified_username: user.username, last_modified_display_name: user.display_name
+      }) });
+    });
   });
 
   app.get("/api/projects/:id", async (request, reply) => {
@@ -626,13 +679,29 @@ export function registerProjectCatalogRoutes(app: FastifyInstance, context: Proj
     const project = accessibleProject(db, id, user);
     if (!project) return apiError(reply, 404, "PROJECT_NOT_FOUND");
     if (project.permission !== "owner") return apiError(reply, 403, "PROJECT_DELETE_FORBIDDEN");
-    return await projectMutations.runExclusive(id, "project deletion", () => {
-      collaboration.resetProject(id);
-      removeProjectDirectory(config, id);
-      db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+    return await projectQuota.runForOwner(user.id, () => projectMutations.runExclusive(id, "project deletion", async () => {
+      // Keep the last scanned byte count until the database row is gone. The
+      // durable staging record then lets startup either restore or purge the
+      // moved tree if this process exits between the filesystem and DB steps.
+      projectQuota.refreshSourceBytes(user.id, id);
+      let staged: StagedProjectDirectoryRemoval | null = null;
+      try {
+        staged = stagePersistedProjectDirectoryRemoval(config, db, id);
+        db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+      } catch (error) {
+        if (staged) {
+          try { restorePersistedProjectDirectoryRemoval(db, staged); }
+          catch (restoreError) { throw new AggregateError([error, restoreError], `Unable to restore project directory: ${id}`); }
+        }
+        throw error;
+      }
+      if (staged) {
+        try { await purgePersistedProjectDirectoryRemoval(db, staged); }
+        catch (error) { request.log.error({ err: error, projectId: id }, "Failed to purge deleted project trash"); }
+      }
       latexCompletions.invalidate(id);
       projectOutlines.invalidate(id);
       return { ok: true };
-    }, { preflight: () => { requireProjectOwnerPermission(db, id, user); } });
+    }, { preflight: () => { requireProjectOwnerPermission(db, id, user); } }));
   });
 }

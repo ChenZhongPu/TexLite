@@ -11,6 +11,7 @@ import { resolveSourcePath, safeRelativePath } from "../files.js";
 import { apiError, httpError } from "../http.js";
 import { MAX_TEXT_PREVIEW_BYTES } from "../limits.js";
 import type { ProjectMutationCoordinator } from "../projectMutations.js";
+import type { ProjectQuotaService } from "../projectQuota.js";
 import { accessibleProject, canEdit } from "../projects.js";
 import {
   commentsSummaryForProject,
@@ -32,12 +33,13 @@ interface ProjectHistoryRouteContext {
   clearPendingEdits: (id: string) => void;
   scheduleHistoryRetention: (id: string) => void;
   projectMutations: ProjectMutationCoordinator;
+  projectQuota: ProjectQuotaService;
   recordHistory: (projectId: string, userId: string | null, reason: HistoryReason, paths?: readonly string[]) => unknown;
 }
 
 /** Register retained project version listing, inspection, restoration, and cleanup routes. */
 export function registerProjectHistoryRoutes(app: FastifyInstance, context: ProjectHistoryRouteContext): void {
-  const { config, db, history, editHistory, projectMutations, recordHistory } = context;
+  const { config, db, history, editHistory, projectMutations, projectQuota, recordHistory } = context;
 
   app.get("/api/projects/:id/edit-history/stats", async (request, reply) => {
     const user = requireUser(request, reply, db);
@@ -217,9 +219,21 @@ export function registerProjectHistoryRoutes(app: FastifyInstance, context: Proj
     return await projectMutations.runExclusive(id, "history restore", () => {
       const currentProject = requireEditableProject(db, id, user);
       history.assertSnapshotHash(id, versionId, snapshotHash);
+      const manifest = history.manifest(id, versionId);
+      if (!manifest) throw httpError(404, "HISTORY_VERSION_NOT_FOUND");
+      const restoredFile = filePath ? manifest.files[filePath] : null;
+      if (filePath && !restoredFile) throw httpError(404, "HISTORY_FILE_NOT_FOUND");
+      const sourceBytesBefore = projectQuota.sourceBytes(currentProject.owner_id, id);
+      const restoredSourceBytes = filePath
+        ? sourceBytesBefore
+          - (fs.existsSync(resolveSourcePath(config, id, filePath)) ? fs.statSync(resolveSourcePath(config, id, filePath)).size : 0)
+          + restoredFile!.size
+        : Object.values(manifest.files).reduce((total, file) => total + file.size, 0);
+      projectQuota.assertCanStoreSource(currentProject.owner_id, id, restoredSourceBytes);
       recordHistory(id, user.id, "checkpoint");
       const before = projectTextSnapshot(config, id);
       const restored = history.restore(id, versionId, filePath);
+      projectQuota.setSourceBytes(currentProject.owner_id, id, restoredSourceBytes);
       reanchorProjectSnapshot(db, id, before, projectTextSnapshot(config, id));
       touchProject(db, id, user.id);
       recordHistory(id, user.id, "restore", filePath ? [filePath] : undefined);

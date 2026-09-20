@@ -58,7 +58,7 @@ export function currentUser(request: FastifyRequest, db: DatabaseConnection): Us
     return null;
   }
   const row = db.prepare(`
-    SELECT u.* FROM sessions s
+    SELECT u.*, s.id AS session_id, s.expires_at AS session_expires_at FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0
   `).get(digestToken(token), new Date().toISOString()) as UserRow | undefined;

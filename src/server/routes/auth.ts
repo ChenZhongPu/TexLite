@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { Config, GithubOAuthConfig } from "../config.js";
 import type { DatabaseConnection, UserRow } from "../db.js";
+import type { CollaborationService } from "../collaboration.js";
 import { normalizeEmail, publicUser, requireUser } from "../auth.js";
 import {
   createSessionToken,
@@ -16,6 +17,7 @@ import { basePathHref, withBasePath, withoutBasePath } from "../../shared/basePa
 interface AuthRouteContext {
   config: Config;
   db: DatabaseConnection;
+  collaboration: CollaborationService;
   loginLimiter: LoginRateLimiter;
   githubFetch?: typeof fetch;
 }
@@ -33,7 +35,7 @@ function text(value: unknown, max = 200): string {
 
 /** Register local compatibility login, GitHub OAuth, logout, and password routes. */
 export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteContext): void {
-  const { config, db, loginLimiter, githubFetch = fetch } = context;
+  const { config, db, collaboration, loginLimiter, githubFetch = fetch } = context;
 
   app.post("/api/auth/login", async (request, reply) => {
     const body = request.body as { username?: unknown; password?: unknown };
@@ -110,7 +112,11 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
 
   app.post("/api/auth/logout", async (request, reply) => {
     const token = request.cookies.texlite_session;
-    if (token) db.prepare("DELETE FROM sessions WHERE id = ?").run(digestToken(token));
+    if (token) {
+      const sessionId = digestToken(token);
+      db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      collaboration.disconnectSession(sessionId, "Signed out");
+    }
     reply.clearCookie("texlite_session", { path: basePathHref(config.basePath) });
     reply.clearCookie("texlite_share_token", { path: basePathHref(config.basePath) });
     return { ok: true };
@@ -148,8 +154,10 @@ export function registerAuthRoutes(app: FastifyInstance, context: AuthRouteConte
     const passwordHash = await hashPassword(newPassword);
     db.prepare("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?")
       .run(passwordHash, user.id);
+    const retainedSessionId = user.session_id ?? digestToken(request.cookies.texlite_session ?? "");
     db.prepare("DELETE FROM sessions WHERE user_id = ? AND id != ?")
-      .run(user.id, digestToken(request.cookies.texlite_session ?? ""));
+      .run(user.id, retainedSessionId);
+    collaboration.disconnectUserSessionsExcept(user.id, retainedSessionId, "Password changed");
     const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id) as UserRow;
     return { user: publicUser(updated) };
   });

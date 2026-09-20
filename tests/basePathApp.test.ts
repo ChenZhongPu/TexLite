@@ -27,6 +27,7 @@ describe("application mounted below the origin root", () => {
       pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
       historyMaxVersions: 10, historyMaxStorageBytes: 16 * 1024 * 1024,
       editHistoryMaxStorageBytes: 4 * 1024 * 1024,
+      maxProjectsPerUser: 1_000, maxSourceStorageBytesPerUser: 2 * 1024 * 1024 * 1024,
       git: "git", gitOperationTimeoutMs: 30_000, githubApiBaseUrl: "https://api.github.com"
     };
     fs.mkdirSync(path.join(config.clientDir, "assets"), { recursive: true });

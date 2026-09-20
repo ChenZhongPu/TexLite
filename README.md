@@ -22,6 +22,16 @@ fork 仓库地址为 [ChenZhongPu/TexLite](https://github.com/ChenZhongPu/TexLit
 安装、部署和开发配置不在本 README 中重复说明，基础内容请参考
 [上游项目](https://github.com/SWUFE-DB-Group/TexLite)。
 
+## 公网部署配额
+
+默认配置会限制每个账户最多拥有 100 个项目，且所有项目的源码、上传附件总量最多为
+2048 MB（2 GB）。限制会在新建、导入、复制、上传、编辑、批量替换、历史恢复和协作自动保存时
+执行；可在 `projects.maxProjectsPerUser` 和 `projects.maxSourceStorageMBPerUser` 调整。
+也可分别通过 `TEXLITE_MAX_PROJECTS_PER_USER` 和
+`TEXLITE_MAX_PROJECT_SOURCE_STORAGE_MB` 环境变量覆盖。
+这两项限制的是用户可控制的项目源码。编译缓存、PDF 产物和编译进程资源仍应结合
+`history`、`editHistory` 配置及宿主机/容器资源限制单独管理。
+
 ## 反向代理与真实客户端 IP
 
 本地密码登录的限流会使用 `X-Forwarded-For` 中的客户端 IP，但仅当 TexLite 的

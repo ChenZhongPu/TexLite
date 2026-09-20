@@ -148,6 +148,10 @@ function writeInitialConfig(configPath: string, siteName: string, adminEmail: st
     editHistory: {
       maxStorageMB: CONFIG_DEFAULTS.editHistoryMaxStorageMB
     },
+    projects: {
+      maxProjectsPerUser: CONFIG_DEFAULTS.maxProjectsPerUser,
+      maxSourceStorageMBPerUser: CONFIG_DEFAULTS.maxSourceStorageMBPerUser
+    },
     githubOAuth: {
       clientId: process.env.TEXLITE_GITHUB_CLIENT_ID ?? "",
       clientSecret: process.env.TEXLITE_GITHUB_CLIENT_SECRET ?? "",

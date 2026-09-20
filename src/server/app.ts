@@ -7,10 +7,16 @@ import multipart from "@fastify/multipart";
 import staticPlugin from "@fastify/static";
 import websocket from "@fastify/websocket";
 import type { Config } from "./config.js";
-import { pruneExpiredOauthStates, pruneExpiredSessions, type DatabaseConnection } from "./db.js";
+import {
+  expiredSessionIds,
+  pruneExpiredOauthStates,
+  pruneExpiredSessions,
+  recoverInterruptedUserDeletions,
+  type DatabaseConnection
+} from "./db.js";
 import { digestToken, LoginRateLimiter } from "./security.js";
 import { currentUser } from "./auth.js";
-import { pruneTrashDirectory } from "./files.js";
+import { pruneTrashDirectory, recoverProjectDirectoryStaging } from "./files.js";
 import {
   CompileQueue,
   ProjectCompileCoordinator,
@@ -20,6 +26,7 @@ import {
 } from "./compiler.js";
 import { CollaborationService } from "./collaboration.js";
 import { ProjectMutationCoordinator } from "./projectMutations.js";
+import { ProjectQuotaService } from "./projectQuota.js";
 import { LatexCompletionService } from "./latexCompletion.js";
 import { ProjectHistoryService, type HistoryReason } from "./history.js";
 import { ProjectEditHistoryService } from "./editHistory.js";
@@ -82,6 +89,13 @@ export async function buildApp(
   db: DatabaseConnection,
   options: { logger?: boolean; githubFetch?: typeof fetch } = {}
 ): Promise<FastifyInstance> {
+  // The CLI holds the instance lock before it constructs the app. Resolve any
+  // interrupted filesystem/database deletion before another startup task can
+  // inspect a project directory or sweep trash.
+  await recoverProjectDirectoryStaging(config, db);
+  recoverInterruptedUserDeletions(db);
+  await pruneTrashDirectory(config);
+
   const trustedProxyIps = config.trustedProxyIps ?? [];
   const app = Fastify({
     logger: options.logger ?? true,
@@ -104,6 +118,7 @@ export async function buildApp(
   const projectOutlines = new ProjectOutlineService(config);
   const harper = new HarperService();
   const texcount = new TexcountService();
+  const projectQuota = new ProjectQuotaService(config, db);
   // Warm the bundled Harper.js WASM linter without delaying startup. If its
   // runtime cannot initialize, the browser spellchecker remains the fallback.
   void harper.preload().catch((error) => app.log.info({ err: error }, "Bundled Harper.js is unavailable"));
@@ -144,7 +159,7 @@ export async function buildApp(
     editRetry.save(projectId, edits);
     recordHistory(projectId, userId, "autosave", paths);
     metrics.record("collaboration.persist", durationMs + performance.now() - started);
-  });
+  }, projectQuota);
   const projectMutations = new ProjectMutationCoordinator(collaboration);
   const loginLimiter = new LoginRateLimiter();
   for (const row of db.prepare("SELECT id FROM projects").all() as Array<{ id: string }>) {
@@ -170,10 +185,6 @@ export async function buildApp(
       for (const run of completed) if (!keep.has(run.id)) remove.run(run.id);
     })();
   };
-  // No second TexLite instance can mutate the data directory while the
-  // instance lock is held. Finish cleanup before accepting requests so a
-  // freshly started server never races a stale trash/tmp removal.
-  await pruneTrashDirectory(config);
   for (const row of db.prepare("SELECT id FROM projects").all() as Array<{ id: string }>) {
     history.enforceRetention(row.id);
     editHistory.enforceRetention(row.id);
@@ -248,7 +259,9 @@ export async function buildApp(
         && requestPath !== "/api/config") {
         const token = request.cookies.texlite_session;
         if (token && !currentUser(request, db)) {
-          db.prepare("DELETE FROM sessions WHERE id = ?").run(digestToken(token));
+          const sessionId = digestToken(token);
+          db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+          collaboration.disconnectSession(sessionId, "Sign-in session expired");
         }
       }
     });
@@ -264,7 +277,7 @@ export async function buildApp(
       eventLoopDelay
     });
     registerCollaborationRoutes(routes, { db, collaboration, metrics });
-    registerAuthRoutes(routes, { config, db, loginLimiter, githubFetch: options.githubFetch });
+    registerAuthRoutes(routes, { config, db, collaboration, loginLimiter, githubFetch: options.githubFetch });
     registerCitationRoutes(routes, { db });
     registerUserManagementRoutes(routes, {
       config,
@@ -272,7 +285,8 @@ export async function buildApp(
       collaboration,
       projectMutations,
       latexCompletions,
-      projectOutlines
+      projectOutlines,
+      projectQuota
     });
     registerCommentRoutes(routes, { config, db, collaboration, projectMutations });
     registerProjectMemberRoutes(routes, { config, db, collaboration });
@@ -284,10 +298,11 @@ export async function buildApp(
       latexCompletions,
       projectOutlines,
       metrics,
+      projectQuota,
       recordHistory
     });
     registerProjectReferenceRoutes(routes, { config, db, projectMutations });
-    registerProjectHistoryRoutes(routes, { config, db, history, editHistory, projectMutations, recordHistory,
+    registerProjectHistoryRoutes(routes, { config, db, history, editHistory, projectMutations, projectQuota, recordHistory,
       clearPendingEdits: (id) => { editRetry.clear(id); failedEdits.delete(id); signalHistory(id); },
       scheduleHistoryRetention: (id) => historyRetention.schedule(id) });
     registerProjectCatalogRoutes(routes, {
@@ -298,6 +313,7 @@ export async function buildApp(
       latexCompletions,
       projectOutlines,
       harper,
+      projectQuota,
       recordHistory
     });
     registerWordCountRoutes(routes, { config, db, projectMutations, texcount });
@@ -339,8 +355,11 @@ export async function buildApp(
 
   const cleanupExpiredSessions = (): void => {
     try {
-      pruneExpiredSessions(db, now());
-      pruneExpiredOauthStates(db, now());
+      const asOf = now();
+      const expired = expiredSessionIds(db, asOf);
+      pruneExpiredSessions(db, asOf);
+      for (const sessionId of expired) collaboration.disconnectSession(sessionId, "Sign-in session expired");
+      pruneExpiredOauthStates(db, asOf);
       loginLimiter.prune();
     } catch (error) {
       app.log.error({ err: error }, "Failed to prune expired sessions");

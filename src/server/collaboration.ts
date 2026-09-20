@@ -24,6 +24,7 @@ import {
   type CollaborationProjectAccess
 } from "./projects.js";
 import { reanchorFileComments } from "./anchors.js";
+import { ProjectQuotaService } from "./projectQuota.js";
 import { hashText, type EditHistorySegmentInput, type EditHistorySpan, type EditHistoryStep } from "./editHistory.js";
 import {
   COLLABORATION_PROTOCOL_VERSION,
@@ -64,6 +65,7 @@ const META_ORIGIN = Symbol("meta");
 const SAVE_DELAY_MS = 750;
 const STATE_SAVE_DELAY_MS = 750;
 const ROOM_IDLE_MS = 30_000;
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
 const FORMAT_LEASE_TTL_MS = 45_000;
 const MAX_FORMAT_LEASE_WAITERS = MAX_PROJECT_SESSIONS * 2;
 // A normal typing burst produces a few small Yjs updates. Keep adjacent
@@ -87,6 +89,11 @@ const COLORS = [
 interface Connection {
   socket: WebSocket;
   user: UserRow;
+  /** Digest of the concrete browser session that opened this socket. */
+  sessionId: string | null;
+  /** Session deadline captured during the authenticated HTTP upgrade. */
+  sessionExpiresAt: string | null;
+  sessionExpiryTimer: NodeJS.Timeout | null;
   awarenessClientId: number | null;
   protocolVerified: boolean;
   protocolTimer: NodeJS.Timeout | null;
@@ -165,24 +172,43 @@ export class CollaborationService {
   private readonly historyWarnings = new Set<string>();
   private closed = false;
   private readonly userByIdStatement;
+  private readonly activeSessionStatement;
+  private readonly projectOwnerStatement;
   private readonly collaborationProjectAccessStatement;
+  private readonly projectQuota: ProjectQuotaService;
 
   constructor(
     private readonly config: Config,
     private readonly db: DatabaseConnection,
-    private readonly onPersist?: (event: CollaborationPersistEvent) => void
+    private readonly onPersist?: (event: CollaborationPersistEvent) => void,
+    projectQuota?: ProjectQuotaService
   ) {
     this.userByIdStatement = db.prepare<[string], UserRow>("SELECT * FROM users WHERE id = ?");
+    this.activeSessionStatement = db.prepare("SELECT 1 FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?");
+    this.projectOwnerStatement = db.prepare("SELECT owner_id FROM projects WHERE id = ?");
     this.collaborationProjectAccessStatement = prepareCollaborationProjectAccessStatement(db);
+    this.projectQuota = projectQuota ?? new ProjectQuotaService(config, db);
   }
 
   private lookupProjectAccess(projectId: string, user: UserRow): CollaborationProjectAccess | null {
     return collaborationProjectAccessFromStatement(this.collaborationProjectAccessStatement, projectId, user);
   }
 
+  private sessionIsActive(user: UserRow): boolean {
+    return !user.session_id || Boolean(this.activeSessionStatement.get(
+      user.session_id, user.id, new Date().toISOString()
+    ));
+  }
+
   async connect(socket: WebSocket, projectId: string, user: UserRow): Promise<void> {
     if (this.closed) {
       socket.close(1012, "Collaboration service is shutting down");
+      return;
+    }
+    // currentUser() had an active session during the HTTP upgrade, but the
+    // row may have been revoked while this asynchronous room load was queued.
+    if (!this.sessionIsActive(user)) {
+      socket.close(1008, "Sign-in session expired");
       return;
     }
     const project = this.lookupProjectAccess(projectId, user);
@@ -396,6 +422,30 @@ export class CollaborationService {
           connection.socket.close(1008, reason);
           this.disconnect(room, connection);
         }
+      }
+    }
+  }
+
+  /** Close every live WebSocket authenticated by one revoked session token. */
+  disconnectSession(sessionId: string, reason = "Sign-in session expired"): void {
+    for (const room of this.rooms.values()) {
+      for (const connection of [...room.connections]) {
+        if (connection.sessionId !== sessionId) continue;
+        sendPermissionRevoked(connection.socket, connection.user.id);
+        connection.socket.close(1008, reason);
+        this.disconnect(room, connection);
+      }
+    }
+  }
+
+  /** Close a user's older sessions while retaining one newly changed session. */
+  disconnectUserSessionsExcept(userId: string, retainedSessionId: string | null, reason = "Sign-in session revoked"): void {
+    for (const room of this.rooms.values()) {
+      for (const connection of [...room.connections]) {
+        if (connection.user.id !== userId || connection.sessionId === retainedSessionId) continue;
+        sendPermissionRevoked(connection.socket, connection.user.id);
+        connection.socket.close(1008, reason);
+        this.disconnect(room, connection);
       }
     }
   }
@@ -861,6 +911,7 @@ export class CollaborationService {
       }
     }, DISK_ORIGIN);
     const rejectedRecoveredPaths = this.rejectOversizedTexts(room);
+    const rejectedRecoveredOverQuotaPaths = this.rejectOverQuotaTexts(room);
     recoveredDirty = room.dirtyPaths.size > 0;
     room.meta.observe((_event, transaction) => {
       if (isConnectionOrigin(transaction.origin)) room.compileMetaValidationPending = true;
@@ -900,7 +951,7 @@ export class CollaborationService {
     try {
       // Persist a corrected state even when an oversized recovered document was
       // reverted to the source file and no source write remains dirty.
-      if (recoveredDirty || rejectedRecoveredPaths.length > 0) this.flushRoom(room);
+      if (recoveredDirty || rejectedRecoveredPaths.length > 0 || rejectedRecoveredOverQuotaPaths.length > 0) this.flushRoom(room);
       else if (recoveredMetadataChanged) this.scheduleStateSave(room);
     } catch (error) {
       this.disposeRoom(room);
@@ -915,6 +966,10 @@ export class CollaborationService {
 
   private attachConnection(room: Room, socket: WebSocket, user: UserRow): void {
     if (socket.readyState !== WebSocket.OPEN) return;
+    if (!this.sessionIsActive(user)) {
+      socket.close(1008, "Sign-in session expired");
+      return;
+    }
     if (!this.lookupProjectAccess(room.projectId, user)) {
       socket.close(1008, "Project access denied");
       return;
@@ -933,9 +988,13 @@ export class CollaborationService {
       room.cleanupTimer = null;
     }
     const connection: Connection = {
-      socket, user, awarenessClientId: null, protocolVerified: false, protocolTimer: null
+      socket, user, sessionId: user.session_id ?? null,
+      sessionExpiresAt: user.session_expires_at ?? null, sessionExpiryTimer: null,
+      awarenessClientId: null, protocolVerified: false, protocolTimer: null
     };
     room.connections.add(connection);
+    this.scheduleSessionExpiry(room, connection);
+    if (!room.connections.has(connection)) return;
     socket.binaryType = "arraybuffer";
     socket.on("message", (data) => {
       try {
@@ -950,6 +1009,32 @@ export class CollaborationService {
       if (!connection.protocolVerified) socket.close(4001, "Reload required");
     }, 10_000);
     send(socket, protocolMessage(room.epoch));
+  }
+
+  /** Disconnect promptly at session expiry instead of waiting for a packet. */
+  private scheduleSessionExpiry(room: Room, connection: Connection): void {
+    const sessionId = connection.sessionId;
+    const expiresAt = connection.sessionExpiresAt;
+    if (!sessionId || !expiresAt) return;
+    const expire = (): void => {
+      if (!room.connections.has(connection)) return;
+      const remaining = Date.parse(expiresAt) - Date.now();
+      if (Number.isFinite(remaining) && remaining > 0) {
+        const timer = setTimeout(expire, Math.min(remaining, MAX_TIMER_DELAY_MS));
+        timer.unref();
+        connection.sessionExpiryTimer = timer;
+        return;
+      }
+      this.disconnectSession(sessionId, "Sign-in session expired");
+    };
+    const remaining = Date.parse(expiresAt) - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      this.disconnectSession(sessionId, "Sign-in session expired");
+      return;
+    }
+    const timer = setTimeout(expire, Math.min(remaining, MAX_TIMER_DELAY_MS));
+    timer.unref();
+    connection.sessionExpiryTimer = timer;
   }
 
   private trackedText(room: Room, filePath: string): Y.Text {
@@ -1037,6 +1122,17 @@ export class CollaborationService {
   }
 
   private handleMessage(room: Room, connection: Connection, bytes: Uint8Array): void {
+    // Authentication is normally checked when the WebSocket upgrades, but a
+    // socket can outlive logout, password changes and natural expiry. Keep the
+    // concrete session row as the authority for every protocol message.
+    if (!this.sessionIsActive(connection.user)) {
+      if (connection.sessionId) this.disconnectSession(connection.sessionId, "Sign-in session expired");
+      else {
+        connection.socket.close(1008, "Sign-in session expired");
+        this.disconnect(room, connection);
+      }
+      return;
+    }
     const refreshedUser = this.userByIdStatement.get(connection.user.id);
     if (!refreshedUser || refreshedUser.disabled) {
       connection.socket.close(1008, "Project access revoked");
@@ -1047,9 +1143,15 @@ export class CollaborationService {
     // users table. Preserve it across the database refresh used to re-check
     // every message; otherwise the first protocol packet from a read-link
     // session is incorrectly treated as an unauthorised project access.
-    const refreshedAccessUser = connection.user.share_link_id
-      ? { ...refreshedUser, share_link_id: connection.user.share_link_id }
-      : refreshedUser;
+    const refreshedAccessUser: UserRow = {
+      ...refreshedUser,
+      // userByIdStatement intentionally reads only durable user fields. Keep
+      // the request-scoped session/link credentials on the live connection
+      // so every later packet still verifies the same browser session.
+      session_id: connection.sessionId,
+      session_expires_at: connection.sessionExpiresAt,
+      ...(connection.user.share_link_id ? { share_link_id: connection.user.share_link_id } : {})
+    };
     connection.user = refreshedAccessUser;
     const current = this.lookupProjectAccess(room.projectId, refreshedAccessUser);
     if (!current) {
@@ -1172,6 +1274,8 @@ export class CollaborationService {
     room.pendingFlushes = room.pendingFlushes.filter((pending) => pending.connection !== connection);
     if (connection.protocolTimer) clearTimeout(connection.protocolTimer);
     connection.protocolTimer = null;
+    if (connection.sessionExpiryTimer) clearTimeout(connection.sessionExpiryTimer);
+    connection.sessionExpiryTimer = null;
     if (connection.awarenessClientId !== null) {
       removeAwarenessStates(room.awareness, [connection.awarenessClientId], connection);
       room.awarenessOwners.delete(connection.awarenessClientId);
@@ -1439,6 +1543,7 @@ export class CollaborationService {
     if (room.stateSaveTimer) clearTimeout(room.stateSaveTimer);
     room.stateSaveTimer = null;
     this.rejectOversizedTexts(room);
+    this.rejectOverQuotaTexts(room);
     const target = collaborationStatePath(this.config, room.projectId);
     const temporary = `${target}.tmp`;
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -1456,10 +1561,14 @@ export class CollaborationService {
     const startedAt = performance.now();
     if (room.saveTimer) clearTimeout(room.saveTimer);
     room.saveTimer = null;
-    const rejectedDuringFlush = this.rejectOversizedTexts(room);
+    const rejectedDuringFlush = [
+      ...this.rejectOversizedTexts(room),
+      ...this.rejectOverQuotaTexts(room)
+    ];
     this.persistRoomState(room);
     let changed = false;
     const changedPaths: string[] = [];
+    let persistedSourceDelta = 0;
     const failedPaths: string[] = [...room.rejectedPaths];
     const finalizedPaths = new Set<string>(rejectedDuringFlush);
     const dirtyPaths = [...room.dirtyPaths];
@@ -1497,6 +1606,7 @@ export class CollaborationService {
         continue;
       }
       room.persistedContent.set(filePath, next);
+      persistedSourceDelta += Buffer.byteLength(next, "utf8") - Buffer.byteLength(previous, "utf8");
       room.dirtyPaths.delete(filePath);
       finalizedPaths.add(filePath);
       try { reanchorFileComments(this.db, room.projectId, filePath, previous, next); }
@@ -1514,6 +1624,10 @@ export class CollaborationService {
     if (changed && room.lastModifiedUserId) {
       this.db.prepare("UPDATE projects SET updated_at = ?, last_modified_by = ? WHERE id = ?")
         .run(new Date().toISOString(), room.lastModifiedUserId, room.projectId);
+    }
+    if (persistedSourceDelta !== 0) {
+      const owner = this.projectOwnerStatement.get(room.projectId) as { owner_id: string } | undefined;
+      if (owner) this.projectQuota.adjustSourceBytes(owner.owner_id, room.projectId, persistedSourceDelta);
     }
     if (changed) this.signalComments(room.projectId);
     if (changed && this.onPersist) {
@@ -1566,6 +1680,8 @@ export class CollaborationService {
     for (const connection of room.connections) {
       if (connection.protocolTimer) clearTimeout(connection.protocolTimer);
       connection.protocolTimer = null;
+      if (connection.sessionExpiryTimer) clearTimeout(connection.sessionExpiryTimer);
+      connection.sessionExpiryTimer = null;
     }
     room.connections.clear();
     for (const lease of room.formatLeases.values()) clearTimeout(lease.timer);
@@ -1594,6 +1710,41 @@ export class CollaborationService {
       rejected.push(filePath);
     }
     return rejected;
+  }
+
+  /**
+   * Revert a batch of live edits before it reaches disk when its resulting
+   * source tree would exceed the owning account's aggregate quota.  This is
+   * intentionally parallel to the per-file collaborative size guard: Yjs
+   * state must not keep an over-quota draft that would later be retried after
+   * an unrelated file operation.
+   */
+  private rejectOverQuotaTexts(room: Room): string[] {
+    const owner = this.projectOwnerStatement.get(room.projectId) as { owner_id: string } | undefined;
+    if (!owner) return [];
+    const changes: Array<{ filePath: string; text: Y.Text; previous: string; delta: number }> = [];
+    let delta = 0;
+    for (const filePath of room.dirtyPaths) {
+      if (!room.allowedPaths.has(filePath)) continue;
+      const text = this.trackedText(room, filePath);
+      const previous = room.persistedContent.get(filePath) ?? "";
+      const next = text.toString();
+      if (next === previous) continue;
+      const change = Buffer.byteLength(next, "utf8") - Buffer.byteLength(previous, "utf8");
+      changes.push({ filePath, text, previous, delta: change });
+      delta += change;
+    }
+    if (!changes.length || delta <= 0) return [];
+    const currentBytes = this.projectQuota.sourceBytes(owner.owner_id, room.projectId);
+    if (this.projectQuota.canStoreSource(owner.owner_id, room.projectId, currentBytes + delta)) return [];
+    room.doc.transact(() => {
+      for (const change of changes) replaceText(change.text, change.previous);
+    }, DISK_ORIGIN);
+    for (const change of changes) {
+      room.dirtyPaths.delete(change.filePath);
+      room.rejectedPaths.add(change.filePath);
+    }
+    return changes.map((change) => change.filePath);
   }
 
   private sendFlushReceipt(connection: Connection, requestId: string, receipt: CollaborationSaveReceipt): void {

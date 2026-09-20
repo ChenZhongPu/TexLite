@@ -44,6 +44,10 @@ export const CONFIG_DEFAULTS = {
   historyMaxVersions: 0,
   historyMaxStorageMB: 64,
   editHistoryMaxStorageMB: 32,
+  // Public deployments need a server-side ceiling in addition to per-upload
+  // limits. These apply to source files owned by one account.
+  maxProjectsPerUser: 100,
+  maxSourceStorageMBPerUser: 2_048,
   githubOAuth: null as GithubOAuthConfig | null,
   // Retained only so old Config fixtures and old config files can be read
   // during migration. Project-level rc files are no longer honored.
@@ -62,6 +66,8 @@ const CONFIG_LIMITS = {
   historyMaxVersions: [0, 50_000],
   historyMaxStorageMB: [16, 102_400],
   editHistoryMaxStorageMB: [4, 102_400],
+  maxProjectsPerUser: [1, 100_000],
+  maxSourceStorageMBPerUser: [16, 102_400],
   gitOperationTimeoutSeconds: [1, 3_600]
 } as const;
 
@@ -91,6 +97,10 @@ export interface Config {
   historyMaxVersions: number;
   historyMaxStorageBytes: number;
   editHistoryMaxStorageBytes: number;
+  /** Per-account project-count ceiling; populated by loadConfig(). */
+  maxProjectsPerUser?: number;
+  /** Per-account aggregate source-byte ceiling; populated by loadConfig(). */
+  maxSourceStorageBytesPerUser?: number;
   githubOAuth?: GithubOAuthConfig | null;
   /** @deprecated Kept for source compatibility; always ignored by compile paths. */
   allowProjectLatexmkrc?: boolean;
@@ -163,6 +173,16 @@ export function loadConfig(configPathOverride?: string): Config {
     "editHistory.maxStorageMB", process.env.TEXLITE_EDIT_HISTORY_MAX_STORAGE_MB,
     fileConfig.editHistory?.maxStorageMB, CONFIG_DEFAULTS.editHistoryMaxStorageMB, CONFIG_LIMITS.editHistoryMaxStorageMB
   );
+  const maxProjectsPerUser = integerSetting(
+    "projects.maxProjectsPerUser", process.env.TEXLITE_MAX_PROJECTS_PER_USER,
+    fileConfig.projects?.maxProjectsPerUser, CONFIG_DEFAULTS.maxProjectsPerUser, CONFIG_LIMITS.maxProjectsPerUser
+  );
+  const maxSourceStorageMBPerUser = integerSetting(
+    "projects.maxSourceStorageMBPerUser", process.env.TEXLITE_MAX_PROJECT_SOURCE_STORAGE_MB,
+    fileConfig.projects?.maxSourceStorageMBPerUser,
+    CONFIG_DEFAULTS.maxSourceStorageMBPerUser,
+    CONFIG_LIMITS.maxSourceStorageMBPerUser
+  );
   const gitOperationTimeoutSeconds = integerSetting(
     "git.operationTimeoutSeconds", process.env.TEXLITE_GIT_TIMEOUT,
     fileConfig.git?.operationTimeoutSeconds, CONFIG_DEFAULTS.gitOperationTimeoutSeconds, CONFIG_LIMITS.gitOperationTimeoutSeconds
@@ -196,6 +216,8 @@ export function loadConfig(configPathOverride?: string): Config {
     historyMaxVersions,
     historyMaxStorageBytes: historyMaxStorageMB * 1024 * 1024,
     editHistoryMaxStorageBytes: editHistoryMaxStorageMB * 1024 * 1024,
+    maxProjectsPerUser,
+    maxSourceStorageBytesPerUser: maxSourceStorageMBPerUser * 1024 * 1024,
     githubOAuth,
     // Explicitly disable this legacy setting. It remains in the materialized
     // shape only for callers compiled against the pre-public-deployment API.
@@ -263,6 +285,16 @@ export function validateConfig(config: Config): void {
   validateInteger("history.maxVersions", config.historyMaxVersions, CONFIG_LIMITS.historyMaxVersions);
   validateInteger("history.maxStorageMB", config.historyMaxStorageBytes / (1024 * 1024), CONFIG_LIMITS.historyMaxStorageMB);
   validateInteger("editHistory.maxStorageMB", config.editHistoryMaxStorageBytes / (1024 * 1024), CONFIG_LIMITS.editHistoryMaxStorageMB);
+  if (config.maxProjectsPerUser !== undefined) {
+    validateInteger("projects.maxProjectsPerUser", config.maxProjectsPerUser, CONFIG_LIMITS.maxProjectsPerUser);
+  }
+  if (config.maxSourceStorageBytesPerUser !== undefined) {
+    validateInteger(
+      "projects.maxSourceStorageMBPerUser",
+      config.maxSourceStorageBytesPerUser / (1024 * 1024),
+      CONFIG_LIMITS.maxSourceStorageMBPerUser
+    );
+  }
   // Legacy Git settings are validated only for old Config objects. They no
   // longer enable any application feature.
   validateUrl("git.githubApiBaseUrl", config.githubApiBaseUrl);
@@ -287,6 +319,7 @@ interface FileConfig {
   pdf?: { loadingStrategy?: string; rangeThresholdMB?: number };
   history?: { maxVersions?: number; maxStorageMB?: number };
   editHistory?: { maxStorageMB?: number };
+  projects?: { maxProjectsPerUser?: number; maxSourceStorageMBPerUser?: number };
   githubOAuth?: {
     clientId?: string;
     clientSecret?: string;
@@ -369,6 +402,9 @@ function validateFileConfig(config: FileConfig): void {
   optionalInteger(history?.maxStorageMB, "history.maxStorageMB", CONFIG_LIMITS.historyMaxStorageMB);
   const editHistory = optionalSection(config.editHistory, "editHistory");
   optionalInteger(editHistory?.maxStorageMB, "editHistory.maxStorageMB", CONFIG_LIMITS.editHistoryMaxStorageMB);
+  const projects = optionalSection(config.projects, "projects");
+  optionalInteger(projects?.maxProjectsPerUser, "projects.maxProjectsPerUser", CONFIG_LIMITS.maxProjectsPerUser);
+  optionalInteger(projects?.maxSourceStorageMBPerUser, "projects.maxSourceStorageMBPerUser", CONFIG_LIMITS.maxSourceStorageMBPerUser);
 
   const githubOAuth = optionalSection(config.githubOAuth, "githubOAuth");
   optionalString(githubOAuth?.clientId, "githubOAuth.clientId", { min: 0, max: 256 });

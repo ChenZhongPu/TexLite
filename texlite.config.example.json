@@ -22,6 +22,10 @@
   "editHistory": {
     "maxStorageMB": 32
   },
+  "projects": {
+    "maxProjectsPerUser": 100,
+    "maxSourceStorageMBPerUser": 2048
+  },
   "githubOAuth": {
     "clientId": "",
     "clientSecret": "",

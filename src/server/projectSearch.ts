@@ -9,6 +9,15 @@ export interface ProjectSearchOptions {
   caseSensitive: boolean;
   wholeWord: boolean;
   maxFileBytes?: number;
+  /** Runs after temporary replacements are staged, before any live file changes. */
+  beforeInstall?: (prepared: readonly ProjectReplacement[]) => void;
+}
+
+export interface ProjectReplacement {
+  path: string;
+  previous: string;
+  content: string;
+  count: number;
 }
 
 export interface ProjectSearchMatch {
@@ -68,7 +77,7 @@ export async function searchProject(config: Config, projectId: string, options: 
   return { matches, total, truncated: total > matches.length };
 }
 
-export async function replaceProject(config: Config, projectId: string, options: ProjectSearchOptions, replacement: string): Promise<Array<{ path: string; previous: string; content: string; count: number }>> {
+export async function replaceProject(config: Config, projectId: string, options: ProjectSearchOptions, replacement: string): Promise<ProjectReplacement[]> {
   const pattern = searchPattern(options);
   const staged: Array<{ path: string; absolute: string; temporary: string; previous: string; content: string; count: number }> = [];
   let indexedBytes = 0;
@@ -94,8 +103,12 @@ export async function replaceProject(config: Config, projectId: string, options:
   }
   const installed: typeof staged = [];
   try {
+    options.beforeInstall?.(staged.map(({ path: filePath, previous, content, count }) => ({ path: filePath, previous, content, count })));
     for (const entry of staged) {
-      await fs.promises.rename(entry.temporary, entry.absolute);
+      // The caller's quota preflight runs immediately above. Keep the live
+      // installation synchronous so another request cannot grow a different
+      // project between that aggregate check and these source replacements.
+      fs.renameSync(entry.temporary, entry.absolute);
       installed.push(entry);
     }
   } catch (error) {
@@ -103,10 +116,12 @@ export async function replaceProject(config: Config, projectId: string, options:
     // file already installed if a later rename fails, and remove unused stages.
     for (const entry of installed.reverse()) {
       const rollback = `${entry.absolute}.search-rollback-${process.pid}-${Date.now()}.tmp`;
-      await fs.promises.writeFile(rollback, entry.previous, { encoding: "utf8", mode: 0o600 });
-      await fs.promises.rename(rollback, entry.absolute);
+      fs.writeFileSync(rollback, entry.previous, { encoding: "utf8", mode: 0o600 });
+      fs.renameSync(rollback, entry.absolute);
     }
-    await Promise.allSettled(staged.map((entry) => fs.promises.rm(entry.temporary, { force: true })));
+    for (const entry of staged) {
+      try { fs.rmSync(entry.temporary, { force: true }); } catch { /* Best-effort temporary cleanup. */ }
+    }
     throw error;
   }
   return staged.map(({ path: filePath, previous, content, count }) => ({ path: filePath, previous, content, count }));

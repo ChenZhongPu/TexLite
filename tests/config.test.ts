@@ -12,6 +12,7 @@ describe("configuration", () => {
     "TEXLITE_PDF_LOADING_STRATEGY", "TEXLITE_PDF_RANGE_THRESHOLD_MB",
     "TEXLITE_HISTORY_MAX_VERSIONS", "TEXLITE_HISTORY_MAX_STORAGE_MB",
     "TEXLITE_EDIT_HISTORY_MAX_STORAGE_MB",
+    "TEXLITE_MAX_PROJECTS_PER_USER", "TEXLITE_MAX_PROJECT_SOURCE_STORAGE_MB",
     "TEXLITE_GIT", "TEXLITE_GIT_TIMEOUT", "TEXLITE_GITHUB_API_URL",
     "TEXLITE_GITHUB_CLIENT_ID", "TEXLITE_GITHUB_CLIENT_SECRET", "TEXLITE_GITHUB_REDIRECT_URI"
   ] as const;
@@ -40,6 +41,7 @@ describe("configuration", () => {
       pdf: { loadingStrategy: "range", rangeThresholdMB: 7 },
       history: { maxVersions: 120, maxStorageMB: 256 },
       editHistory: { maxStorageMB: 48 },
+      projects: { maxProjectsPerUser: 240, maxSourceStorageMBPerUser: 4096 },
       git: { binary: "/usr/local/bin/git", operationTimeoutSeconds: 45, githubApiBaseUrl: "https://github.example/api/v3/" },
       latex: { defaultEngine: "lualatex", allowedEngines: ["lualatex"], allowProjectLatexmkrc: false }
     }));
@@ -58,6 +60,8 @@ describe("configuration", () => {
     expect(config.historyMaxVersions).toBe(120);
     expect(config.historyMaxStorageBytes).toBe(256 * 1024 * 1024);
     expect(config.editHistoryMaxStorageBytes).toBe(48 * 1024 * 1024);
+    expect(config.maxProjectsPerUser).toBe(240);
+    expect(config.maxSourceStorageBytesPerUser).toBe(4096 * 1024 * 1024);
     expect(config.git).toBe("/usr/local/bin/git");
     expect(config.gitOperationTimeoutMs).toBe(45_000);
     expect(config.githubApiBaseUrl).toBe("https://github.example/api/v3");
@@ -79,6 +83,7 @@ describe("configuration", () => {
       pdfLoadingStrategy: "auto", pdfRangeThresholdBytes: 5 * 1024 * 1024,
       historyMaxVersions: 0, historyMaxStorageBytes: 64 * 1024 * 1024,
       editHistoryMaxStorageBytes: 32 * 1024 * 1024,
+      maxProjectsPerUser: 100, maxSourceStorageBytesPerUser: 2048 * 1024 * 1024,
       git: "git", gitOperationTimeoutMs: 120_000, githubApiBaseUrl: "https://api.github.com"
     });
   });

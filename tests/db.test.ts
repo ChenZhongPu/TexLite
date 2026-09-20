@@ -75,6 +75,10 @@ describe("database migrations", () => {
         .toEqual({ name: "project_git_settings" });
       expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_history_state'").get())
         .toEqual({ name: "project_history_state" });
+      expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'project_directory_staging'").get())
+        .toEqual({ name: "project_directory_staging" });
+      expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_deletion_staging'").get())
+        .toEqual({ name: "user_deletion_staging" });
       expect((migrated.prepare("PRAGMA table_info(citation_library_entries)").all() as Array<{ name: string }>)
         .some((column) => column.name === "revision")).toBe(true);
       expect((migrated.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>)
@@ -90,7 +94,9 @@ describe("database migrations", () => {
           { version: 3, name: "disable_legacy_project_latexmkrc" },
           { version: 4, name: "normalized_auth_identities" },
           { version: 5, name: "project_share_links" },
-          { version: 6, name: "unique_user_emails_and_user_bound_invitations" }
+          { version: 6, name: "unique_user_emails_and_user_bound_invitations" },
+          { version: 7, name: "recoverable_project_directory_staging" },
+          { version: 8, name: "recoverable_user_deletion_staging" }
         ]);
 
       // The old untracked migration copied this tag at every startup. Once
@@ -107,7 +113,9 @@ describe("database migrations", () => {
           { version: 3, name: "disable_legacy_project_latexmkrc" },
           { version: 4, name: "normalized_auth_identities" },
           { version: 5, name: "project_share_links" },
-          { version: 6, name: "unique_user_emails_and_user_bound_invitations" }
+          { version: 6, name: "unique_user_emails_and_user_bound_invitations" },
+          { version: 7, name: "recoverable_project_directory_staging" },
+          { version: 8, name: "recoverable_user_deletion_staging" }
         ]);
 
       migrated.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
@@ -147,7 +155,7 @@ describe("database migrations", () => {
 
       database = openDatabase(config);
       expect(database.prepare("SELECT COUNT(*) AS count FROM user_tags").get()).toEqual({ count: 0 });
-      expect(database.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
+      expect(database.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }]);
       expect(database.prepare("SELECT last_modified_by FROM projects WHERE id = 'project-1'").get())
         .toEqual({ last_modified_by: null });
       expect(database.prepare("SELECT main_file FROM compile_runs WHERE id = 'run-1'").get())
@@ -173,7 +181,7 @@ describe("database migrations", () => {
       database.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
         .run("legacy-session", "github-user-1", "2027-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
       database.exec("DROP TABLE auth_identities");
-      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (4, 5, 6)").run();
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (4, 5, 6, 7, 8)").run();
       database.close();
 
       database = openDatabase(config);
@@ -212,7 +220,7 @@ describe("database migrations", () => {
         VALUES ('invitation', 'project', NULL, 'invitee@example.test', 'read', 'owner', 'pending', ?, NULL)`).run(createdAt);
       // Re-run only v6 over rows shaped like the preceding release. The
       // migration must preserve the invitation while backfilling its account.
-      database.prepare("DELETE FROM texlite_schema_migrations WHERE version = 6").run();
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (6, 7, 8)").run();
       database.close();
 
       database = openDatabase(config);
@@ -238,7 +246,7 @@ describe("database migrations", () => {
     let closed = false;
     try {
       database.exec("DROP INDEX users_email_unique");
-      database.prepare("DELETE FROM texlite_schema_migrations WHERE version = 6").run();
+      database.prepare("DELETE FROM texlite_schema_migrations WHERE version IN (6, 7, 8)").run();
       const insert = database.prepare(`INSERT INTO users
         (id, username, display_name, password_hash, email, github_id, avatar_url, role, disabled, must_change_password, can_create_projects, created_at)
         VALUES (?, ?, ?, '', ?, NULL, NULL, 'user', 0, 0, 1, '2026-01-01T00:00:00.000Z')`);
@@ -304,7 +312,7 @@ describe("database migrations", () => {
 
       const migrated = openDatabase(config);
       try {
-        expect(migrated.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
+        expect(migrated.prepare("SELECT version FROM texlite_schema_migrations").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }]);
       } finally {
         migrated.close();
       }
@@ -321,13 +329,13 @@ describe("database migrations", () => {
       CREATE TABLE texlite_schema_migrations (
         version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
       );
-      INSERT INTO texlite_schema_migrations VALUES (7, 'future_schema', '2026-01-01T00:00:00.000Z');
+      INSERT INTO texlite_schema_migrations VALUES (9, 'future_schema', '2026-01-01T00:00:00.000Z');
     `);
     database.close();
 
     try {
       expect(() => openDatabase(migrationConfig(root, databasePath)))
-        .toThrow(/version 7 is newer than this TexLite release/);
+        .toThrow(/version 9 is newer than this TexLite release/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

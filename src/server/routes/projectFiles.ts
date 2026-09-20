@@ -22,8 +22,10 @@ import {
 import type { HistoryReason } from "../history.js";
 import { apiError, contentDisposition, httpError } from "../http.js";
 import type { LatexCompletionService } from "../latexCompletion.js";
+import { MAX_TEXT_PREVIEW_BYTES } from "../limits.js";
 import type { MetricRegistry } from "../metrics.js";
 import type { ProjectMutationCoordinator } from "../projectMutations.js";
+import type { ProjectQuotaService } from "../projectQuota.js";
 import type { ProjectOutlineService } from "../projectOutline.js";
 import { accessibleProject, canEdit } from "../projects.js";
 import { replaceProject, searchProject } from "../projectSearch.js";
@@ -45,12 +47,13 @@ interface ProjectFileRouteContext {
   latexCompletions: LatexCompletionService;
   projectOutlines: ProjectOutlineService;
   metrics: MetricRegistry;
+  projectQuota: ProjectQuotaService;
   recordHistory: (projectId: string, userId: string | null, reason: HistoryReason, paths?: readonly string[]) => unknown;
 }
 
 /** Register project file-tree, editor content, search, and upload routes. */
 export function registerProjectFileRoutes(app: FastifyInstance, context: ProjectFileRouteContext): void {
-  const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines, metrics, recordHistory } = context;
+  const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines, metrics, projectQuota, recordHistory } = context;
 
   app.get("/api/projects/:id/files", async (request, reply) => {
     const user = requireUser(request, reply, db);
@@ -145,12 +148,22 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       return apiError(reply, 400, "SEARCH_QUERY_INVALID");
     }
     return await projectMutations.runExclusive(id, "project-wide replace", async () => {
+      const currentProject = requireEditableProject(db, id, user);
+      const sourceBytesBefore = projectQuota.sourceBytes(currentProject.owner_id, id);
       const changed = await replaceProject(config, id, {
         query: body.query as string,
         caseSensitive: body.caseSensitive === true,
         wholeWord: body.wholeWord === true,
-        maxFileBytes: maxCollaborativeFileBytes(config)
+        maxFileBytes: maxCollaborativeFileBytes(config),
+        beforeInstall: (prepared) => {
+          const delta = prepared.reduce((total, file) => total
+            + Buffer.byteLength(file.content, "utf8") - Buffer.byteLength(file.previous, "utf8"), 0);
+          projectQuota.assertCanStoreSource(currentProject.owner_id, id, sourceBytesBefore + delta);
+        }
       }, body.replacement as string);
+      const sourceDelta = changed.reduce((total, file) => total
+        + Buffer.byteLength(file.content, "utf8") - Buffer.byteLength(file.previous, "utf8"), 0);
+      if (sourceDelta !== 0) projectQuota.adjustSourceBytes(currentProject.owner_id, id, sourceDelta);
       let replacements = 0;
       for (const file of changed) {
         reanchorFileComments(db, id, file.path, file.previous, file.content);
@@ -342,6 +355,14 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     reply.header("Content-Type", contentType);
     reply.header("Content-Disposition", contentDisposition(path.basename(filePath), downloading ? "attachment" : "inline"));
     reply.header("Cache-Control", "private, no-cache");
+    // Source files are user-controlled. A directly opened SVG is an active
+    // same-origin document in several browsers, so ensure it cannot execute
+    // scripts, submit forms, or load a hostile external origin. `nosniff`
+    // also prevents an unknown file type from being interpreted as HTML.
+    reply.header("X-Content-Type-Options", "nosniff");
+    if (extension === ".svg" && !downloading) {
+      reply.header("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; style-src 'unsafe-inline'; img-src data:");
+    }
     reply.header("Content-Length", fs.statSync(temporaryFile).size);
     const stream = fs.createReadStream(temporaryFile);
     const cleanup = () => { void fs.promises.rm(temporaryFile, { force: true }).catch(() => undefined); };
@@ -359,8 +380,11 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     const relative = safeRelativePath(filePath ?? "");
     return await projectMutations.runConsistentRead(id, () => {
       const absolute = resolveSourcePath(config, id, relative);
-      if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) return apiError(reply, 404, "FILE_NOT_FOUND", { path: relative });
-      if (isCollaborativeTextFile(relative) && fs.statSync(absolute).size > maxCollaborativeFileBytes(config)) {
+      if (!fs.existsSync(absolute)) return apiError(reply, 404, "FILE_NOT_FOUND", { path: relative });
+      const stat = fs.statSync(absolute);
+      if (!stat.isFile()) return apiError(reply, 404, "FILE_NOT_FOUND", { path: relative });
+      const maxBytes = isCollaborativeTextFile(relative) ? maxCollaborativeFileBytes(config) : MAX_TEXT_PREVIEW_BYTES;
+      if (stat.size > maxBytes) {
         return apiError(reply, 413, "FILE_TOO_LARGE", { path: relative });
       }
       return { path: relative, content: fs.readFileSync(absolute, "utf8") };
@@ -389,7 +413,16 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       return apiError(reply, 413, "FILE_TOO_LARGE", { path: filePath, size: Math.floor(limit / 1024 / 1024) });
     }
     return await projectMutations.runWrite(id, () => {
+      const currentProject = requireEditableProject(db, id, user);
       const absolute = resolveSourcePath(config, id, filePath);
+      if (fs.existsSync(absolute)) {
+        return apiError(reply, 409, "FILE_EXISTS", { path: filePath });
+      }
+      projectQuota.assertCanStoreSource(
+        currentProject.owner_id,
+        id,
+        projectQuota.sourceBytes(currentProject.owner_id, id) + byteLength
+      );
       try {
         fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o700 });
       } catch (error) {
@@ -406,6 +439,7 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
         }
         throw error;
       }
+      projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength);
       touchProject(db, id, user.id);
       collaboration.updateFile(id, filePath, content, user.id);
       recordHistory(id, user.id, "file", [filePath]);
@@ -430,11 +464,19 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
       return apiError(reply, 413, "FILE_TOO_LARGE", { path: filePath, size: Math.floor(limit / 1024 / 1024) });
     }
     return await projectMutations.runWrite(id, () => {
+      const currentProject = requireEditableProject(db, id, user);
       const absolute = resolveSourcePath(config, id, filePath);
+      const previousBytes = fs.existsSync(absolute) && fs.statSync(absolute).isFile() ? fs.statSync(absolute).size : 0;
+      projectQuota.assertCanStoreSource(
+        currentProject.owner_id,
+        id,
+        projectQuota.sourceBytes(currentProject.owner_id, id) - previousBytes + byteLength
+      );
       fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o700 });
       const previousContent = fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8") : "";
       reanchorFileComments(db, id, filePath, previousContent, content);
       fs.writeFileSync(absolute, content, { encoding: "utf8", mode: 0o600 });
+      projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength - previousBytes);
       touchProject(db, id, user.id);
       collaboration.updateFile(id, filePath, content, user.id);
       recordHistory(id, user.id, "file", [filePath]);
@@ -463,6 +505,7 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
         throw error;
       }
       fs.rmSync(absolute, { recursive: true, force: true });
+      projectQuota.refreshSourceBytes(currentProject.owner_id, id);
       const deleteResult = db.prepare("DELETE FROM comments WHERE project_id = ? AND (file_path = ? OR file_path GLOB ?)").run(id, relative, `${escapeGlobPattern(relative)}/*`);
       touchProject(db, id, user.id);
       collaboration.removePath(id, relative);
@@ -511,7 +554,21 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
     }
     try {
       return await projectMutations.runWrite(id, () => {
+        const currentProject = requireEditableProject(db, id, user);
         const absolute = resolveSourcePath(config, id, relative);
+        const replacing = overwrite === "1";
+        if (fs.existsSync(absolute) && fs.statSync(absolute).isDirectory()) {
+          return apiError(reply, 409, "PATH_EXISTS", { path: relative });
+        }
+        if (!replacing && fs.existsSync(absolute)) {
+          return apiError(reply, 409, "FILE_EXISTS", { path: relative });
+        }
+        const previousBytes = fs.existsSync(absolute) && fs.statSync(absolute).isFile() ? fs.statSync(absolute).size : 0;
+        projectQuota.assertCanStoreSource(
+          currentProject.owner_id,
+          id,
+          projectQuota.sourceBytes(currentProject.owner_id, id) - previousBytes + byteLength
+        );
         try {
           fs.mkdirSync(path.dirname(absolute), { recursive: true, mode: 0o700 });
         } catch (error) {
@@ -519,13 +576,6 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
             return apiError(reply, 409, "PATH_EXISTS", { path: relative });
           }
           throw error;
-        }
-        const replacing = overwrite === "1";
-        if (fs.existsSync(absolute) && fs.statSync(absolute).isDirectory()) {
-          return apiError(reply, 409, "PATH_EXISTS", { path: relative });
-        }
-        if (!replacing && fs.existsSync(absolute)) {
-          return apiError(reply, 409, "FILE_EXISTS", { path: relative });
         }
         const collaborativeText = isCollaborativeTextFile(relative);
         let previousContent: string | null = null;
@@ -543,6 +593,7 @@ export function registerProjectFileRoutes(app: FastifyInstance, context: Project
           fs.copyFileSync(tmpPath, absolute);
           fs.unlinkSync(tmpPath);
         }
+        projectQuota.adjustSourceBytes(currentProject.owner_id, id, byteLength - previousBytes);
         touchProject(db, id, user.id);
         if (collaborativeText) {
           const content = fs.readFileSync(absolute, "utf8");

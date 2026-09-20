@@ -22,6 +22,10 @@ export interface UserRow {
   created_at: string;
   /** Request-scoped access granted by an active share-link cookie. */
   share_link_id?: string | null;
+  /** Internal digest of the session that authenticated this request. */
+  session_id?: string | null;
+  /** Expiry of the concrete browser session that authenticated this request. */
+  session_expires_at?: string | null;
 }
 
 export interface AuthIdentityRow {
@@ -89,7 +93,9 @@ const databaseMigrations: readonly DatabaseMigration[] = [
   { version: 3, name: "disable_legacy_project_latexmkrc", apply: applyDisableLegacyLatexmkrcMigration },
   { version: 4, name: "normalized_auth_identities", apply: applyNormalizedAuthIdentitiesMigration },
   { version: 5, name: "project_share_links", apply: applyProjectShareLinksMigration },
-  { version: 6, name: "unique_user_emails_and_user_bound_invitations", apply: applyUniqueUserEmailsAndUserBoundInvitationsMigration }
+  { version: 6, name: "unique_user_emails_and_user_bound_invitations", apply: applyUniqueUserEmailsAndUserBoundInvitationsMigration },
+  { version: 7, name: "recoverable_project_directory_staging", apply: applyRecoverableProjectDirectoryStagingMigration },
+  { version: 8, name: "recoverable_user_deletion_staging", apply: applyRecoverableUserDeletionStagingMigration }
 ];
 
 export function openDatabase(config: Config): DatabaseConnection {
@@ -746,9 +752,46 @@ function applyUniqueUserEmailsAndUserBoundInvitationsMigration(db: DatabaseConne
   `);
 }
 
+/**
+ * A directory move and a SQLite transaction cannot be one atomic operation.
+ * Keep a durable intent record while a live project tree sits in trash so
+ * startup can restore it when its project row still exists, or finish purging
+ * it after the row has been deleted.
+ */
+function applyRecoverableProjectDirectoryStagingMigration(db: DatabaseConnection): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_directory_staging (
+      project_id TEXT PRIMARY KEY,
+      trash_name TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS project_directory_staging_created_at
+      ON project_directory_staging(created_at);
+  `);
+}
+
+/** Keep the original account state while a multi-project user deletion runs. */
+function applyRecoverableUserDeletionStagingMigration(db: DatabaseConnection): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_deletion_staging (
+      user_id TEXT PRIMARY KEY,
+      original_disabled INTEGER NOT NULL CHECK (original_disabled IN (0, 1)),
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS user_deletion_staging_created_at
+      ON user_deletion_staging(created_at);
+  `);
+}
+
 /** Remove sessions that can no longer authenticate any request. */
 export function pruneExpiredSessions(db: DatabaseConnection, asOf = new Date().toISOString()): number {
   return db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(asOf).changes;
+}
+
+/** Session identifiers that should be disconnected before their rows are pruned. */
+export function expiredSessionIds(db: DatabaseConnection, asOf = new Date().toISOString()): string[] {
+  return (db.prepare("SELECT id FROM sessions WHERE expires_at <= ?").all(asOf) as Array<{ id: string }>)
+    .map((row) => row.id);
 }
 
 export function pruneExpiredOauthStates(db: DatabaseConnection, asOf = new Date().toISOString()): number {
@@ -760,4 +803,23 @@ export function activeAdminCount(db: DatabaseConnection): number {
     "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0"
   ).get() as { count: number };
   return Number(row.count);
+}
+
+/**
+ * A process can stop after suspending an account but before deleting it. Once
+ * project-directory recovery has restored every live tree, return that account
+ * to its prior state; a missing user means the deletion transaction committed.
+ */
+export function recoverInterruptedUserDeletions(db: DatabaseConnection): void {
+  const rows = db.prepare("SELECT user_id, original_disabled FROM user_deletion_staging ORDER BY created_at, user_id")
+    .all() as Array<{ user_id: string; original_disabled: number }>;
+  const userExists = db.prepare("SELECT 1 FROM users WHERE id = ?");
+  const restore = db.prepare("UPDATE users SET disabled = ? WHERE id = ?");
+  const clear = db.prepare("DELETE FROM user_deletion_staging WHERE user_id = ?");
+  db.transaction(() => {
+    for (const row of rows) {
+      if (userExists.get(row.user_id)) restore.run(row.original_disabled, row.user_id);
+      clear.run(row.user_id);
+    }
+  })();
 }

@@ -4,11 +4,17 @@ import { normalizeEmail, publicUser, requireAdmin, requireUser } from "../auth.j
 import type { CollaborationService } from "../collaboration.js";
 import type { Config } from "../config.js";
 import { activeAdminCount, type DatabaseConnection, type UserRow } from "../db.js";
-import { removeProjectDirectory } from "../files.js";
+import {
+  purgePersistedProjectDirectoryRemoval,
+  restorePersistedProjectDirectoryRemoval,
+  stagePersistedProjectDirectoryRemoval,
+  type StagedProjectDirectoryRemoval
+} from "../files.js";
 import { apiError, httpError, ValidationError } from "../http.js";
 import type { LatexCompletionService } from "../latexCompletion.js";
 import type { ProjectMutationCoordinator } from "../projectMutations.js";
 import type { ProjectOutlineService } from "../projectOutline.js";
+import type { ProjectQuotaService } from "../projectQuota.js";
 import { hashPassword } from "../security.js";
 
 interface UserManagementRouteContext {
@@ -18,6 +24,7 @@ interface UserManagementRouteContext {
   projectMutations: ProjectMutationCoordinator;
   latexCompletions: LatexCompletionService;
   projectOutlines: ProjectOutlineService;
+  projectQuota: ProjectQuotaService;
 }
 
 const now = (): string => new Date().toISOString();
@@ -31,7 +38,7 @@ function text(value: unknown, max = 200): string {
 
 /** Register administrator-facing user management and exact active-user lookup. */
 export function registerUserManagementRoutes(app: FastifyInstance, context: UserManagementRouteContext): void {
-  const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines } = context;
+  const { config, db, collaboration, projectMutations, latexCompletions, projectOutlines, projectQuota } = context;
 
   app.get("/api/admin/users", async (request, reply) => {
     if (!requireAdmin(request, reply, db)) return;
@@ -124,56 +131,141 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
     if (target.role === "admin" && activeAdminCount(db) <= 1) {
       return apiError(reply, 400, "LAST_ADMIN");
     }
-    let owned: Array<{ id: string }> = [];
-    // Capture and mutate the complete owned-project set in the same synchronous
-    // transaction. There is deliberately no await before COMMIT: another
-    // request cannot transfer or create a project for this user between the
-    // snapshot and the owner/delete statements.
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const currentTarget = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
-      if (!currentTarget) throw httpError(404, "USER_NOT_FOUND");
-      if (currentTarget.role === "admin" && activeAdminCount(db) <= 1) {
-        throw httpError(400, "LAST_ADMIN");
-      }
-      owned = db.prepare("SELECT id FROM projects WHERE owner_id = ?").all(id) as Array<{ id: string }>;
-      if (!body.deleteProjects) {
-        // Persist any active drafts while the old owner row still exists. This
-        // is synchronous, so no edit can arrive between this flush and the
-        // ownership update below, and last_modified_by remains FK-safe.
-        for (const project of owned) projectMutations.flushProject(project.id);
-      }
-      if (body.deleteProjects) {
-        db.prepare("DELETE FROM projects WHERE owner_id = ?").run(id);
-    } else {
-        db.prepare("DELETE FROM project_members WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE owner_id = ?)")
-          .run(admin.id, id);
-        db.prepare("UPDATE projects SET owner_id = ?, last_modified_by = ?, updated_at = ? WHERE owner_id = ?")
-          .run(admin.id, admin.id, now(), id);
-      }
-      db.prepare("DELETE FROM users WHERE id = ?").run(id);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-    // Requests already queued for the removed user fail their lock-time
-    // preflight. Cleanup is then serialized after them and invalidates any
-    // room initialization that started before the transaction committed.
-    for (const project of owned) {
-      await projectMutations.runExclusive(project.id, "admin user deletion cleanup", () => {
-        if (body.deleteProjects) {
-          collaboration.resetProject(project.id);
-          removeProjectDirectory(config, project.id);
-          latexCompletions.invalidate(project.id);
-          projectOutlines.invalidate(project.id);
-        } else {
-          collaboration.resetProject(project.id);
+    return await projectQuota.runForOwner(id, async () => {
+      let owned: Array<{ id: string }> = [];
+      const staged: StagedProjectDirectoryRemoval[] = [];
+      let suspended = false;
+      let committed = false;
+      let originalDisabled = target.disabled;
+      const restoreStagedDirectories = (): unknown[] => {
+        const errors: unknown[] = [];
+        for (const removal of [...staged].reverse()) {
+          try { restorePersistedProjectDirectoryRemoval(db, removal); }
+          catch (error) {
+            errors.push(error);
+            request.log.error({ err: error, projectId: removal.projectId }, "Failed to restore staged project directory");
+          }
         }
-      }, { flush: false });
-    }
-    collaboration.disconnectUser(id, "user-deleted");
-    return { ok: true, deletedProjects: body.deleteProjects ? owned.length : 0 };
+        return errors;
+      };
+
+      // Suspend the account before waiting on project locks. New requests can
+      // no longer create a project between the owned-project snapshot and the
+      // final transaction, while existing collaborators are stopped by each
+      // exclusive project lock below. Keep existing session rows until the
+      // actual deletion so a failed filesystem stage can safely re-enable the
+      // account without manufacturing new credentials.
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const currentTarget = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
+        if (!currentTarget) throw httpError(404, "USER_NOT_FOUND");
+        if (currentTarget.role === "admin" && activeAdminCount(db) <= 1) {
+          throw httpError(400, "LAST_ADMIN");
+        }
+        originalDisabled = currentTarget.disabled;
+        db.prepare(`INSERT INTO user_deletion_staging (user_id, original_disabled, created_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET original_disabled = excluded.original_disabled, created_at = excluded.created_at`)
+          .run(id, originalDisabled, now());
+        db.prepare("UPDATE users SET disabled = 1 WHERE id = ?").run(id);
+        db.exec("COMMIT");
+        suspended = true;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      collaboration.disconnectUser(id, "user-deletion-pending");
+
+      try {
+        owned = db.prepare("SELECT id FROM projects WHERE owner_id = ? ORDER BY id").all(id) as Array<{ id: string }>;
+        if (body.deleteProjects) {
+          // Hold every owned project in maintenance until the database rows are
+          // deleted. Moving each tree to trash first makes the filesystem step
+          // reversible; if it fails, the account and all project rows remain.
+          await withExclusiveProjectLocks(owned.map((project) => project.id), projectMutations, () => {
+            try {
+              for (const project of owned) {
+                const removal = stagePersistedProjectDirectoryRemoval(config, db, project.id);
+                if (removal) staged.push(removal);
+              }
+              db.exec("BEGIN IMMEDIATE");
+              try {
+                db.prepare("DELETE FROM projects WHERE owner_id = ?").run(id);
+                db.prepare("DELETE FROM users WHERE id = ?").run(id);
+                db.prepare("DELETE FROM user_deletion_staging WHERE user_id = ?").run(id);
+                db.exec("COMMIT");
+                committed = true;
+              } catch (error) {
+                db.exec("ROLLBACK");
+                throw error;
+              }
+            } catch (error) {
+              // Restore while every project lock is still held. Otherwise a
+              // collaborator could observe a database row whose source tree
+              // is temporarily in trash between the failed stage and restore.
+              const restoreErrors = restoreStagedDirectories();
+              if (restoreErrors.length) {
+                throw new AggregateError([error, ...restoreErrors], "Unable to restore staged project directories");
+              }
+              throw error;
+            }
+          });
+        } else {
+          // Wait for every source operation, flush live drafts, then hold all
+          // projects in maintenance while the old owner is removed. This keeps
+          // a queued replacement from writing under a deleted user afterwards.
+          await withExclusiveProjectLocks(owned.map((project) => project.id), projectMutations, () => {
+            db.exec("BEGIN IMMEDIATE");
+            try {
+              const currentTarget = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
+              if (!currentTarget) throw httpError(404, "USER_NOT_FOUND");
+              db.prepare("DELETE FROM project_members WHERE user_id = ? AND project_id IN (SELECT id FROM projects WHERE owner_id = ?)")
+                .run(admin.id, id);
+              // Ownership transfer is administrative metadata, not a document
+              // edit. Leave another collaborator's last modifier intact; if
+              // the removed owner was the modifier, the FK clears it.
+              db.prepare("UPDATE projects SET owner_id = ?, updated_at = ? WHERE owner_id = ?")
+                .run(admin.id, now(), id);
+              db.prepare("DELETE FROM users WHERE id = ?").run(id);
+              db.prepare("DELETE FROM user_deletion_staging WHERE user_id = ?").run(id);
+              db.exec("COMMIT");
+              committed = true;
+            } catch (error) {
+              db.exec("ROLLBACK");
+              throw error;
+            }
+          });
+        }
+      } catch (error) {
+        if (!committed) {
+          const restoreErrors = restoreStagedDirectories();
+          if (restoreErrors.length) {
+            throw new AggregateError([error, ...restoreErrors], "Unable to restore staged project directories");
+          }
+          if (suspended) {
+            db.transaction(() => {
+              db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(originalDisabled, id);
+              db.prepare("DELETE FROM user_deletion_staging WHERE user_id = ?").run(id);
+            })();
+          }
+        }
+        throw error;
+      }
+
+      // The database no longer exposes staged project trees. A failed purge is
+      // therefore an operational cleanup issue rather than a reason to leave
+      // a half-deleted user/project state; startup trash pruning will retry it.
+      for (const removal of staged) {
+        try { await purgePersistedProjectDirectoryRemoval(db, removal); }
+        catch (error) { request.log.error({ err: error, projectId: removal.projectId }, "Failed to purge deleted project trash"); }
+      }
+      for (const project of owned) {
+        latexCompletions.invalidate(project.id);
+        projectOutlines.invalidate(project.id);
+      }
+      collaboration.disconnectUser(id, "user-deleted");
+      return { ok: true, deletedProjects: body.deleteProjects ? owned.length : 0 };
+    });
   });
 
   app.get("/api/users", async (request, reply) => {
@@ -186,6 +278,25 @@ export function registerUserManagementRoutes(app: FastifyInstance, context: User
       FROM users WHERE email = ? COLLATE NOCASE AND disabled = 0`)
       .get(normalizeEmail(query.email)) as { id: string; username: string; displayName: string } | undefined;
     return { user: user ?? null };
+  });
+}
+
+/**
+ * Nest exclusive locks in a stable project-ID order. Existing project
+ * operations lock only one project, so retaining earlier locks while acquiring
+ * the next one cannot form a multi-project cycle and keeps all staged trees
+ * unavailable until their corresponding database transaction commits.
+ */
+async function withExclusiveProjectLocks<T>(
+  projectIds: readonly string[],
+  projectMutations: ProjectMutationCoordinator,
+  operation: () => Promise<T> | T,
+  index = 0
+): Promise<T> {
+  const projectId = projectIds[index];
+  if (!projectId) return await operation();
+  return await projectMutations.runExclusive(projectId, "admin user deletion cleanup", async () => {
+    return await withExclusiveProjectLocks(projectIds, projectMutations, operation, index + 1);
   });
 }
 
