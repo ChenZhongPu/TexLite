@@ -399,7 +399,7 @@ export function cleanCompileCache(config: Config, projectId: string, mainFile: s
 
 /**
  * Remove generated output for one root document without touching project
- * source, settings, comments, history, or Git data.
+ * source, settings, comments, history, or other application data.
  */
 export function cleanCompileArtifacts(
   config: Config,

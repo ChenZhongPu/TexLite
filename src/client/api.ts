@@ -107,7 +107,6 @@ export function localizedResponseError(body: unknown, status: number, fallbackKe
       HISTORY_TARGET_CONFLICT: "apiErrors.historyTargetConflict",
       HISTORY_FILE_PREVIEW_UNSUPPORTED: "apiErrors.historyPreviewUnsupported",
       SEARCH_QUERY_INVALID: "apiErrors.searchInvalid",
-      GIT_UNAVAILABLE: "apiErrors.gitUnavailable",
       FORMAT_FAILED: "apiErrors.formatFailed",
       MAIN_DOCUMENT_INVALID: "apiErrors.mainDocumentInvalid",
       COMPILE_SNAPSHOT_BUSY: "apiErrors.compileSnapshotBusy",

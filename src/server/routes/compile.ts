@@ -421,7 +421,7 @@ export function registerCompileRoutes(app: FastifyInstance, context: CompileRout
         broadcast();
       },
       // The compile reservation protects the shared compiler cache and
-      // prevents Git/cleanup/deletion from replacing the project while
+      // prevents cleanup/deletion from replacing the project while
       // latexmk is running, but it deliberately does not occupy the ordinary
       // project queue for the duration of the subprocess.
       execute: async (signal) => projectMutations.runCompile(id, async () => {

@@ -264,8 +264,8 @@ export function isReservedProjectPath(input: string): boolean {
 
 /**
  * Check every existing component below the project directory without
- * resolving it.  `stat()` and most file APIs follow links, so a lexical
- * `safeRelativePath()` check alone is not sufficient after a Git checkout.
+ * resolving it. `stat()` and most file APIs follow links, so a lexical
+ * `safeRelativePath()` check alone is not sufficient after an external file operation.
  */
 function assertSourcePathComponents(
   config: Config,
@@ -298,7 +298,7 @@ function lstatIfPresent(target: string): fs.Stats | null {
 }
 
 /** Reject every link below an existing directory without following it. */
-export function assertNoSymbolicLinks(root: string, ignoreGitDirectory = false): void {
+export function assertNoSymbolicLinks(root: string, ignoreReservedDirectories = false): void {
   const rootStat = lstatIfPresent(root);
   if (!rootStat) return;
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw symbolicLinkError("source");
@@ -310,7 +310,7 @@ export function assertNoSymbolicLinks(root: string, ignoreGitDirectory = false):
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isSymbolicLink()) throw symbolicLinkError(relative);
-      if (ignoreGitDirectory && (entry.name === ".git" || isReservedProjectPath(entry.name))) continue;
+      if (ignoreReservedDirectories && isReservedProjectPath(entry.name)) continue;
       if (entry.isDirectory()) visit(path.join(directory, entry.name), relative);
     }
   };

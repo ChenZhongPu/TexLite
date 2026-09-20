@@ -111,7 +111,7 @@ export class ProjectMutationCoordinator {
    * Serialize an operation that removes or replaces compiler state without
    * disconnecting collaborators. This is used by compile-cache/artifact
    * cleanup, which must not run alongside latexmk but does not need the full
-   * maintenance mode used by Git checkout or history restore.
+   * maintenance mode used by history restore.
    */
   async runCompileExclusive<T>(
     projectId: string,

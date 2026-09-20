@@ -23,7 +23,7 @@ const MIDDLE_CONTEXT_CHARS = 48;
 /**
  * Produce a compact, character-level comparison for a selected passage.
  *
- * Project and Git history intentionally retain the conventional line-oriented
+ * Project snapshot history intentionally retains the conventional line-oriented
  * unified diff. A selected LaTeX passage is often one very long paragraph or
  * command, though, so repeating all unchanged text makes the actual rewrite
  * difficult to find. This view keeps semantic diff-match-patch boundaries and

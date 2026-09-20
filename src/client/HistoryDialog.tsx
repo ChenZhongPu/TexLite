@@ -489,21 +489,21 @@ export function HistoryDialog({ open, project, onOpenChange, onBeforeMutation }:
                     </div>
                     <span className="history-diff-control-divider" aria-hidden="true" />
                     <div className="history-diff-control-group">
-                      <div className="git-diff-font-controls" role="group" aria-label={t("git.diffFontSize")}>
-                        <button type="button" className="git-diff-font-button" disabled={diffFontSize <= 8} title={t("git.diffFontDecrease")} aria-label={t("git.diffFontDecrease")} onClick={() => setDiffFontSize((current) => Math.max(8, current - 1))}><Minus size={14} /></button>
-                        <span className="git-diff-font-value" aria-live="polite">{diffFontSize}px</span>
-                        <button type="button" className="git-diff-font-button" disabled={diffFontSize >= 24} title={t("git.diffFontIncrease")} aria-label={t("git.diffFontIncrease")} onClick={() => setDiffFontSize((current) => Math.min(24, current + 1))}><Plus size={14} /></button>
+                      <div className="history-diff-font-controls" role="group" aria-label={t("history.diffFontSize")}>
+                        <button type="button" className="history-diff-font-button" disabled={diffFontSize <= 8} title={t("history.diffFontDecrease")} aria-label={t("history.diffFontDecrease")} onClick={() => setDiffFontSize((current) => Math.max(8, current - 1))}><Minus size={14} /></button>
+                        <span className="history-diff-font-value" aria-live="polite">{diffFontSize}px</span>
+                        <button type="button" className="history-diff-font-button" disabled={diffFontSize >= 24} title={t("history.diffFontIncrease")} aria-label={t("history.diffFontIncrease")} onClick={() => setDiffFontSize((current) => Math.min(24, current + 1))}><Plus size={14} /></button>
                       </div>
                     </div>
                     <span className="history-diff-control-divider" aria-hidden="true" />
                     <div className="history-diff-control-group">
-                      <button type="button" className="git-diff-fullscreen" title={diffFullscreen ? t("git.exitFullscreenDiff") : t("git.fullscreenDiff")} aria-label={diffFullscreen ? t("git.exitFullscreenDiff") : t("git.fullscreenDiff")} onClick={() => void toggleDiffFullscreen()}>{diffFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
+                      <button type="button" className="history-diff-fullscreen" title={diffFullscreen ? t("history.exitFullscreenDiff") : t("history.fullscreenDiff")} aria-label={diffFullscreen ? t("history.exitFullscreenDiff") : t("history.fullscreenDiff")} onClick={() => void toggleDiffFullscreen()}>{diffFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
                     </div>
                   </div>
                 </header>
                 {busy === "compare" && !comparison ? <div className="history-comparison-empty"><LoaderCircle className="spin" size={24} /><span>{t("common.loading")}</span></div>
-                  : !diffResult.hasChanges ? <div className="git-diff-empty history-diff-empty"><CheckCircle2 size={24} /><span>{diffMode === "commit" ? t("history.noDifferencesInCommit") : t("history.noDifferences")}</span></div>
-                    : <pre className="git-diff history-git-diff" style={{ fontSize: `${diffFontSize}px` }}>{diffResult.diffText.split("\n").map((line, index) => {
+                  : !diffResult.hasChanges ? <div className="history-diff-empty"><CheckCircle2 size={24} /><span>{diffMode === "commit" ? t("history.noDifferencesInCommit") : t("history.noDifferences")}</span></div>
+                    : <pre className="history-diff-content" style={{ fontSize: `${diffFontSize}px` }}>{diffResult.diffText.split("\n").map((line, index) => {
                       const tone = line.startsWith("+") && !line.startsWith("+++") ? "addition"
                         : line.startsWith("-") && !line.startsWith("---") ? "deletion"
                           : line.startsWith("@@") ? "hunk"

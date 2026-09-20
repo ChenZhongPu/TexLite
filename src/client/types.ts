@@ -116,7 +116,7 @@ export interface CitationLibraryTag {
   ownerId: string;
 }
 
-export type HistoryReason = "initial" | "autosave" | "file" | "settings" | "git" | "restore" | "checkpoint";
+export type HistoryReason = "initial" | "autosave" | "file" | "settings" | "restore" | "checkpoint";
 
 export interface HistoryVersion {
   id: string;
@@ -199,31 +199,6 @@ export interface HistoryStats {
   maxVersions: number;
   maxStorageBytes: number;
   storageLimitExceeded: boolean;
-}
-
-export interface GitCommit {
-  sha: string;
-  shortSha: string;
-  authorName: string;
-  authorEmail: string;
-  authoredAt: string;
-  message: string;
-}
-
-export interface ProjectGitStatus {
-  initialized: boolean;
-  tokenConfigured: boolean;
-  githubLogin: string | null;
-  remoteUrl: string | null;
-  repositoryName: string | null;
-  repositoryHtmlUrl: string | null;
-  defaultBranch: string;
-  branch: string | null;
-  dirty: boolean;
-  restorable: boolean;
-  changedFiles: number;
-  ahead: number;
-  latestCommit: GitCommit | null;
 }
 
 export type LatexCompletionKind = "keyword" | "function" | "class" | "constant" | "text";
