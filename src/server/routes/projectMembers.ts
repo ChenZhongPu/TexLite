@@ -129,11 +129,13 @@ export function registerProjectMemberRoutes(app: FastifyInstance, context: Proje
       // later OAuth callback then finds the same row by the stable Nuwax sub.
       const target = await upsertNuwaxUser(db, profile);
       if (target.disabled) return { user: null };
+      const projectStatus = await db.projectMembers.findRecipientStatus(id, target.id);
       return { user: {
         id: target.id,
         username: target.username,
         displayName: target.display_name,
-        avatarUrl: target.avatar_url
+        avatarUrl: target.avatar_url,
+        projectStatus
       } };
     } catch (error) {
       return handleNuwaxSearchError(reply, error);

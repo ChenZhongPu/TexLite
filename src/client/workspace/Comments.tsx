@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { AtSign, Check, CheckCircle2, Copy, Eye, Link2, Pencil, Reply, RotateCcw, Save, Search, Send, Trash2, UserPlus, Users } from "lucide-react";
+import { AlertCircle, AtSign, Check, CheckCircle2, Copy, Eye, Link2, LoaderCircle, LockKeyhole, Pencil, Phone, Reply, RotateCcw, Save, Search, Send, Trash2, UserPlus, Users, X } from "lucide-react";
 import { api } from "../api";
 import { ConfirmDialog, Modal } from "../Dialog";
 import { errorMessage } from "../errors";
@@ -109,9 +109,32 @@ export function CommentThread({
 }
 
 interface ShareMember { id: string; username: string; email: string | null; displayName?: string; permission: "read" | "edit" }
+type RecipientProjectStatus = "member" | "pending" | null;
+
+interface RecipientPreview {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl?: string | null;
+  projectStatus: RecipientProjectStatus;
+}
+
+function normalizeInvitePhone(value: string): string {
+  const compact = value.trim().replace(/[\s()-]/g, "");
+  const local = compact.startsWith("+86") ? compact.slice(3) : compact;
+  return local.replace(/\D/g, "").slice(0, 11);
+}
 
 function validInvitePhone(value: string): boolean {
-  return /^\+?[0-9]{7,20}$/.test(value.trim().replace(/[\s()-]/g, ""));
+  return /^[0-9]{11}$/.test(normalizeInvitePhone(value));
+}
+
+function maskInvitePhone(value: string): string {
+  const normalized = normalizeInvitePhone(value);
+  const countryCode = normalized.startsWith("+86") ? "+86 " : "";
+  const local = countryCode ? normalized.slice(3) : normalized;
+  if (local.length < 7) return normalized;
+  return `${countryCode}${local.slice(0, 3)}****${local.slice(-4)}`;
 }
 
 export function ShareDialog({ open, onOpenChange, project, projectId }: {
@@ -123,7 +146,7 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
   const [shareLinks, setShareLinks] = useState<ProjectShareLink[]>([]);
   const [phone, setPhone] = useState("");
   const [permission, setPermission] = useState<"read" | "edit">("read");
-  const [recipientPreview, setRecipientPreview] = useState<{ username: string; displayName: string; avatarUrl?: string | null } | null>(null);
+  const [recipientPreview, setRecipientPreview] = useState<RecipientPreview | null>(null);
   const [recipientLookup, setRecipientLookup] = useState(false);
   const [recipientLookupDone, setRecipientLookupDone] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ShareMember | null>(null);
@@ -151,18 +174,18 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
   };
   useEffect(() => { if (open) void load(); }, [open, projectId, canManage]);
   const lookupRecipient = async () => {
-    const normalizedPhone = phone.trim().replace(/[\s()-]/g, "");
+    const normalizedPhone = normalizeInvitePhone(phone);
     if (!validInvitePhone(normalizedPhone) || recipientLookup) return;
     setRecipientLookup(true);
     setRecipientLookupDone(false);
     setRecipientPreview(null);
     setError("");
     try {
-      const result = await api<{ user: { username: string; displayName: string; avatarUrl?: string | null } | null }>(
+      const result = await api<{ user: Omit<RecipientPreview, "projectStatus"> & { projectStatus?: RecipientProjectStatus } | null }>(
         `/api/projects/${projectId}/invitation-recipient`,
         { method: "POST", body: JSON.stringify({ phone: normalizedPhone }) }
       );
-      setRecipientPreview(result.user);
+      setRecipientPreview(result.user ? { ...result.user, projectStatus: result.user.projectStatus ?? null } : null);
       setRecipientLookupDone(true);
     } catch (lookupError) {
       setError(errorMessage(lookupError));
@@ -170,9 +193,15 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
       setRecipientLookup(false);
     }
   };
+  const clearPhone = () => {
+    setPhone("");
+    setRecipientPreview(null);
+    setRecipientLookupDone(false);
+    setError("");
+  };
   const addInvitation = async () => {
-    const normalizedPhone = phone.trim().replace(/[\s()-]/g, "");
-    if (!recipientPreview || !validInvitePhone(normalizedPhone)) return;
+    const normalizedPhone = normalizeInvitePhone(phone);
+    if (!recipientPreview || recipientPreview.projectStatus || !validInvitePhone(normalizedPhone)) return;
     try {
       await api(`/api/projects/${projectId}/invitations`, { method: "POST", body: JSON.stringify({ phone: normalizedPhone, permission }) });
       setPhone(""); setRecipientPreview(null); setRecipientLookupDone(false); setPermission("read"); await load();
@@ -223,15 +252,33 @@ export function ShareDialog({ open, onOpenChange, project, projectId }: {
       setRevokeLinkTarget(null);
     } catch (error) { setError(errorMessage(error)); }
   };
+  const phoneInvalid = Boolean(phone.trim()) && !validInvitePhone(phone);
+  const canSendInvitation = Boolean(recipientPreview && recipientPreview.projectStatus === null);
   return <><Modal open={open} wide title={t("projectSettings.share")} description={t("projectSettings.shareDescription")} onOpenChange={onOpenChange} footer={<button onClick={() => onOpenChange(false)}>{t("common.close")}</button>}>
     <div className="share-dialog">
       {error && <p className="error">{error}</p>}
       <div className="share-owner"><Users size={17} /><span><small>{t("projects.owner")}</small><strong>{project.ownerDisplayName ?? project.ownerUsername}</strong></span></div>
-      {canManage && <div className="share-add"><div className="share-invite-phone"><label className="form-field">{t("projectSettings.invitePhone")}<input type="tel" value={phone} placeholder={t("projectSettings.invitePhonePlaceholder")} onChange={(event) => { setPhone(event.target.value); setRecipientPreview(null); setRecipientLookupDone(false); }} /></label><button type="button" className="icon-button" disabled={!validInvitePhone(phone) || recipientLookup} onClick={() => void lookupRecipient()}><Search size={15} />{recipientLookup ? t("common.loading") : t("projectSettings.findRecipient")}</button>{recipientPreview && <span className="share-recipient-preview"><span className="member-avatar">{recipientPreview.displayName.slice(0, 1).toLocaleUpperCase()}</span><span><strong>{recipientPreview.displayName}</strong><small>@{recipientPreview.username}</small></span></span>}{recipientLookupDone && !recipientLookup && !recipientPreview && <small className="field-hint">{t("projectSettings.recipientNotFound")}</small>}</div><label className="form-field">{t("common.permission")}<select value={permission} onChange={(event) => setPermission(event.target.value as "read" | "edit")}><option value="read">{t("common.readOnly")}</option><option value="edit">{t("common.readWrite")}</option></select></label><button className="primary icon-button" disabled={!recipientPreview} onClick={() => void addInvitation()}><UserPlus size={15} />{t("projectSettings.addMember")}</button><small className="field-hint">{t("projectSettings.invitePhoneHint")}</small></div>}
-      {canManage && <><div className="shared-members-heading"><strong>{t("projectSettings.pendingInvitations")}</strong><span>{invitations.length}</span></div><div className="shared-members pending-invitations">{invitations.map((invitation) => <div className="shared-member" key={invitation.id}><span className="member-identity"><span className="member-avatar">@</span><span><strong>{invitation.recipientDisplayName ?? invitation.recipientUsername ?? t("projectSettings.pendingRecipient")}</strong><small>{invitation.recipientUsername ? `@${invitation.recipientUsername}` : t("projectSettings.pendingRecipient")} · {invitation.permission === "edit" ? t("common.readWrite") : t("common.readOnly")}</small></span></span><button className="icon-only danger-text" title={t("common.remove")} aria-label={t("common.remove")} onClick={() => void revokeInvitation(invitation)}><Trash2 size={15} /></button></div>)}{invitations.length === 0 && <div className="share-empty"><span>{t("projectSettings.noPendingInvitations")}</span></div>}</div></>}
-      {canManage && <section className="share-links-section"><div className="share-links-heading"><div><strong><Link2 size={15} />{t("projectSettings.shareLinks")}</strong><p>{t("projectSettings.shareLinksDescription")}</p></div></div><button type="button" className="share-link-create" disabled={linkBusy} onClick={() => void createShareLink()}><Eye size={14} />{linkBusy ? t("common.loading") : t("projectSettings.createReadLink")}</button><small className="share-link-note">{t("projectSettings.revokeLinkDescription")}</small><div className="share-links-list">{shareLinks.map((link) => <div className="share-link-row" key={link.id}><span className="share-link-icon"><Eye size={14} /></span><span className="share-link-details"><strong>{t("projectSettings.linkRead")}</strong><input className="share-link-url" aria-label={t("projectSettings.linkRead")} readOnly value={new URL(link.url, window.location.origin).toString()} onFocus={(event) => event.currentTarget.select()} /><small>{new Date(link.createdAt).toLocaleString(i18n.resolvedLanguage)}</small></span><span className="share-link-actions"><button type="button" className="icon-only" title={copiedLinkId === link.id ? t("projectSettings.copiedLink") : t("projectSettings.copyLink")} aria-label={copiedLinkId === link.id ? t("projectSettings.copiedLink") : t("projectSettings.copyLink")} onClick={() => void copyShareLink(link)}>{copiedLinkId === link.id ? <Check size={15} /> : <Copy size={15} />}</button><button type="button" className="icon-only danger-text" title={t("projectSettings.revokeLink")} aria-label={t("projectSettings.revokeLink")} onClick={() => setRevokeLinkTarget(link)}><Trash2 size={15} /></button></span></div>)}{shareLinks.length === 0 && <div className="share-empty"><Link2 size={22} /><span>{t("projectSettings.noShareLinks")}</span></div>}</div></section>}
+      {canManage && <section className="share-invite-section">
+        <div className="share-section-heading"><div><strong><UserPlus size={16} />{t("projectSettings.inviteSectionTitle")}</strong><p>{t("projectSettings.inviteSectionDescription")}</p></div></div>
+        <div className="share-invite-form">
+          <div className="form-field share-phone-field"><label htmlFor="share-invite-phone">{t("projectSettings.invitePhone")}</label><div className="share-phone-control-row"><span className={`share-phone-input${phoneInvalid ? " invalid" : ""}`}><Phone size={15} aria-hidden /><span className="share-phone-country">+86</span><input id="share-invite-phone" type="tel" value={phone} placeholder={t("projectSettings.invitePhonePlaceholder")} inputMode="numeric" autoComplete="tel" maxLength={11} pattern="[0-9]{11}" aria-invalid={phoneInvalid} aria-describedby={phoneInvalid ? "share-phone-hint share-phone-invalid" : "share-phone-hint"} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void lookupRecipient(); } }} onChange={(event) => { setPhone(normalizeInvitePhone(event.target.value)); setRecipientPreview(null); setRecipientLookupDone(false); }} />{phone && <button type="button" className="share-phone-clear" title={t("projectSettings.clearPhone")} aria-label={t("projectSettings.clearPhone")} onClick={clearPhone}><X size={14} /></button>}</span><button type="button" className={`share-lookup-button${recipientLookup ? " is-loading" : ""}`} aria-busy={recipientLookup} disabled={phoneInvalid || phone.length !== 11 || recipientLookup} onClick={() => void lookupRecipient()}>{recipientLookup ? <LoaderCircle className="spin" size={15} /> : <Search size={15} />}{recipientLookup ? t("common.loading") : t("projectSettings.findRecipient")}</button></div><small id="share-phone-hint" className="share-invite-hint"><LockKeyhole size={12} aria-hidden /><span>{t("projectSettings.invitePhoneHint")}</span></small>{phoneInvalid && <small id="share-phone-invalid" className="share-phone-validation" role="alert">{t("projectSettings.invitePhoneInvalid")}</small>}</div>
+        </div>
+        {recipientLookup && <div className="share-lookup-status" role="status" aria-live="polite"><LoaderCircle className="spin" size={14} />{t("common.loading")}</div>}
+        {recipientLookupDone && !recipientLookup && !recipientPreview && <div className="share-lookup-empty" role="status"><AlertCircle size={15} aria-hidden /><span>{t("projectSettings.recipientNotFound")}</span></div>}
+        {recipientPreview && <section className={`share-recipient-card${recipientPreview.projectStatus ? ` is-${recipientPreview.projectStatus}` : ""}`} role="status" aria-live="polite">
+          <div className="share-recipient-summary"><span className="member-avatar share-recipient-avatar">{recipientPreview.avatarUrl ? <img src={recipientPreview.avatarUrl} alt="" /> : recipientPreview.displayName.slice(0, 1).toLocaleUpperCase()}</span><span className="share-recipient-details"><strong>{recipientPreview.displayName}</strong><small>@{recipientPreview.username}</small><small>{maskInvitePhone(phone)}</small></span><span className="share-recipient-found">{recipientPreview.projectStatus === "pending" ? <Send size={14} /> : <CheckCircle2 size={14} />}{recipientPreview.projectStatus === "member" ? t("projectSettings.recipientAlreadyMember") : recipientPreview.projectStatus === "pending" ? t("projectSettings.recipientInvitationPending") : t("projectSettings.recipientFound")}</span></div>
+          {recipientPreview.projectStatus === "member" && <div className="share-recipient-message"><CheckCircle2 size={15} /><span>{t("projectSettings.recipientAlreadyMemberHint")}</span></div>}
+          {recipientPreview.projectStatus === "pending" && <div className="share-recipient-message"><Send size={15} /><span>{t("projectSettings.recipientInvitationPendingHint")}</span></div>}
+          {canSendInvitation && <>
+            <div className="share-invite-options"><div className="share-permission-field"><span>{t("projectSettings.permissionAfterAccept")}</span><small>{t("projectSettings.permissionAfterAcceptHint")}</small></div><div className="share-permission-options" role="radiogroup" aria-label={t("common.permission")}><button type="button" role="radio" aria-checked={permission === "read"} className={permission === "read" ? "active" : ""} onClick={() => setPermission("read")}><Eye size={14} /><span><strong>{t("common.readOnly")}</strong><small>{t("projectSettings.readPermissionHint")}</small></span></button><button type="button" role="radio" aria-checked={permission === "edit"} className={permission === "edit" ? "active" : ""} onClick={() => setPermission("edit")}><Pencil size={14} /><span><strong>{t("common.readWrite")}</strong><small>{t("projectSettings.editPermissionHint")}</small></span></button></div></div>
+            <div className="share-recipient-card-footer"><button className="primary share-invite-submit" onClick={() => void addInvitation()}><Send size={14} />{t("projectSettings.addMember")}</button></div>
+          </>}
+        </section>}
+      </section>}
       <div className="shared-members-heading"><strong>{t("projectSettings.members")}</strong><span>{members.length}</span></div>
       <div className="shared-members">{members.map((member) => <div className="shared-member" key={member.id}><span className="member-identity"><span className="member-avatar">{(member.displayName ?? member.username).slice(0, 1).toLocaleUpperCase()}</span><span><strong>{member.displayName ?? member.username}</strong><small>{member.email ?? `@${member.username}`}</small></span></span><span className="member-controls"><select aria-label={t("common.permission")} disabled={!canManage} value={member.permission} onChange={(event) => void changePermission(member, event.target.value as "read" | "edit")}><option value="read">{t("common.readOnly")}</option><option value="edit">{t("common.readWrite")}</option></select>{canManage && <button className="icon-only danger-text" title={t("common.remove")} aria-label={t("common.remove")} onClick={() => setRemoveTarget(member)}><Trash2 size={15} /></button>}</span></div>)}{members.length === 0 && <div className="share-empty"><Users size={24} /><span>{t("projectSettings.noMembers")}</span></div>}</div>
+      {canManage && <section className="share-links-section"><div className="share-links-heading"><div><strong><Link2 size={15} />{t("projectSettings.shareLinks")}</strong><p>{t("projectSettings.shareLinksDescription")}</p></div></div><button type="button" className="share-link-create" disabled={linkBusy} onClick={() => void createShareLink()}><Eye size={14} />{linkBusy ? t("common.loading") : t("projectSettings.createReadLink")}</button><small className="share-link-note">{t("projectSettings.revokeLinkDescription")}</small><div className="share-links-list">{shareLinks.map((link) => <div className="share-link-row" key={link.id}><span className="share-link-icon"><Eye size={14} /></span><span className="share-link-details"><strong>{t("projectSettings.linkRead")}</strong><input className="share-link-url" aria-label={t("projectSettings.linkRead")} readOnly value={new URL(link.url, window.location.origin).toString()} onFocus={(event) => event.currentTarget.select()} /><small>{new Date(link.createdAt).toLocaleString(i18n.resolvedLanguage)}</small></span><span className="share-link-actions"><button type="button" className="icon-only" title={copiedLinkId === link.id ? t("projectSettings.copiedLink") : t("projectSettings.copyLink")} aria-label={copiedLinkId === link.id ? t("projectSettings.copiedLink") : t("projectSettings.copyLink")} onClick={() => void copyShareLink(link)}>{copiedLinkId === link.id ? <Check size={15} /> : <Copy size={15} />}</button><button type="button" className="icon-only danger-text" title={t("projectSettings.revokeLink")} aria-label={t("projectSettings.revokeLink")} onClick={() => setRevokeLinkTarget(link)}><Trash2 size={15} /></button></span></div>)}{shareLinks.length === 0 && <div className="share-empty"><Link2 size={22} /><span>{t("projectSettings.noShareLinks")}</span></div>}</div></section>}
+      {canManage && <><div className="shared-members-heading"><strong>{t("projectSettings.pendingInvitations")}</strong><span>{invitations.length}</span></div><div className="shared-members pending-invitations">{invitations.map((invitation) => <div className="shared-member" key={invitation.id}><span className="member-identity"><span className="member-avatar">@</span><span><strong>{invitation.recipientDisplayName ?? invitation.recipientUsername ?? t("projectSettings.pendingRecipient")}</strong><small>{invitation.recipientUsername ? `@${invitation.recipientUsername}` : t("projectSettings.pendingRecipient")} · {invitation.permission === "edit" ? t("common.readWrite") : t("common.readOnly")}</small></span></span><button className="icon-only danger-text" title={t("common.remove")} aria-label={t("common.remove")} onClick={() => void revokeInvitation(invitation)}><Trash2 size={15} /></button></div>)}{invitations.length === 0 && <div className="share-empty"><span>{t("projectSettings.noPendingInvitations")}</span></div>}</div></>}
     </div>
   </Modal><ConfirmDialog open={Boolean(removeTarget)} title={t("projectSettings.removeTitle")} description={t("projectSettings.removeDescription", { username: removeTarget?.username ?? "" })} confirmLabel={t("common.remove")} danger onCancel={() => setRemoveTarget(null)} onConfirm={() => void removeMember()} /><ConfirmDialog open={Boolean(revokeLinkTarget)} title={t("projectSettings.revokeLinkTitle")} description={t("projectSettings.revokeLinkDescription")} confirmLabel={t("projectSettings.revokeLink")} danger onCancel={() => setRevokeLinkTarget(null)} onConfirm={() => void revokeShareLink()} /></>;
 }

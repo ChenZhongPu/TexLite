@@ -6,6 +6,7 @@ import * as schema from "../schema/postgres.js";
 type ProjectMemberTransaction = NodePgTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
 
 export type MemberPermission = "read" | "edit";
+export type ProjectRecipientStatus = "member" | "pending" | null;
 
 export interface UserInvitationSummary {
   id: string;
@@ -228,6 +229,27 @@ export class PostgresProjectMemberRepository {
       .where(eq(schema.projectMembers.projectId, projectId))
       .orderBy(schema.users.username);
     return rows.map((row) => ({ ...row, permission: asPermission(row.permission) }));
+  }
+
+  async findRecipientStatus(projectId: string, userId: string): Promise<ProjectRecipientStatus> {
+    const [member] = await this.db.select({ userId: schema.projectMembers.userId })
+      .from(schema.projectMembers)
+      .where(and(
+        eq(schema.projectMembers.projectId, projectId),
+        eq(schema.projectMembers.userId, userId)
+      ))
+      .limit(1);
+    if (member) return "member";
+
+    const [invitation] = await this.db.select({ id: schema.projectInvitations.id })
+      .from(schema.projectInvitations)
+      .where(and(
+        eq(schema.projectInvitations.projectId, projectId),
+        eq(schema.projectInvitations.recipientUserId, userId),
+        eq(schema.projectInvitations.status, "pending")
+      ))
+      .limit(1);
+    return invitation ? "pending" : null;
   }
 
   async listPendingInvitations(projectId: string): Promise<ProjectInvitationSummary[]> {
