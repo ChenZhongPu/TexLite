@@ -15,6 +15,8 @@ fork 仓库地址为 [ChenZhongPu/TexLite](https://github.com/ChenZhongPu/TexLit
   不会出现在项目列表中，也不能批注或使用 `@` 提及；写权限必须通过明确加入项目获得。撤销链接
   不会移除已经加入项目的成员。
 - **协作功能**：已加入项目的用户继续支持成员权限、批注、提及和协作者状态展示。
+- **AI 写作**：支持将编辑器中的写作任务发送到独立的 AI 服务并以协作方式返回结果；AI 服务端的示例程序见
+  [ChenZhongPu/Texlite-AI](https://github.com/ChenZhongPu/Texlite-AI)。
 - **安全调整**：不再支持项目中的 `latexmkrc` 文件。
 - **移除功能**：去掉 Git 集成功能和项目所有权转让功能。
 
