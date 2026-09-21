@@ -9,6 +9,7 @@ export type WorkspaceAiAction = {
   operation: "insert" | "replace";
   promptId?: string;
   taskDescription: string;
+  includeCurrentFile: boolean;
   contextFiles: string[];
 };
 
@@ -45,6 +46,7 @@ export function WorkspaceAiMenu({
   const { t } = useTranslation();
   const [taskDescription, setTaskDescription] = useState("");
   const [promptId, setPromptId] = useState("");
+  const [includeCurrentFile, setIncludeCurrentFile] = useState(false);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [contextOpen, setContextOpen] = useState(false);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -68,6 +70,7 @@ export function WorkspaceAiMenu({
       setOffset({ x: 0, y: 0 });
       setTaskDescription("");
       setPromptId("");
+      setIncludeCurrentFile(false);
       setContextFiles([]);
       setContextOpen(false);
       return;
@@ -100,6 +103,7 @@ export function WorkspaceAiMenu({
       operation: hasSelection ? "replace" : "insert",
       ...(promptId ? { promptId } : {}),
       taskDescription: instruction,
+      includeCurrentFile,
       contextFiles
     });
   };
@@ -112,6 +116,10 @@ export function WorkspaceAiMenu({
       ? current.filter((item) => item !== path)
       : current.length >= MAX_CONTEXT_FILES ? current : [...current, path]);
   };
+  const selectedContextCount = contextFiles.length + (includeCurrentFile ? 1 : 0);
+  const instructionHint = includeCurrentFile
+    ? t(hasSelection ? "ai.selectionHint" : "ai.cursorHint")
+    : t(hasSelection ? "ai.selectionOnlyHint" : "ai.cursorOnlyHint");
   const phaseLabel = phase === "preparing"
     ? t("ai.preparing")
     : phase === "review"
@@ -196,7 +204,7 @@ export function WorkspaceAiMenu({
                     }
                   }}
                 />
-                <small id="ai-instruction-hint" className="ai-input-hint">{t(hasSelection ? "ai.selectionHint" : "ai.cursorHint")}</small>
+                <small id="ai-instruction-hint" className="ai-input-hint">{instructionHint}</small>
                 {!taskDescription.trim() && <small id="ai-instruction-validation" className="ai-input-validation">{t("ai.instructionRequired")}</small>}
               </section>
               <section className="ai-quick-section" aria-label={t("ai.quickInstructions")}>
@@ -210,21 +218,26 @@ export function WorkspaceAiMenu({
                   {!hasSelection && <button type="button" onClick={() => choosePreset("follow-style", t("ai.tasks.followStyle"))}>{t("ai.followStyle")}</button>}
                 </div>
               </section>
-              <div className="ai-target-file"><FileCode2 size={15} /><span>{t("ai.currentFile")} <code title={activeFile}>{activeFile}</code></span><small>{t("ai.autoIncluded")}</small></div>
-              {contextCandidates.length > 0 && <section className="ai-context-section">
+              <div className="ai-target-file"><FileCode2 size={15} /><span>{t("ai.targetFile")} <code title={activeFile}>{activeFile}</code></span></div>
+              {hasActiveFile && <section className="ai-context-section">
                 <button type="button" className="ai-context-toggle" aria-expanded={contextOpen} onClick={() => setContextOpen((current) => !current)}>
                   <span><FileCode2 size={15} /><strong>{t("ai.addContextFiles")}</strong><small>{t("ai.optional")}</small></span>
-                  <span><small>{contextFiles.length > 0 ? t("ai.contextSelected", { count: contextFiles.length }) : t("ai.notAdded")}</small><ChevronDown size={15} /></span>
+                  <span><small>{selectedContextCount > 0 ? t("ai.contextSelected", { count: selectedContextCount }) : t("ai.notAdded")}</small><ChevronDown size={15} /></span>
                 </button>
                 {contextOpen && <div className="ai-context-body">
                   <small className="ai-context-description">{t("ai.contextFilesHint")}</small>
                   <div className="ai-context-file-list">
+                    <label className="ai-context-file ai-context-target" key="__current_file__">
+                      <input type="checkbox" checked={includeCurrentFile} onChange={() => setIncludeCurrentFile((current) => !current)} disabled={!includeCurrentFile && selectedContextCount >= MAX_CONTEXT_FILES} />
+                      <span title={activeFile}>{activeFile}</span>
+                      <small>{t("ai.targetFile")}</small>
+                    </label>
                     {contextCandidates.map((entry) => <label className="ai-context-file" key={entry.path}>
-                      <input type="checkbox" checked={contextFiles.includes(entry.path)} onChange={() => toggleContextFile(entry.path)} disabled={!contextFiles.includes(entry.path) && contextFiles.length >= MAX_CONTEXT_FILES} />
+                      <input type="checkbox" checked={contextFiles.includes(entry.path)} onChange={() => toggleContextFile(entry.path)} disabled={!contextFiles.includes(entry.path) && selectedContextCount >= MAX_CONTEXT_FILES} />
                       <span title={entry.path}>{entry.path}</span>
                     </label>)}
                   </div>
-                  {contextFiles.length > 0 && <small className="ai-context-warning">{t("ai.contextSlowWarning")}</small>}
+                  {selectedContextCount > 0 && <small className="ai-context-warning">{t("ai.contextSlowWarning")}</small>}
                 </div>}
               </section>}
               <div className="ai-composer-footer">

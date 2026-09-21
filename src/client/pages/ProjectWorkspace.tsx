@@ -748,6 +748,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       operation: action.operation,
       startOffset,
       endOffset,
+      includeCurrentFile: action.includeCurrentFile,
       contextFiles: action.contextFiles,
       promptId: action.promptId,
       taskDescription: action.taskDescription,

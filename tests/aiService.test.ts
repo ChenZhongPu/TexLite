@@ -44,7 +44,7 @@ function service(fetchImpl: typeof fetch) {
 function input() {
   return {
     requestId: "request-1", projectId: "project-1", targetFilePath: "main.tex", operation: "replace" as const,
-    startOffset: 7, endOffset: 10, contextFiles: ["refs.bib"], promptId: "polish",
+    startOffset: 7, endOffset: 10, includeCurrentFile: false, contextFiles: ["refs.bib"], promptId: "polish",
     taskDescription: "Polish this text.", user
   };
 }
@@ -55,12 +55,14 @@ describe("AI task service", () => {
       const payload = JSON.parse(String(init?.body)) as {
         protocolVersion: number;
         actor?: { userId?: string; nuwaxSubject?: string };
-        target?: { filePath?: string };
+        target?: { filePath?: string; before?: string; after?: string };
         contextFiles?: Array<{ filePath: string; content: string }>;
       };
       expect(payload.protocolVersion).toBe(2);
       expect(payload.actor).toMatchObject({ userId: "user-1", nuwaxSubject: "nuwax-sub-1" });
       expect(payload.target?.filePath).toBe("main.tex");
+      expect(payload.target?.before).toBe("");
+      expect(payload.target?.after).toBe("");
       expect(payload.contextFiles).toEqual([{ filePath: "refs.bib", content: "context from refs.bib" }]);
       const lines = [
         { protocolVersion: 2, requestId: "request-1", type: "status", phase: "preparing" },
@@ -92,6 +94,27 @@ describe("AI task service", () => {
       code: "AI_UPSTREAM_INVALID_RESPONSE"
     });
     expect(collaboration.applyAiResult).not.toHaveBeenCalled();
+  });
+
+  it("sends current-file context only after explicit selection", async () => {
+    const targets: Array<{ before?: string; after?: string }> = [];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { requestId: string; target?: { before?: string; after?: string } };
+      targets.push({ before: payload.target?.before, after: payload.target?.after });
+      const lines = [
+        { protocolVersion: 2, requestId: payload.requestId, type: "delta", text: "new" },
+        { protocolVersion: 2, requestId: payload.requestId, type: "done", resultText: "new" }
+      ]
+        .map((event) => JSON.stringify(event)).join("\n");
+      return new Response(lines + "\n", { headers: { "content-type": "application/x-ndjson" } });
+    };
+    const { taskService } = service(fetchImpl);
+    await taskService.run({ ...input(), requestId: "without-context" }, new AbortController().signal, () => undefined);
+    await taskService.run({ ...input(), requestId: "with-context", includeCurrentFile: true }, new AbortController().signal, () => undefined);
+    expect(targets).toEqual([
+      { before: "", after: "" },
+      { before: "before ", after: " after" }
+    ]);
   });
 
   it("rejects malformed upstream JSON and does not write a partial result", async () => {

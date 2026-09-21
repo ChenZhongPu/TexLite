@@ -37,6 +37,7 @@ export interface AiTaskInput {
   operation: AiOperation;
   startOffset: number;
   endOffset: number;
+  includeCurrentFile: boolean;
   contextFiles: string[];
   promptId?: string;
   taskDescription: string;
@@ -248,13 +249,17 @@ export class AiTaskService {
 
   private captureTarget(input: AiTaskInput): AiTargetSnapshot {
     try {
-      return this.collaboration.captureAiTarget(
+      const snapshot = this.collaboration.captureAiTarget(
         input.projectId,
         input.targetFilePath,
         input.startOffset,
         input.endOffset,
         input.operation
       );
+      if (input.includeCurrentFile) return snapshot;
+      // The selected text remains the target, but the surrounding document is
+      // optional context and must not be sent until the user opts in.
+      return { ...snapshot, contextBefore: "", contextAfter: "" };
     } catch (error) {
       if (error instanceof AiTargetConflictError) {
         throw new AiServiceError("AI_TARGET_CONFLICT", "The collaborative document is not ready for AI editing.", 409);
@@ -459,6 +464,9 @@ function validateTaskInput(input: AiTaskInput): void {
   }
   if (input.operation !== "insert" && input.operation !== "replace") {
     throw new AiServiceError("AI_REQUEST_INVALID", "The AI operation is invalid.", 400);
+  }
+  if (typeof input.includeCurrentFile !== "boolean") {
+    throw new AiServiceError("AI_REQUEST_INVALID", "The current-file context choice is invalid.", 400);
   }
   if (!Array.isArray(input.contextFiles) || input.contextFiles.length > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES) {
     throw new AiServiceError("AI_CONTEXT_TOO_LARGE", "Too many AI context files were selected.", 413);

@@ -527,6 +527,8 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .ai-context-file:hover { background: #edf5ef; }
 .ai-context-file input { flex: none; width: 15px; height: 15px; accent-color: #176b44; }
 .ai-context-file span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-context-file small { margin-left: auto; flex: none; color: #5e7a67; font-family: inherit; font-size: 11px; white-space: nowrap; }
+.ai-context-file.ai-context-target { background: #f4f8f5; }
 .ai-context-warning { padding: 3px 0 0; color: #80652c !important; font-size: 12px; line-height: 1.4; }
 .ai-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; border-top: 1px solid #e2e9e3; }
 .ai-keyboard-hint { color: #748178; font-size: 12px; line-height: 1.4; }
@@ -976,7 +978,7 @@ td button { margin-right: 8px; border: 1px solid #cdd2ce; background: white; bor
 .tex-fmt-options-editor { resize: vertical; font: 12px/1.5 "SFMono-Regular", Consolas, monospace !important; }
 .tex-fmt-options-editor { min-height: 100px; }
 .dictionary-add { display: flex; align-items: stretch; gap: 7px; }
-.dictionary-add input { min-width: 0; flex: 1; }
+.dictionary-add input { min-width: 0; flex: 1; font-size: 12px; }
 .dictionary-add button { flex: none; color: #176b44; }
 .dictionary-words { display: flex; flex-wrap: wrap; gap: 6px; }
 .dictionary-word { display: inline-flex; align-items: center; gap: 3px; min-height: 27px; padding: 3px 5px 3px 8px; border: 1px solid #d5ded7; border-radius: 999px; background: #f1f6f2; color: #31523e; font-size: 11px; }

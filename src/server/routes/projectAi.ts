@@ -44,6 +44,11 @@ export function registerProjectAiRoutes(app: FastifyInstance, context: ProjectAi
       || (operation === "replace" && startOffset === endOffset)) {
       return apiError(reply, 400, "AI_REQUEST_INVALID");
     }
+    const rawIncludeCurrentFile = body.includeCurrentFile;
+    if (rawIncludeCurrentFile !== undefined && typeof rawIncludeCurrentFile !== "boolean") {
+      return apiError(reply, 400, "AI_REQUEST_INVALID");
+    }
+    const includeCurrentFile = rawIncludeCurrentFile === undefined ? false : rawIncludeCurrentFile;
     const rawContextFiles = body.contextFiles === undefined ? [] : body.contextFiles;
     if (!Array.isArray(rawContextFiles) || rawContextFiles.length > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES) {
       return apiError(reply, 413, "AI_CONTEXT_TOO_LARGE");
@@ -102,6 +107,7 @@ export function registerProjectAiRoutes(app: FastifyInstance, context: ProjectAi
         operation,
         startOffset: startOffset as number,
         endOffset: endOffset as number,
+        includeCurrentFile,
         contextFiles,
         ...(promptId ? { promptId } : {}),
         taskDescription,

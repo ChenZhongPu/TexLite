@@ -10,6 +10,7 @@ export interface AiTaskRequest {
   operation: "insert" | "replace";
   startOffset: number;
   endOffset: number;
+  includeCurrentFile: boolean;
   contextFiles: string[];
   promptId?: string;
   taskDescription: string;
@@ -44,6 +45,7 @@ export async function streamAiTask(request: AiTaskRequest, onEvent: (event: AiCl
         operation: request.operation,
         startOffset: request.startOffset,
         endOffset: request.endOffset,
+        includeCurrentFile: request.includeCurrentFile,
         contextFiles: request.contextFiles,
         ...(request.promptId ? { promptId: request.promptId } : {}),
         taskDescription: request.taskDescription
