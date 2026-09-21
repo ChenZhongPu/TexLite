@@ -175,10 +175,18 @@ class LineActionsMarker extends GutterMarker {
   }
 }
 
-function lineActionMarkers(state: EditorState, marker: GutterMarker, aiEnabled: boolean): RangeSet<GutterMarker> {
+function lineActionMarkers(
+  state: EditorState,
+  cursorMarker: GutterMarker,
+  selectionMarker: GutterMarker,
+  aiEnabled: boolean
+): RangeSet<GutterMarker> {
   const selection = state.selection.main;
-  if (!aiEnabled && selection.empty) return RangeSet.empty;
-  return RangeSet.of([marker.range(state.doc.lineAt(selection.empty ? selection.head : selection.from).from)]);
+  const hasSelectedText = !selection.empty
+    && state.sliceDoc(selection.from, selection.to).trim().length > 0;
+  if (!aiEnabled && !hasSelectedText) return RangeSet.empty;
+  const marker = hasSelectedText ? selectionMarker : cursorMarker;
+  return RangeSet.of([marker.range(state.doc.lineAt(hasSelectedText ? selection.from : selection.head).from)]);
 }
 
 function commentAddLineNumberExtension(
@@ -188,11 +196,12 @@ function commentAddLineNumberExtension(
   aiEnabled: boolean,
   onAiWrite: () => void
 ) {
-  const marker = new LineActionsMarker({ ai: aiEnabled ? aiLabel : undefined, comment: commentLabel });
+  const cursorMarker = new LineActionsMarker({ ai: aiEnabled ? aiLabel : undefined });
+  const selectionMarker = new LineActionsMarker({ ai: aiEnabled ? aiLabel : undefined, comment: commentLabel });
   const field = StateField.define<RangeSet<GutterMarker>>({
-    create: (state) => lineActionMarkers(state, marker, aiEnabled),
+    create: (state) => lineActionMarkers(state, cursorMarker, selectionMarker, aiEnabled),
     update: (value, transaction) => transaction.selection || transaction.docChanged
-      ? lineActionMarkers(transaction.state, marker, aiEnabled)
+      ? lineActionMarkers(transaction.state, cursorMarker, selectionMarker, aiEnabled)
       : value,
     provide: (field) => lineNumberMarkers.from(field)
   });
@@ -209,8 +218,9 @@ function commentAddLineNumberExtension(
           }
           if (!target.closest("[data-comment-add]")) return false;
           const selection = view.state.selection.main;
-          if (selection.empty) return false;
-          onAddComment(view.state.sliceDoc(selection.from, selection.to), selection.from, selection.to, view.state.doc.toString());
+          const selectedText = view.state.sliceDoc(selection.from, selection.to);
+          if (selection.empty || !selectedText.trim()) return false;
+          onAddComment(selectedText, selection.from, selection.to, view.state.doc.toString());
           return true;
         }
       }

@@ -29,6 +29,8 @@ export function registerProjectAiRoutes(app: FastifyInstance, context: ProjectAi
     const body = (request.body ?? {}) as Record<string, unknown>;
     const operation = body.operation;
     if (operation !== "insert" && operation !== "replace") return apiError(reply, 400, "AI_REQUEST_INVALID");
+    const lang = body.lang;
+    if (lang !== "en" && lang !== "any") return apiError(reply, 400, "AI_LANGUAGE_INVALID");
     const filePathValue = body.targetFilePath;
     if (typeof filePathValue !== "string") return apiError(reply, 400, "AI_REQUEST_INVALID");
     let filePath: string;
@@ -105,6 +107,7 @@ export function registerProjectAiRoutes(app: FastifyInstance, context: ProjectAi
         projectId,
         targetFilePath: filePath,
         operation,
+        lang,
         startOffset: startOffset as number,
         endOffset: endOffset as number,
         includeCurrentFile,

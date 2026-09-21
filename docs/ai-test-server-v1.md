@@ -40,6 +40,7 @@
   "projectId": "project-9de10dda",
   "taskType": "writing",
   "operation": "replace",
+  "lang": "en",
   "target": {
     "filePath": "main.tex",
     "before": "本文首先介绍研究背景……",
@@ -67,9 +68,10 @@
 字段要求：
 
 - `requestId`、`projectId`、`taskType`、`operation`、`target`、
-  `taskDescription` 必须存在；`promptId` 可选，缺省时使用对应操作的默认提示词；
+  `lang`、`taskDescription` 必须存在；`promptId` 可选，缺省时使用对应操作的默认提示词；
 - `taskType` 当前只接受 `writing`；
 - `operation` 当前只接受 `replace` 和 `insert`；
+- `lang` 只能是 `en` 或 `any`；`en` 要求自然语言使用英文，`any` 不限制自然语言；
 - `target.filePath` 必须是非空项目相对路径；
 - `replace` 时 `selectedText` 可以为空的校验应直接失败；
 - `insert` 时 `selectedText` 应为空，且由 TexLite 保证这是光标插入任务；
@@ -88,9 +90,9 @@
 
 | 内容 | 上限 |
 | --- | ---: |
-| `contextFiles` 数量 | 8 个（仅限 `.tex` 与 `.bib`） |
-| 单个上下文文件 UTF-8 字节数 | 64 KiB |
-| 所有上下文文件 UTF-8 字节数 | 256 KiB |
+| `contextFiles` 数量 | 3 个（仅限 `.tex` 与 `.bib`） |
+| 单个上下文文件 UTF-8 字节数 | 256 KiB |
+| 所有上下文文件 UTF-8 字节数 | 1 MiB |
 | `target.before` | 64 KiB |
 | `target.selectedText` | 32 KiB |
 | `target.after` | 32 KiB |

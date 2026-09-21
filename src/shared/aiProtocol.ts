@@ -18,6 +18,7 @@ export const AI_ERROR_CODES = {
   INVALID_CONTEXT: "AI_INVALID_CONTEXT",
   CONTEXT_TOO_LARGE: "AI_CONTEXT_TOO_LARGE",
   INVALID_REQUEST: "AI_INVALID_REQUEST",
+  LANGUAGE_INVALID: "AI_LANGUAGE_INVALID",
   UNAUTHORIZED: "AI_UNAUTHORIZED",
   NOT_ACCEPTABLE: "AI_NOT_ACCEPTABLE",
   UPSTREAM_ERROR: "AI_UPSTREAM_ERROR",
@@ -34,12 +35,13 @@ export const AI_PROTOCOL_LIMITS = {
   MAX_CONTEXT_SELECTED_BYTES: 32 * 1024,
   MAX_CONTEXT_AFTER_BYTES: 32 * 1024,
   MAX_CONTEXT_TOTAL_BYTES: 128 * 1024,
-  MAX_CONTEXT_FILES: 8,
-  MAX_CONTEXT_FILE_BYTES: 64 * 1024,
-  MAX_CONTEXT_FILES_TOTAL_BYTES: 256 * 1024
+  MAX_CONTEXT_FILES: 3,
+  MAX_CONTEXT_FILE_BYTES: 256 * 1024,
+  MAX_CONTEXT_FILES_TOTAL_BYTES: 1024 * 1024
 } as const;
 
 export type AiOperation = "insert" | "replace";
+export type AiLanguage = "en" | "any";
 
 /** Only these project files may be sent as additional AI context. */
 export function isAiContextFilePath(filePath: string): boolean {
@@ -72,6 +74,7 @@ export interface AiGenerateRequest {
   projectId: string;
   taskType: "writing";
   operation: AiOperation;
+  lang: AiLanguage;
   target: AiTargetContext;
   contextFiles: AiContextFile[];
   promptId?: string;

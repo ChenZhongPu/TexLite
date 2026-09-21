@@ -8,6 +8,7 @@ export interface AiTaskRequest {
   requestId: string;
   targetFilePath: string;
   operation: "insert" | "replace";
+  lang: "en" | "any";
   startOffset: number;
   endOffset: number;
   includeCurrentFile: boolean;
@@ -43,6 +44,7 @@ export async function streamAiTask(request: AiTaskRequest, onEvent: (event: AiCl
         requestId: request.requestId,
         targetFilePath: request.targetFilePath,
         operation: request.operation,
+        lang: request.lang,
         startOffset: request.startOffset,
         endOffset: request.endOffset,
         includeCurrentFile: request.includeCurrentFile,
@@ -152,6 +154,7 @@ function localizedAiError(code: string, fallback: string): string {
     AI_UPSTREAM_ERROR: "ai.failed",
     AI_UPSTREAM_INVALID_RESPONSE: "ai.invalidResponse",
     AI_UPSTREAM_UNAUTHORIZED: "ai.unauthorized",
+    AI_LANGUAGE_INVALID: "ai.languageInvalid",
     AI_OUTPUT_TOO_LARGE: "ai.invalidResponse",
     AI_CONTEXT_FILES_INVALID: "ai.contextFilesInvalid",
     AI_CONTEXT_TOO_LARGE: "ai.contextTooLarge",

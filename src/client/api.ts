@@ -123,6 +123,7 @@ export function localizedResponseError(body: unknown, status: number, fallbackKe
       WORD_COUNT_UNAVAILABLE: "editor.wordCountUnavailable",
       AI_NOT_CONFIGURED: "ai.failed",
       AI_REQUEST_INVALID: "ai.requestInvalid",
+      AI_LANGUAGE_INVALID: "ai.languageInvalid",
       AI_CONTEXT_FILES_INVALID: "ai.contextFilesInvalid",
       AI_CONTEXT_TOO_LARGE: "ai.contextTooLarge",
       AI_TARGET_INVALID: "ai.requestInvalid",

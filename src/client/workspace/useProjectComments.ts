@@ -196,12 +196,14 @@ export function useProjectComments({
 
   const openComment = (selectionOverride?: SourceSelection, sourceOverride?: string) => {
     if (!activeFile || permission === "read") return;
+    const nextSelection = selectionOverride ?? selection;
+    if (!nextSelection.selectedText.trim() || nextSelection.endOffset <= nextSelection.startOffset) return;
     setCommentError("");
     // Keep the source revision and selection that the user actually reviewed.
     // Remote edits while the composer is open must never silently retarget it.
     setCommentDraft({
       filePath: activeFile,
-      selection: { ...(selectionOverride ?? selection) },
+      selection: { ...nextSelection },
       sourceHash: sourceHash(sourceOverride ?? content)
     });
     setCommentOpen(true);

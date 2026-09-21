@@ -25,6 +25,7 @@ import type { SpellCheckIssue } from "../spellCheck";
 import { supportsWritingChecks } from "../../shared/writingChecks";
 import { loadPdfPreview, type WorkspacePreload } from "../workspacePreload";
 import { hasDocumentClass as hasDocumentClassInSource } from "../latexRoot";
+import { hasCjkLanguageSupport } from "../../shared/aiLanguage";
 import { findLatexSourceIncludes } from "../../shared/latexDependencies";
 import { WorkspaceTopbar } from "../workspace/WorkspaceTopbar";
 import { cancelAiTask, confirmAiTask, streamAiTask, AiClientError } from "../ai";
@@ -159,6 +160,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [aiPreview, setAiPreview] = useState<AiPreviewState | null>(null);
   const [aiReady, setAiReady] = useState(false);
   const [aiComposerOpen, setAiComposerOpen] = useState(false);
+  const [aiLanguageSupport, setAiLanguageSupport] = useState<boolean | null>(null);
   const [formatterRecovery, setFormatterRecovery] = useState<FormatterRecovery | null>(null);
   const [permissionDowngradeBusy, setPermissionDowngradeBusy] = useState(false);
   const [editorPreferences, setEditorPreferences] = useState<EditorPreferences>(() => loadEditorPreferences(user.id, projectId));
@@ -305,6 +307,21 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     dismissPermissionDowngrade,
     discardLocalDraft
   } = useProjectCollaboration(projectId, user, activeMainFile, project?.permission ?? "read", collaborationReady, () => setSaveState("editor.offlineDraft"));
+
+  const aiLanguageFile = project?.mainFile || activeMainFile;
+  useEffect(() => {
+    if (!aiLanguageFile || (!collaborationSynced && !localDraftReady)) {
+      setAiLanguageSupport(null);
+      return;
+    }
+    const text = collaboration.getText(aiLanguageFile);
+    const updateLanguageSupport = (): void => {
+      setAiLanguageSupport(hasCjkLanguageSupport(text.toString()));
+    };
+    updateLanguageSupport();
+    text.observe(updateLanguageSupport);
+    return () => text.unobserve(updateLanguageSupport);
+  }, [aiLanguageFile, collaboration, collaborationSynced, localDraftReady]);
 
   const { unreadMentions, refresh: refreshMentions, markMentionRead, markAllMentionsRead } = useProjectMentions(projectId, commentsRevision, setError);
 
@@ -746,6 +763,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       requestId,
       targetFilePath: filePath,
       operation: action.operation,
+      lang: action.lang,
       startOffset,
       endOffset,
       includeCurrentFile: action.includeCurrentFile,
@@ -1442,6 +1460,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       hasActiveFile={Boolean(activeFile && isEditableTextFile(activeFile))}
       activeFile={activeFile}
       files={files}
+      languageSupport={aiLanguageSupport}
       busy={aiBusy}
       ready={aiReady}
       phase={aiPhase}

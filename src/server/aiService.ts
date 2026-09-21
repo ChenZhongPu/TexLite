@@ -15,9 +15,11 @@ import {
   isAiContextFilePath,
   type AiContextFile,
   type AiGenerateRequest,
+  type AiLanguage,
   type AiOperation,
   type AiStreamEvent
 } from "../shared/aiProtocol.js";
+import { hasCjkLanguageSupport } from "../shared/aiLanguage.js";
 
 const AI_ENDPOINT_PATH = "/api/texlite/ai/generate";
 const AI_REQUEST_TIMEOUT_MS = 120_000;
@@ -38,6 +40,7 @@ export interface AiTaskInput {
   startOffset: number;
   endOffset: number;
   includeCurrentFile: boolean;
+  lang: AiLanguage;
   contextFiles: string[];
   promptId?: string;
   taskDescription: string;
@@ -125,11 +128,12 @@ export class AiTaskService {
 
     try {
       if (controller.signal.aborted) throw new AiTaskCancelledError();
-      await this.ensureStillAuthorized(input);
+      const project = await this.ensureStillAuthorized(input);
       if (controller.signal.aborted) throw new AiTaskCancelledError();
 
       const snapshot = this.captureTarget(input);
       const contextFiles = this.captureContextFiles(input);
+      const lang = await this.resolveLanguage(input, project.main_file);
       const request: AiGenerateRequest = {
         protocolVersion: AI_PROTOCOL_VERSION,
         requestId: input.requestId,
@@ -141,6 +145,7 @@ export class AiTaskService {
         projectId: input.projectId,
         taskType: "writing",
         operation: input.operation,
+        lang,
         target: buildTarget(snapshot),
         contextFiles,
         ...(input.promptId ? { promptId: input.promptId } : {}),
@@ -292,7 +297,7 @@ export class AiTaskService {
     }
   }
 
-  private async ensureStillAuthorized(input: AiTaskInput): Promise<void> {
+  private async ensureStillAuthorized(input: AiTaskInput): Promise<{ main_file: string }> {
     const currentUser = await this.db.identity.findUserById(input.user.id);
     if (!currentUser || currentUser.disabled
       || (input.user.session_id !== null && input.user.session_id !== undefined
@@ -302,6 +307,27 @@ export class AiTaskService {
     const project = await this.db.projects.findCollaborationAccess(input.projectId, currentUser);
     if (!project || (project.permission !== "owner" && project.permission !== "edit")) {
       throw new AiServiceError("AI_PERMISSION_REVOKED", "You no longer have edit permission for this project.", 403);
+    }
+    const currentProject = await this.db.projects.findById(input.projectId);
+    if (!currentProject) throw new AiServiceError("AI_PERMISSION_REVOKED", "You no longer have edit permission for this project.", 403);
+    return currentProject;
+  }
+
+  /**
+   * The browser supplies the user's preference, but the server remains the
+   * authority for the safe default. If the project main document does not
+   * declare CJK support, a requested unrestricted mode is normalized to
+   * English before the request leaves TexLite.
+   */
+  private async resolveLanguage(input: AiTaskInput, mainFile: string): Promise<AiLanguage> {
+    if (input.lang === "en") return "en";
+    try {
+      const [mainDocument] = this.collaboration.captureAiContextFiles(input.projectId, [mainFile]);
+      return hasCjkLanguageSupport(mainDocument?.content ?? "") ? "any" : "en";
+    } catch {
+      // An unavailable or incomplete live room must not weaken the language
+      // safety default. Target capture reports the room error separately.
+      return "en";
     }
   }
 
@@ -464,6 +490,9 @@ function validateTaskInput(input: AiTaskInput): void {
   }
   if (input.operation !== "insert" && input.operation !== "replace") {
     throw new AiServiceError("AI_REQUEST_INVALID", "The AI operation is invalid.", 400);
+  }
+  if (input.lang !== "en" && input.lang !== "any") {
+    throw new AiServiceError("AI_LANGUAGE_INVALID", "The AI language mode is invalid.", 400);
   }
   if (typeof input.includeCurrentFile !== "boolean") {
     throw new AiServiceError("AI_REQUEST_INVALID", "The current-file context choice is invalid.", 400);

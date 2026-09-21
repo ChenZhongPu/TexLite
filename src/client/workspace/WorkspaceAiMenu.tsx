@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import { ChevronDown, FileCode2, LoaderCircle, Send, WandSparkles, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "../types";
+import { AI_PROTOCOL_LIMITS } from "../../shared/aiProtocol";
 
-const MAX_CONTEXT_FILES = 8;
+const MAX_CONTEXT_FILES = AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES;
 
 export type WorkspaceAiAction = {
   operation: "insert" | "replace";
+  lang: "en" | "any";
   promptId?: string;
   taskDescription: string;
   includeCurrentFile: boolean;
@@ -22,6 +24,7 @@ export interface WorkspaceAiMenuProps {
   hasActiveFile: boolean;
   activeFile: string;
   files: FileEntry[];
+  languageSupport: boolean | null;
   busy: boolean;
   ready: boolean;
   phase: "preparing" | "generating" | "review" | "applying" | null;
@@ -41,7 +44,7 @@ interface DragState {
 /** Draggable AI task dialog opened from the current line-number action. */
 export function WorkspaceAiMenu({
   open, onClose, available, readOnly, hasSelection, hasActiveFile, activeFile, files,
-  busy, ready, phase, onRun, onCancel, onConfirm
+  languageSupport, busy, ready, phase, onRun, onCancel, onConfirm
 }: WorkspaceAiMenuProps) {
   const { t } = useTranslation();
   const [taskDescription, setTaskDescription] = useState("");
@@ -49,6 +52,8 @@ export function WorkspaceAiMenu({
   const [includeCurrentFile, setIncludeCurrentFile] = useState(false);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [contextOpen, setContextOpen] = useState(false);
+  const [englishOnly, setEnglishOnly] = useState(true);
+  const [languagePreferenceTouched, setLanguagePreferenceTouched] = useState(false);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const dialogRef = useRef<HTMLDivElement>(null);
   const dragState = useRef<DragState | null>(null);
@@ -73,10 +78,20 @@ export function WorkspaceAiMenu({
       setIncludeCurrentFile(false);
       setContextFiles([]);
       setContextOpen(false);
+      setEnglishOnly(true);
+      setLanguagePreferenceTouched(false);
       return;
     }
     setOffset({ x: 0, y: 0 });
   }, [open]);
+
+  useEffect(() => {
+    if (!open || languagePreferenceTouched) return;
+    // English is the safe interim default while the main document is still
+    // loading. Once CJK support is detected, unrestricted output becomes the
+    // default requested mode.
+    setEnglishOnly(languageSupport !== true);
+  }, [languagePreferenceTouched, languageSupport, open]);
 
   useEffect(() => {
     setContextFiles((current) => current.filter((path) => contextCandidates.some((entry) => entry.path === path)));
@@ -103,6 +118,7 @@ export function WorkspaceAiMenu({
       operation: hasSelection ? "replace" : "insert",
       ...(promptId ? { promptId } : {}),
       taskDescription: instruction,
+      lang: englishOnly ? "en" : "any",
       includeCurrentFile,
       contextFiles
     });
@@ -207,15 +223,29 @@ export function WorkspaceAiMenu({
                 <small id="ai-instruction-hint" className="ai-input-hint">{instructionHint}</small>
                 {!taskDescription.trim() && <small id="ai-instruction-validation" className="ai-input-validation">{t("ai.instructionRequired")}</small>}
               </section>
+              <label className="ai-language-option">
+                <input
+                  type="checkbox"
+                  checked={englishOnly}
+                  disabled={languageSupport !== true}
+                  onChange={() => { setEnglishOnly((current) => !current); setLanguagePreferenceTouched(true); }}
+                />
+                <span>
+                  <strong>{t("ai.englishOnly")}</strong>
+                  <small>{languageSupport === false
+                    ? t("ai.englishOnlyForced")
+                    : languageSupport === null
+                      ? t("ai.languageChecking")
+                      : t("ai.englishOnlyHint")}</small>
+                </span>
+              </label>
               <section className="ai-quick-section" aria-label={t("ai.quickInstructions")}>
                 <span className="ai-section-label">{t("ai.quickInstructions")}</span>
                 <div className="ai-preset-row">
-                  {hasSelection && <button type="button" onClick={() => choosePreset("polish", t("ai.tasks.polish"))}>{t("ai.polish")}</button>}
-                  {hasSelection && <button type="button" onClick={() => choosePreset("academic", t("ai.tasks.academic"))}>{t("ai.academic")}</button>}
-                  {hasSelection && <button type="button" onClick={() => choosePreset("simplify", t("ai.tasks.simplify"))}>{t("ai.simplify")}</button>}
-                  {!hasSelection && <button type="button" onClick={() => choosePreset("continue-writing", t("ai.tasks.continueWriting"))}>{t("ai.continueWriting")}</button>}
-                  {!hasSelection && <button type="button" onClick={() => choosePreset("complete-section", t("ai.tasks.completeSection"))}>{t("ai.completeSection")}</button>}
-                  {!hasSelection && <button type="button" onClick={() => choosePreset("follow-style", t("ai.tasks.followStyle"))}>{t("ai.followStyle")}</button>}
+                  {hasSelection && <button type="button" onClick={() => choosePreset("polish", t("aiCommands.polishPrompt"))}>{t("aiCommands.polish")}</button>}
+                  {hasSelection && <button type="button" onClick={() => choosePreset("academic", t("aiCommands.academicExpressionPrompt"))}>{t("aiCommands.academicExpression")}</button>}
+                  {hasSelection && <button type="button" onClick={() => choosePreset("", t("aiCommands.expandPrompt"))}>{t("aiCommands.expand")}</button>}
+                  {!hasSelection && <button type="button" onClick={() => choosePreset("continue-writing", t("aiCommands.naturalContinuationPrompt"))}>{t("aiCommands.naturalContinuation")}</button>}
                 </div>
               </section>
               <div className="ai-target-file"><FileCode2 size={15} /><span>{t("ai.targetFile")} <code title={activeFile}>{activeFile}</code></span></div>
@@ -228,12 +258,12 @@ export function WorkspaceAiMenu({
                   <small className="ai-context-description">{t("ai.contextFilesHint")}</small>
                   <div className="ai-context-file-list">
                     <label className="ai-context-file ai-context-target" key="__current_file__">
-                      <input type="checkbox" checked={includeCurrentFile} onChange={() => setIncludeCurrentFile((current) => !current)} disabled={!includeCurrentFile && selectedContextCount >= MAX_CONTEXT_FILES} />
+                      <input type="checkbox" checked={includeCurrentFile} onChange={() => setIncludeCurrentFile((current) => !current)} />
                       <span title={activeFile}>{activeFile}</span>
                       <small>{t("ai.targetFile")}</small>
                     </label>
                     {contextCandidates.map((entry) => <label className="ai-context-file" key={entry.path}>
-                      <input type="checkbox" checked={contextFiles.includes(entry.path)} onChange={() => toggleContextFile(entry.path)} disabled={!contextFiles.includes(entry.path) && selectedContextCount >= MAX_CONTEXT_FILES} />
+                      <input type="checkbox" checked={contextFiles.includes(entry.path)} onChange={() => toggleContextFile(entry.path)} disabled={!contextFiles.includes(entry.path) && contextFiles.length >= MAX_CONTEXT_FILES} />
                       <span title={entry.path}>{entry.path}</span>
                     </label>)}
                   </div>

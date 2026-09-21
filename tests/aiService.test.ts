@@ -19,11 +19,11 @@ function fixtureSnapshot(): AiTargetSnapshot {
   };
 }
 
-function service(fetchImpl: typeof fetch) {
+function service(fetchImpl: typeof fetch, mainDocument = "context from main.tex") {
   const collaboration = {
     captureAiTarget: vi.fn(() => fixtureSnapshot()),
     captureAiContextFiles: vi.fn((_: string, paths: readonly string[]) => paths.map((filePath) => ({
-      filePath, content: "context from " + filePath
+      filePath, content: filePath === "main.tex" ? mainDocument : "context from " + filePath
     }))),
     applyAiResult: vi.fn(async () => ({ status: "applied", receipt: { revision: 1, persistedAt: "now", ok: true } }))
   };
@@ -33,7 +33,8 @@ function service(fetchImpl: typeof fetch) {
       sessionIsActive: async () => true
     },
     projects: {
-      findCollaborationAccess: async () => ({ permission: "owner" as const })
+      findCollaborationAccess: async () => ({ permission: "owner" as const }),
+      findById: async () => ({ main_file: "main.tex" })
     }
   } as unknown as DatabaseConnection;
   const config = { ai: { baseUrl: "http://127.0.0.1:4010", apiKey: "test-key-from-local" } } as Config;
@@ -44,7 +45,7 @@ function service(fetchImpl: typeof fetch) {
 function input() {
   return {
     requestId: "request-1", projectId: "project-1", targetFilePath: "main.tex", operation: "replace" as const,
-    startOffset: 7, endOffset: 10, includeCurrentFile: false, contextFiles: ["refs.bib"], promptId: "polish",
+    startOffset: 7, endOffset: 10, includeCurrentFile: false, lang: "en" as const, contextFiles: ["refs.bib"], promptId: "polish",
     taskDescription: "Polish this text.", user
   };
 }
@@ -54,11 +55,13 @@ describe("AI task service", () => {
     const fetchImpl: typeof fetch = async (_input, init) => {
       const payload = JSON.parse(String(init?.body)) as {
         protocolVersion: number;
+        lang?: string;
         actor?: { userId?: string; nuwaxSubject?: string };
         target?: { filePath?: string; before?: string; after?: string };
         contextFiles?: Array<{ filePath: string; content: string }>;
       };
       expect(payload.protocolVersion).toBe(2);
+      expect(payload.lang).toBe("en");
       expect(payload.actor).toMatchObject({ userId: "user-1", nuwaxSubject: "nuwax-sub-1" });
       expect(payload.target?.filePath).toBe("main.tex");
       expect(payload.target?.before).toBe("");
@@ -115,6 +118,34 @@ describe("AI task service", () => {
       { before: "", after: "" },
       { before: "before ", after: " after" }
     ]);
+  });
+
+  it("normalizes unrestricted output to English when the main document has no CJK support", async () => {
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { requestId: string; lang?: string };
+      expect(payload.lang).toBe("en");
+      const lines = [
+        { protocolVersion: 2, requestId: payload.requestId, type: "delta", text: "new" },
+        { protocolVersion: 2, requestId: payload.requestId, type: "done", resultText: "new" }
+      ].map((event) => JSON.stringify(event)).join("\n");
+      return new Response(lines + "\n", { headers: { "content-type": "application/x-ndjson" } });
+    };
+    const { taskService } = service(fetchImpl);
+    await taskService.run({ ...input(), requestId: "language-default", lang: "any" }, new AbortController().signal, () => undefined);
+  });
+
+  it("keeps unrestricted output when the main document declares CJK support", async () => {
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { requestId: string; lang?: string };
+      expect(payload.lang).toBe("any");
+      const lines = [
+        { protocolVersion: 2, requestId: payload.requestId, type: "delta", text: "new" },
+        { protocolVersion: 2, requestId: payload.requestId, type: "done", resultText: "new" }
+      ].map((event) => JSON.stringify(event)).join("\n");
+      return new Response(lines + "\n", { headers: { "content-type": "application/x-ndjson" } });
+    };
+    const { taskService } = service(fetchImpl, "\\documentclass{ctexart}");
+    await taskService.run({ ...input(), requestId: "language-cjk", lang: "any" }, new AbortController().signal, () => undefined);
   });
 
   it("rejects malformed upstream JSON and does not write a partial result", async () => {
