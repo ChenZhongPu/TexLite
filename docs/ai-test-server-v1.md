@@ -81,6 +81,8 @@
   传入图片、日志、PDF 或其他格式文件应拒绝并返回 `AI_CONTEXT_FILES_INVALID`；
 - 上下文文件路径必须规范化、唯一，不能是目标文件，不能包含绝对路径或
   `..` 路径段；
+- 所有上下文文件 `content` 的 UTF-8 字节数合计不得超过 1 MiB（1,048,576 字节）；
+  协议不限制上下文文件数量，也不限制单个上下文文件大小；
 - AI Server 不需要重新判断 TexLite 项目权限，但必须执行协议、扩展名和大小校验；
 - `actor.nuwaxSubject` 可以缺省，存在时按不透明字符串记录和传给限额模块，不能
   将其当作 TexLite 授权凭据；
@@ -90,9 +92,7 @@
 
 | 内容 | 上限 |
 | --- | ---: |
-| `contextFiles` 数量 | 3 个（仅限 `.tex` 与 `.bib`） |
-| 单个上下文文件 UTF-8 字节数 | 256 KiB |
-| 所有上下文文件 UTF-8 字节数 | 1 MiB |
+| 所有上下文文件 UTF-8 字节数 | 1 MiB（1,048,576 字节） |
 | `target.before` | 64 KiB |
 | `target.selectedText` | 32 KiB |
 | `target.after` | 32 KiB |
@@ -245,7 +245,7 @@ API Key 写入响应或错误日志。AI Server 的提示词路径、模型配�
 | JSON 或协议版本错误 | 400 | `AI_PROTOCOL_UNSUPPORTED` 或 `AI_INVALID_REQUEST` |
 | 目标字段/操作错误 | 400 | `AI_TARGET_INVALID` |
 | 上下文路径、扩展名（非 .tex/.bib）或结构错误 | 400 | `AI_CONTEXT_FILES_INVALID` |
-| 上下文数量或大小超限 | 413 | `AI_CONTEXT_TOO_LARGE` |
+| 上下文总字节数超限 | 413 | `AI_CONTEXT_TOO_LARGE` |
 | 输出超过限制 | 413 | `AI_OUTPUT_TOO_LARGE` |
 | promptId 不支持 | 422 | `AI_PROMPT_NOT_FOUND` |
 | 模型/适配器失败 | 502 | `AI_MODEL_ERROR` |
@@ -278,7 +278,7 @@ API Key 写入响应或错误日志。AI Server 的提示词路径、模型配�
 5. 目标文件出现在 `contextFiles` 时失败；
 6. 重复路径、绝对路径、`..` 路径和空路径时失败；
 7. 包含非 `.tex` / `.bib` 文件（如 `.png`、`.pdf`、`.log`、`.md` 等）时失败，返回 `AI_CONTEXT_FILES_INVALID`；
-8. 文件数量、单文件大小、总大小超限时失败；
+8. 所有上下文文件总大小超限时失败；文件数量和单文件大小不应触发协议错误；
 9. 缺少 target、taskDescription、promptId 或 operation 时失败；
 10. replace 空选区和 insert 非空选区按约定失败；
 11. 流式 delta 拼接结果等于 done.resultText；
@@ -297,6 +297,6 @@ AI Server v2 完成后，使用固定 JSON 请求确认：
 - 严格校验上下文文件类型（只允许 `.tex` 与 `.bib`），非法扩展名返回稳定错误码；
 - 结果只代表目标文件文本，不包含额外文件修改命令；
 - 服务完全不生成摘要；
-- 非法请求和超限请求有稳定错误码；
+- 非法请求和上下文总量超限请求有稳定错误码；
 - 取消和超时不会留下未关闭的模型调用；
 - TexLite 可以据此开始 v2 的协议和 UI 改造。

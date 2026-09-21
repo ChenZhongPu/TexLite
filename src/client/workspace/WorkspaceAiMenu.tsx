@@ -2,9 +2,6 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import { ChevronDown, FileCode2, LoaderCircle, Send, WandSparkles, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FileEntry } from "../types";
-import { AI_PROTOCOL_LIMITS } from "../../shared/aiProtocol";
-
-const MAX_CONTEXT_FILES = AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES;
 
 export type WorkspaceAiAction = {
   operation: "insert" | "replace";
@@ -130,7 +127,7 @@ export function WorkspaceAiMenu({
   const toggleContextFile = (path: string): void => {
     setContextFiles((current) => current.includes(path)
       ? current.filter((item) => item !== path)
-      : current.length >= MAX_CONTEXT_FILES ? current : [...current, path]);
+      : [...current, path]);
   };
   const selectedContextCount = contextFiles.length + (includeCurrentFile ? 1 : 0);
   const instructionHint = includeCurrentFile
@@ -263,7 +260,7 @@ export function WorkspaceAiMenu({
                       <small>{t("ai.targetFile")}</small>
                     </label>
                     {contextCandidates.map((entry) => <label className="ai-context-file" key={entry.path}>
-                      <input type="checkbox" checked={contextFiles.includes(entry.path)} onChange={() => toggleContextFile(entry.path)} disabled={!contextFiles.includes(entry.path) && contextFiles.length >= MAX_CONTEXT_FILES} />
+                      <input type="checkbox" checked={contextFiles.includes(entry.path)} onChange={() => toggleContextFile(entry.path)} />
                       <span title={entry.path}>{entry.path}</span>
                     </label>)}
                   </div>

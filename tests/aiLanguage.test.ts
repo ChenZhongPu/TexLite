@@ -3,10 +3,10 @@ import { hasCjkLanguageSupport } from "../src/shared/aiLanguage";
 import { AI_PROTOCOL_LIMITS } from "../src/shared/aiProtocol";
 
 describe("AI language capability detection", () => {
-  it("uses the bounded context-file protocol limits", () => {
-    expect(AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES).toBe(3);
-    expect(AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILE_BYTES).toBe(256 * 1024);
+  it("uses only a total context-file byte limit", () => {
     expect(AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES_TOTAL_BYTES).toBe(1024 * 1024);
+    expect("MAX_CONTEXT_FILES" in AI_PROTOCOL_LIMITS).toBe(false);
+    expect("MAX_CONTEXT_FILE_BYTES" in AI_PROTOCOL_LIMITS).toBe(false);
   });
 
   it.each([

@@ -7,7 +7,7 @@ import { AiServiceError, AiTaskCancelledError, AiTaskService } from "../aiServic
 import { apiError } from "../http.js";
 import { requireEditableProject } from "./projectShared.js";
 import { safeRelativePath } from "../files.js";
-import { AI_PROTOCOL_LIMITS, AI_PROTOCOL_VERSION, isAiContextFilePath } from "../../shared/aiProtocol.js";
+import { AI_PROTOCOL_VERSION, isAiContextFilePath } from "../../shared/aiProtocol.js";
 
 interface ProjectAiRouteContext {
   config: Config;
@@ -52,9 +52,7 @@ export function registerProjectAiRoutes(app: FastifyInstance, context: ProjectAi
     }
     const includeCurrentFile = rawIncludeCurrentFile === undefined ? false : rawIncludeCurrentFile;
     const rawContextFiles = body.contextFiles === undefined ? [] : body.contextFiles;
-    if (!Array.isArray(rawContextFiles) || rawContextFiles.length > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES) {
-      return apiError(reply, 413, "AI_CONTEXT_TOO_LARGE");
-    }
+    if (!Array.isArray(rawContextFiles)) return apiError(reply, 400, "AI_CONTEXT_FILES_INVALID");
     const contextFiles: string[] = [];
     const seenContextFiles = new Set<string>();
     for (const value of rawContextFiles) {

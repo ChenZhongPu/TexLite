@@ -19,11 +19,15 @@ function fixtureSnapshot(): AiTargetSnapshot {
   };
 }
 
-function service(fetchImpl: typeof fetch, mainDocument = "context from main.tex") {
+function service(
+  fetchImpl: typeof fetch,
+  mainDocument = "context from main.tex",
+  contextContent: (filePath: string) => string = (filePath) => "context from " + filePath
+) {
   const collaboration = {
     captureAiTarget: vi.fn(() => fixtureSnapshot()),
     captureAiContextFiles: vi.fn((_: string, paths: readonly string[]) => paths.map((filePath) => ({
-      filePath, content: filePath === "main.tex" ? mainDocument : "context from " + filePath
+      filePath, content: filePath === "main.tex" ? mainDocument : contextContent(filePath)
     }))),
     applyAiResult: vi.fn(async () => ({ status: "applied", receipt: { revision: 1, persistedAt: "now", ok: true } }))
   };
@@ -48,6 +52,14 @@ function input() {
     startOffset: 7, endOffset: 10, includeCurrentFile: false, lang: "en" as const, contextFiles: ["refs.bib"], promptId: "polish",
     taskDescription: "Polish this text.", user
   };
+}
+
+function successfulResponse(requestId: string): Response {
+  const lines = [
+    { protocolVersion: 2, requestId, type: "delta", text: "new" },
+    { protocolVersion: 2, requestId, type: "done", resultText: "new" }
+  ].map((event) => JSON.stringify(event)).join("\n");
+  return new Response(lines + "\n", { headers: { "content-type": "application/x-ndjson" } });
 }
 
 describe("AI task service", () => {
@@ -179,5 +191,46 @@ describe("AI task service", () => {
     });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(collaboration.captureAiContextFiles).not.toHaveBeenCalled();
+  });
+
+  it("allows more than three context files when their total content is within the limit", async () => {
+    const contextFiles = ["refs/one.bib", "refs/two.bib", "refs/three.bib", "refs/four.bib"];
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { requestId: string; contextFiles?: unknown[] };
+      expect(payload.contextFiles).toHaveLength(4);
+      return successfulResponse(payload.requestId);
+    };
+    const { taskService } = service(fetchImpl);
+    await expect(taskService.run(
+      { ...input(), requestId: "many-context-files", contextFiles },
+      new AbortController().signal,
+      () => undefined
+    )).resolves.toEqual({ resultText: "new", applied: false });
+  });
+
+  it("allows an individual context file larger than 256 KiB when the total stays within the limit", async () => {
+    const largeContent = "x".repeat(300 * 1024);
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as { requestId: string };
+      return successfulResponse(payload.requestId);
+    };
+    const { taskService } = service(fetchImpl, "context from main.tex", () => largeContent);
+    await expect(taskService.run(
+      { ...input(), requestId: "large-context-file", contextFiles: ["large.bib"] },
+      new AbortController().signal,
+      () => undefined
+    )).resolves.toEqual({ resultText: "new", applied: false });
+  });
+
+  it("rejects context files whose aggregate content exceeds 1 MiB", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const largeContent = "x".repeat(600 * 1024);
+    const { taskService } = service(fetchImpl, "context from main.tex", () => largeContent);
+    await expect(taskService.run(
+      { ...input(), requestId: "context-total-too-large", contextFiles: ["one.bib", "two.bib"] },
+      new AbortController().signal,
+      () => undefined
+    )).rejects.toMatchObject({ code: "AI_CONTEXT_TOO_LARGE", statusCode: 413 });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

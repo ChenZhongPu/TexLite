@@ -278,14 +278,10 @@ export class AiTaskService {
       const files = this.collaboration.captureAiContextFiles(input.projectId, input.contextFiles);
       let totalBytes = 0;
       for (const file of files) {
-        const bytes = Buffer.byteLength(file.content, "utf8");
-        if (bytes > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILE_BYTES) {
-          throw new AiServiceError("AI_CONTEXT_TOO_LARGE", "An AI context file is too large.", 413);
+        totalBytes += Buffer.byteLength(file.content, "utf8");
+        if (totalBytes > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES_TOTAL_BYTES) {
+          throw new AiServiceError("AI_CONTEXT_TOO_LARGE", "The AI context files are too large.", 413);
         }
-        totalBytes += bytes;
-      }
-      if (totalBytes > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES_TOTAL_BYTES) {
-        throw new AiServiceError("AI_CONTEXT_TOO_LARGE", "The AI context files are too large.", 413);
       }
       return files;
     } catch (error) {
@@ -497,9 +493,7 @@ function validateTaskInput(input: AiTaskInput): void {
   if (typeof input.includeCurrentFile !== "boolean") {
     throw new AiServiceError("AI_REQUEST_INVALID", "The current-file context choice is invalid.", 400);
   }
-  if (!Array.isArray(input.contextFiles) || input.contextFiles.length > AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES) {
-    throw new AiServiceError("AI_CONTEXT_TOO_LARGE", "Too many AI context files were selected.", 413);
-  }
+  if (!Array.isArray(input.contextFiles)) throw new AiServiceError("AI_CONTEXT_FILES_INVALID", "The selected AI context files are invalid.", 400);
   const seen = new Set<string>();
   for (const filePath of input.contextFiles) {
     if (typeof filePath !== "string" || !isAiContextFilePath(filePath) || seen.has(filePath)
