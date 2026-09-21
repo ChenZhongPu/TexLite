@@ -95,6 +95,8 @@ export function localizedResponseError(body: unknown, status: number, fallbackKe
       NUWAX_SEARCH_RATE_LIMITED: "projectSettings.nuwaxSearchRateLimited",
       NUWAX_SEARCH_REAUTH_REQUIRED: "projectSettings.nuwaxSearchReauthRequired",
       NUWAX_SEARCH_SCOPE_REQUIRED: "projectSettings.nuwaxSearchScopeRequired",
+      NUWAX_SEARCH_TIMEOUT: "projectSettings.nuwaxSearchTimeout",
+      NUWAX_SEARCH_UNAVAILABLE: "projectSettings.nuwaxSearchUnavailable",
       INVITATION_MEMBER_EXISTS: "projectSettings.inviteMemberExists",
       INVITATION_NOT_FOUND: "projectSettings.inviteNotFound",
       INVITATION_OWNER_FORBIDDEN: "projectSettings.inviteOwnerForbidden",

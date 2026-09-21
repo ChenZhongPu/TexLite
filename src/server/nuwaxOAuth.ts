@@ -9,6 +9,8 @@ export const NUWAX_OAUTH_SCOPE = "profile,user:search";
 const ACCESS_TOKEN_REFRESH_MARGIN_MS = 60_000;
 const SEARCH_WINDOW_MS = 5 * 60_000;
 const SEARCH_LIMIT = 20;
+export const NUWAX_REQUEST_TIMEOUT_MS = 10_000;
+export const NUWAX_MAX_RESPONSE_BYTES = 256 * 1024;
 
 export interface NuwaxProfile {
   subject: string;
@@ -24,10 +26,14 @@ export interface NuwaxTokenSet {
   scope: string;
 }
 
-export type NuwaxOAuthFailure = "reauth" | "scope" | "rate_limited" | "provider";
+export type NuwaxOAuthFailure = "reauth" | "scope" | "rate_limited" | "provider" | "timeout" | "unavailable";
 
 export class NuwaxOAuthError extends Error {
-  constructor(readonly failure: NuwaxOAuthFailure, message: string) {
+  constructor(
+    readonly failure: NuwaxOAuthFailure,
+    message: string,
+    readonly confirmedInvalidCredential = false
+  ) {
     super(message);
     this.name = "NuwaxOAuthError";
   }
@@ -38,12 +44,17 @@ interface SearchCounter {
   count: number;
 }
 
+interface AccessTokenContext {
+  accessToken: string;
+  accessTokenCiphertext: string;
+}
+
 /**
  * Server-side Nuwax client. Access and refresh tokens never leave this class;
  * only the short-lived TexLite session is sent to the browser.
  */
 export class NuwaxOAuthService {
-  private readonly pendingRefreshes = new Map<string, Promise<string>>();
+  private readonly pendingRefreshes = new Map<string, Promise<AccessTokenContext>>();
   private readonly searchCounters = new Map<string, SearchCounter>();
 
   constructor(
@@ -85,17 +96,7 @@ export class NuwaxOAuthService {
   }
 
   async storeTokens(userId: string, tokens: NuwaxTokenSet): Promise<void> {
-    const timestamp = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + tokens.expiresInSeconds * 1_000).toISOString();
-    await this.db.nuwaxTokens.upsert({
-      user_id: userId,
-      access_token_ciphertext: encryptToken(this.config, tokens.accessToken),
-      access_token_expires_at: expiresAt,
-      refresh_token_ciphertext: encryptToken(this.config, tokens.refreshToken),
-      scope: tokens.scope,
-      created_at: timestamp,
-      updated_at: timestamp
-    });
+    await this.db.nuwaxTokens.upsert(this.encryptedTokenRecord(userId, tokens));
   }
 
   /** Return a profile found by exact phone match, without persisting the phone. */
@@ -105,13 +106,13 @@ export class NuwaxOAuthService {
       throw new NuwaxOAuthError("rate_limited", "Nuwax user search rate limit exceeded");
     }
     try {
-      return await this.searchWithAccessToken(phone, await this.accessTokenForUser(userId));
+      return await this.searchWithAccessToken(phone, await this.accessTokenForUser(userId), userId);
     } catch (error) {
       // Nuwax can invalidate an access token before its advertised expiry.
       // Use the rotated refresh token once before asking the owner to
       // authorize again; a revoked refresh token still becomes `reauth`.
       if (!(error instanceof NuwaxOAuthError) || error.failure !== "reauth") throw error;
-      return await this.searchWithAccessToken(phone, await this.refreshAccessTokenForUser(userId));
+      return await this.searchWithAccessToken(phone, await this.refreshAccessTokenForUser(userId), userId);
     }
   }
 
@@ -124,69 +125,138 @@ export class NuwaxOAuthService {
     return this.config.oauth;
   }
 
-  private async accessTokenForUser(userId: string): Promise<string> {
+  private async accessTokenForUser(userId: string): Promise<AccessTokenContext> {
     const row = await this.db.nuwaxTokens.findByUserId(userId);
     if (!row) throw new NuwaxOAuthError("reauth", "The user must sign in with Nuwax again before searching users");
     if (Date.parse(row.access_token_expires_at) > Date.now() + ACCESS_TOKEN_REFRESH_MARGIN_MS) {
-      return decryptToken(this.config, row.access_token_ciphertext);
+      return {
+        accessToken: decryptToken(this.config, row.access_token_ciphertext),
+        accessTokenCiphertext: row.access_token_ciphertext
+      };
     }
-
-    const pending = this.pendingRefreshes.get(userId);
-    if (pending) return await pending;
-    const refresh = this.refreshAccessToken(userId, decryptToken(this.config, row.refresh_token_ciphertext));
-    this.pendingRefreshes.set(userId, refresh);
-    try {
-      return await refresh;
-    } finally {
-      if (this.pendingRefreshes.get(userId) === refresh) this.pendingRefreshes.delete(userId);
-    }
+    return await this.refreshAccessTokenForUser(userId);
   }
 
-  private async refreshAccessTokenForUser(userId: string): Promise<string> {
+  private refreshAccessTokenForUser(userId: string): Promise<AccessTokenContext> {
     const pending = this.pendingRefreshes.get(userId);
-    if (pending) return await pending;
-    const row = await this.db.nuwaxTokens.findByUserId(userId);
-    if (!row) throw new NuwaxOAuthError("reauth", "The user must sign in with Nuwax again before searching users");
-    const refresh = this.refreshAccessToken(userId, decryptToken(this.config, row.refresh_token_ciphertext));
+    if (pending) return pending;
+
+    // Set the promise immediately, before the first database await. This makes
+    // simultaneous requests share one refresh even when they all observe an
+    // expired access token at the same time.
+    const refresh = this.refreshAccessToken(userId);
     this.pendingRefreshes.set(userId, refresh);
-    try {
-      return await refresh;
-    } finally {
-      if (this.pendingRefreshes.get(userId) === refresh) this.pendingRefreshes.delete(userId);
-    }
+    void refresh.then(
+      () => {
+        if (this.pendingRefreshes.get(userId) === refresh) this.pendingRefreshes.delete(userId);
+      },
+      () => {
+        if (this.pendingRefreshes.get(userId) === refresh) this.pendingRefreshes.delete(userId);
+      }
+    );
+    return refresh;
   }
 
-  private async searchWithAccessToken(phone: string, accessToken: string): Promise<NuwaxProfile | null> {
+  private async searchWithAccessToken(phone: string, token: AccessTokenContext, userId: string): Promise<NuwaxProfile | null> {
     const url = new URL(`${this.requireConfig().baseUrl}/api/oauth2/user/search`);
     url.searchParams.set("phone", phone);
-    const payload = await this.requestJson(url.toString(), accessToken);
+    const payload = await this.requestJson(url.toString(), token.accessToken, {
+      userId,
+      accessTokenCiphertext: token.accessTokenCiphertext
+    });
     return parseNuwaxProfile(payload, true);
   }
 
-  private async refreshAccessToken(userId: string, refreshToken: string): Promise<string> {
+  private async refreshAccessToken(userId: string): Promise<AccessTokenContext> {
+    const row = await this.db.nuwaxTokens.findByUserId(userId);
+    if (!row) throw new NuwaxOAuthError("reauth", "The user must sign in with Nuwax again before searching users");
     try {
       const tokens = await this.exchangeToken(new URLSearchParams({
         grant_type: "refresh_token",
-        refresh_token: refreshToken,
+        refresh_token: decryptToken(this.config, row.refresh_token_ciphertext),
         client_id: this.requireConfig().clientId,
         client_secret: this.requireConfig().clientSecret
       }));
-      await this.storeTokens(userId, tokens);
-      return tokens.accessToken;
+      const replacement = this.encryptedTokenRecord(userId, tokens);
+      const replaced = await this.db.nuwaxTokens.replaceIfCurrent(
+        replacement,
+        row.access_token_ciphertext,
+        row.refresh_token_ciphertext
+      );
+      if (!replaced) {
+        // A concurrent sign-in or refresh won the update. Keep its current
+        // credentials instead of overwriting them with this stale result.
+        const current = await this.db.nuwaxTokens.findByUserId(userId);
+        if (!current) throw new NuwaxOAuthError("reauth", "The user must sign in with Nuwax again before searching users");
+        return this.accessTokenContext(current);
+      }
+      return {
+        accessToken: tokens.accessToken,
+        accessTokenCiphertext: replacement.access_token_ciphertext
+      };
     } catch (error) {
-      await this.clearTokens(userId);
-      if (error instanceof NuwaxOAuthError && error.failure === "scope") throw error;
-      throw new NuwaxOAuthError("reauth", "The Nuwax session must be authorized again");
+      if (error instanceof NuwaxOAuthError && error.confirmedInvalidCredential) {
+        // Only an explicit invalid_grant/invalid_token-style response permits
+        // deleting credentials. Network failures and provider 5xx responses
+        // must leave the refresh token available for a later retry.
+        try {
+          const removed = await this.db.nuwaxTokens.deleteByUserIdIfCurrent(
+            userId,
+            row.access_token_ciphertext,
+            row.refresh_token_ciphertext
+          );
+          if (!removed) {
+            // The row changed while this refresh was in flight. The newer
+            // credentials belong to the current session and must survive.
+            const current = await this.db.nuwaxTokens.findByUserId(userId);
+            if (current) return this.accessTokenContext(current);
+          }
+        } catch {
+          // Preserve the safe reauthorization response even if cleanup itself
+          // is temporarily unavailable.
+        }
+        throw new NuwaxOAuthError("reauth", "The Nuwax session must be authorized again");
+      }
+      if (error instanceof NuwaxOAuthError) throw error;
+      throw new NuwaxOAuthError("provider", "Nuwax token refresh failed");
     }
   }
 
+  private encryptedTokenRecord(userId: string, tokens: NuwaxTokenSet) {
+    const timestamp = new Date().toISOString();
+    return {
+      user_id: userId,
+      access_token_ciphertext: encryptToken(this.config, tokens.accessToken),
+      access_token_expires_at: new Date(Date.now() + tokens.expiresInSeconds * 1_000).toISOString(),
+      refresh_token_ciphertext: encryptToken(this.config, tokens.refreshToken),
+      scope: tokens.scope,
+      created_at: timestamp,
+      updated_at: timestamp
+    };
+  }
+
+  private accessTokenContext(row: {
+    access_token_ciphertext: string;
+    access_token_expires_at: string;
+  }): AccessTokenContext {
+    return {
+      accessToken: decryptToken(this.config, row.access_token_ciphertext),
+      accessTokenCiphertext: row.access_token_ciphertext
+    };
+  }
+
   private async exchangeToken(parameters: URLSearchParams): Promise<NuwaxTokenSet> {
-    const response = await this.fetchImpl(`${this.requireConfig().baseUrl}/api/oauth2/token`, {
+    const { response, payload } = await this.fetchJson(`${this.requireConfig().baseUrl}/api/oauth2/token`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
       body: parameters.toString()
     });
-    const payload = await parseResponseJson(response);
+    if (response.status === 429) {
+      throw new NuwaxOAuthError("rate_limited", "Nuwax token endpoint rate limit exceeded");
+    }
+    if (isConfirmedInvalidCredential(payload)) {
+      throw new NuwaxOAuthError("provider", "Nuwax token exchange failed", true);
+    }
     if (!response.ok || isProtocolError(payload)) {
       throw new NuwaxOAuthError("provider", "Nuwax token exchange failed");
     }
@@ -209,17 +279,30 @@ export class NuwaxOAuthService {
     };
   }
 
-  private async requestJson(url: string, accessToken: string): Promise<unknown> {
-    const response = await this.fetchImpl(url, {
+  private async requestJson(
+    url: string,
+    accessToken: string,
+    invalidation?: { userId: string; accessTokenCiphertext: string }
+  ): Promise<unknown> {
+    const { response, payload } = await this.fetchJson(url, {
       method: "GET",
       headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` }
     });
-    const payload = await parseResponseJson(response);
-    if (isRecord(payload) && (payload.code === "4010" || payload.code === 4010)) {
-      await this.clearTokensForExpiredAccessToken(accessToken);
+    if (isInvalidAccessTokenResponse(response, payload)) {
+      if (invalidation) {
+        try {
+          await this.db.nuwaxTokens.expireAccessToken(invalidation.userId, invalidation.accessTokenCiphertext);
+        } catch {
+          // The explicit reauth signal is still useful: searchByPhone will
+          // attempt the refresh path even if this bookkeeping update failed.
+        }
+      }
       throw new NuwaxOAuthError("reauth", "The Nuwax access token is no longer valid");
     }
-    if (isRecord(payload) && (payload.code === "4030" || payload.code === 4030)) {
+    if (response.status === 429) {
+      throw new NuwaxOAuthError("rate_limited", "Nuwax user search rate limit exceeded");
+    }
+    if (response.status === 403 || (isRecord(payload) && (payload.code === "4030" || payload.code === 4030))) {
       throw new NuwaxOAuthError("scope", "The Nuwax application is not allowed to search users");
     }
     if (!response.ok || isProtocolError(payload)) {
@@ -228,20 +311,27 @@ export class NuwaxOAuthService {
     return payload;
   }
 
-  private async clearTokensForExpiredAccessToken(accessToken: string): Promise<void> {
-    // The token is never stored in plaintext. Mark the matching encrypted row
-    // stale so the next call refreshes it without exposing the credential.
-    const rows = await this.db.nuwaxTokens.list();
-    for (const row of rows) {
-      try {
-        if (decryptToken(this.config, row.access_token_ciphertext) === accessToken) {
-          await this.db.nuwaxTokens.expireAccessToken(row.user_id);
-          return;
-        }
-      } catch {
-        // A later call will require reauthorization if the encrypted row is
-        // no longer readable.
-      }
+  private async fetchJson(input: string, init: RequestInit): Promise<{ response: Response; payload: unknown }> {
+    const controller = new AbortController();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const request = (async () => {
+      const response = await this.fetchImpl(input, { ...init, signal: controller.signal });
+      const payload = await parseResponseJson(response);
+      return { response, payload };
+    })();
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        controller.abort();
+        reject(new NuwaxOAuthError("timeout", "Nuwax request timed out"));
+      }, NUWAX_REQUEST_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([request, timeout]);
+    } catch (error) {
+      if (error instanceof NuwaxOAuthError) throw error;
+      throw new NuwaxOAuthError("unavailable", "Nuwax OAuth service is unavailable");
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   }
 
@@ -261,11 +351,55 @@ export class NuwaxOAuthService {
 }
 
 async function parseResponseJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch {
-    return null;
+  if (!response.body) {
+    try {
+      const text = await response.text();
+      if (Buffer.byteLength(text, "utf8") > NUWAX_MAX_RESPONSE_BYTES) {
+        throw new NuwaxOAuthError("provider", "Nuwax response is too large");
+      }
+      return text ? JSON.parse(text) : null;
+    } catch (error) {
+      if (error instanceof NuwaxOAuthError) throw error;
+      return null;
+    }
   }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      receivedBytes += value.byteLength;
+      if (receivedBytes > NUWAX_MAX_RESPONSE_BYTES) {
+        try { await reader.cancel(); } catch { /* The response is already invalid. */ }
+        throw new NuwaxOAuthError("provider", "Nuwax response is too large");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return text.trim() ? JSON.parse(text) : null;
+  } catch (error) {
+    if (error instanceof NuwaxOAuthError) throw error;
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function isConfirmedInvalidCredential(payload: unknown): boolean {
+  if (!isRecord(payload)) return false;
+  if (payload.code === "4010" || payload.code === 4010) return true;
+  if (typeof payload.error !== "string") return false;
+  return new Set(["invalid_grant", "invalid_token"]).has(payload.error.trim().toLowerCase());
+}
+
+function isInvalidAccessTokenResponse(response: Response, payload: unknown): boolean {
+  if (response.status === 401) return true;
+  if (!isRecord(payload)) return false;
+  if (payload.code === "4010" || payload.code === 4010) return true;
+  return typeof payload.error === "string" && payload.error.trim().toLowerCase() === "invalid_token";
 }
 
 function parseNuwaxProfile(payload: unknown, emptyObjectMeansNoMatch: boolean): NuwaxProfile | null {

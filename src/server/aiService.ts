@@ -3,6 +3,7 @@ import type { DatabaseConnection, UserRow } from "./db.js";
 import {
   AiApplyAbortedError,
   AiAuthenticationError,
+  AiContextTooLargeError,
   AiTargetConflictError,
   AiPermissionError,
   CollaborationService,
@@ -275,7 +276,11 @@ export class AiTaskService {
 
   private captureContextFiles(input: AiTaskInput): AiContextFile[] {
     try {
-      const files = this.collaboration.captureAiContextFiles(input.projectId, input.contextFiles);
+      const files = this.collaboration.captureAiContextFiles(
+        input.projectId,
+        input.contextFiles,
+        AI_PROTOCOL_LIMITS.MAX_CONTEXT_FILES_TOTAL_BYTES
+      );
       let totalBytes = 0;
       for (const file of files) {
         totalBytes += Buffer.byteLength(file.content, "utf8");
@@ -286,6 +291,9 @@ export class AiTaskService {
       return files;
     } catch (error) {
       if (error instanceof AiServiceError) throw error;
+      if (error instanceof AiContextTooLargeError) {
+        throw new AiServiceError("AI_CONTEXT_TOO_LARGE", "The AI context files are too large.", 413);
+      }
       if (error instanceof AiTargetConflictError) {
         throw new AiServiceError("AI_CONTEXT_FILES_INVALID", "One of the selected AI context files is unavailable.", 400);
       }

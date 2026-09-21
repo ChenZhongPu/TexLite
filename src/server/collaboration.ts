@@ -136,6 +136,13 @@ export class AiTargetConflictError extends Error {
   }
 }
 
+export class AiContextTooLargeError extends Error {
+  constructor() {
+    super("The selected AI context files exceed the aggregate size limit");
+    this.name = "AiContextTooLargeError";
+  }
+}
+
 export class AiPermissionError extends Error {
   constructor() {
     super("The user no longer has edit permission for this project");
@@ -579,18 +586,28 @@ export class CollaborationService {
   }
 
   /** Capture additional read-only AI context from the same live room. */
-  captureAiContextFiles(projectId: string, filePaths: readonly string[]): AiContextFileSnapshot[] {
+  captureAiContextFiles(
+    projectId: string,
+    filePaths: readonly string[],
+    maxTotalBytes = Number.POSITIVE_INFINITY
+  ): AiContextFileSnapshot[] {
     const room = this.rooms.get(projectId);
     if (!room) throw new AiTargetConflictError("The collaborative document is not connected");
     const seen = new Set<string>();
-    return filePaths.map((filePathInput) => {
+    const snapshots: AiContextFileSnapshot[] = [];
+    let totalBytes = 0;
+    for (const filePathInput of filePaths) {
       const filePath = safeRelativePath(filePathInput);
       if (!isAiContextFilePath(filePath) || seen.has(filePath) || !room.allowedPaths.has(filePath)) {
         throw new AiTargetConflictError("One of the selected AI context files is no longer available");
       }
       seen.add(filePath);
-      return { filePath, content: this.trackedText(room, filePath).toString() };
-    });
+      const content = this.trackedText(room, filePath).toString();
+      totalBytes += Buffer.byteLength(content, "utf8");
+      if (totalBytes > maxTotalBytes) throw new AiContextTooLargeError();
+      snapshots.push({ filePath, content });
+    }
+    return snapshots;
   }
 
   /** Apply an AI result only if the live Yjs target still matches its guard. */

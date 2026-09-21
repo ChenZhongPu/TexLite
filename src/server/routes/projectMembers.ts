@@ -323,6 +323,8 @@ function handleNuwaxSearchError(reply: { code: (status: number) => { send: (payl
     if (error.failure === "reauth") return apiError(reply, 401, "NUWAX_SEARCH_REAUTH_REQUIRED");
     if (error.failure === "scope") return apiError(reply, 403, "NUWAX_SEARCH_SCOPE_REQUIRED");
     if (error.failure === "rate_limited") return apiError(reply, 429, "NUWAX_SEARCH_RATE_LIMITED");
+    if (error.failure === "timeout") return apiError(reply, 504, "NUWAX_SEARCH_TIMEOUT");
+    if (error.failure === "unavailable") return apiError(reply, 503, "NUWAX_SEARCH_UNAVAILABLE");
   }
   return apiError(reply, 502, "NUWAX_SEARCH_FAILED");
 }
