@@ -15,6 +15,10 @@
     "url": "postgresql://postgres:CHANGE_ME@127.0.0.1:5432/texlite-demo",
     "sslMode": "disable"
   },
+  "ai": {
+    "baseURL": "http://127.0.0.1:4010",
+    "apiKey": "replace-with-ai-server-api-key"
+  },
   "OAuth": {
     "baseURL": "https://testagent.xspaceagi.com",
     "clientId": "",

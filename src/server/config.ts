@@ -26,6 +26,13 @@ export interface NuwaxOAuthConfig {
   baseUrl: string;
 }
 
+export interface AiConfig {
+  /** Base URL of the trusted TexLite AI service, without the generate path. */
+  baseUrl: string;
+  /** Bearer credential sent only to the configured AI service. */
+  apiKey: string;
+}
+
 /** Effective values used when the corresponding file/env setting is omitted. */
 export const CONFIG_DEFAULTS = {
   siteName: "TexLite",
@@ -56,7 +63,8 @@ export const CONFIG_DEFAULTS = {
   // limits. These apply to source files owned by one account.
   maxProjectsPerUser: 100,
   maxSourceStorageMBPerUser: 2_048,
-  oauth: null as NuwaxOAuthConfig | null
+  oauth: null as NuwaxOAuthConfig | null,
+  ai: null as AiConfig | null
 } as const;
 
 const CONFIG_LIMITS = {
@@ -105,6 +113,8 @@ export interface Config {
   /** Per-account aggregate source-byte ceiling; populated by loadConfig(). */
   maxSourceStorageBytesPerUser?: number;
   oauth?: NuwaxOAuthConfig | null;
+  /** AI is enabled when this section is present; there is no separate flag. */
+  ai?: AiConfig | null;
 }
 
 export function loadConfig(configPathOverride?: string): Config {
@@ -184,6 +194,7 @@ export function loadConfig(configPathOverride?: string): Config {
   const basePath = resolveBasePath(fileConfig);
   const trustedProxyIps = resolveTrustedProxyIps(fileConfig);
   const oauth = resolveNuwaxOAuth(fileConfig);
+  const ai = resolveAi(fileConfig);
 
   const config: Config = {
     configPath,
@@ -212,7 +223,8 @@ export function loadConfig(configPathOverride?: string): Config {
     editHistoryMaxStorageBytes: editHistoryMaxStorageMB * 1024 * 1024,
     maxProjectsPerUser,
     maxSourceStorageBytesPerUser: maxSourceStorageMBPerUser * 1024 * 1024,
-    oauth
+    oauth,
+    ai
   };
 
   validateConfig(config);
@@ -247,6 +259,11 @@ export function validateConfig(config: Config): void {
     optionalString(config.oauth.baseUrl, "OAuth.baseURL", { min: 1, max: 2_048 });
     validateUrl("OAuth.redirectUri", config.oauth.redirectUri);
     validateUrl("OAuth.baseURL", config.oauth.baseUrl);
+  }
+  if (config.ai) {
+    optionalString(config.ai.baseUrl, "ai.baseURL", { min: 1, max: 2_048 });
+    optionalString(config.ai.apiKey, "ai.apiKey", { min: 1, max: 4_096 });
+    validateAiBaseUrl(config.ai.baseUrl);
   }
   if (!config.allowedEngines.length || new Set(config.allowedEngines).size !== config.allowedEngines.length) {
     throw configurationError("latex.allowedEngines", "must contain at least one unique engine");
@@ -308,6 +325,12 @@ interface FileConfig {
   history?: { maxVersions?: number; maxStorageMB?: number };
   editHistory?: { maxStorageMB?: number };
   projects?: { maxProjectsPerUser?: number; maxSourceStorageMBPerUser?: number };
+  /** The configured AI server. Prompt templates remain on that server. */
+  ai?: {
+    baseURL?: string;
+    baseUrl?: string;
+    apiKey?: string;
+  };
   /** Nuwax is the single supported OAuth provider. Keep the capitalized key
    * because it matches the provider's integration examples. */
   OAuth?: {
@@ -471,6 +494,14 @@ function validateFileConfig(config: FileConfig): void {
     throw configurationError("OAuth", "clientId and clientSecret must be configured together");
   }
 
+  const ai = optionalSection(config.ai, "ai");
+  optionalString(ai?.baseURL, "ai.baseURL", { min: 1, max: 2_048 });
+  optionalString(ai?.baseUrl, "ai.baseURL", { min: 1, max: 2_048 });
+  optionalString(ai?.apiKey, "ai.apiKey", { min: 1, max: 4_096 });
+  if (ai && Object.prototype.hasOwnProperty.call(ai, "baseURL") && Object.prototype.hasOwnProperty.call(ai, "baseUrl")) {
+    throw configurationError("ai", "configure only one of baseURL or baseUrl");
+  }
+
   const latex = optionalSection(config.latex, "latex");
   optionalString(latex?.latexmk, "latex.latexmk", { min: 1, max: 256 });
   if (latex && Object.prototype.hasOwnProperty.call(latex, "defaultEngine") && !isEngine(latex.defaultEngine)) {
@@ -526,6 +557,25 @@ function resolveNuwaxOAuth(fileConfig: FileConfig): NuwaxOAuthConfig | null {
   };
 }
 
+function resolveAi(fileConfig: FileConfig): AiConfig | null {
+  const section = fileConfig.ai;
+  const baseUrl = process.env.TEXLITE_AI_BASE_URL?.trim()
+    || section?.baseURL?.trim()
+    || section?.baseUrl?.trim()
+    || "";
+  const apiKey = process.env.TEXLITE_AI_API_KEY?.trim()
+    || section?.apiKey?.trim()
+    || "";
+  if (!baseUrl && !apiKey) {
+    if (section !== undefined) throw configurationError("ai", "baseURL and apiKey must be configured together");
+    return null;
+  }
+  if (!baseUrl || !apiKey) {
+    throw configurationError("ai", "baseURL and apiKey must be configured together");
+  }
+  return { baseUrl: normalizeAiBaseUrl(baseUrl), apiKey };
+}
+
 function normalizeOAuthBaseUrl(value: string): string {
   const parsed = new URL(value);
   if (!(["http:", "https:"] as string[]).includes(parsed.protocol)
@@ -533,6 +583,23 @@ function normalizeOAuthBaseUrl(value: string): string {
     throw configurationError("OAuth.baseURL", "must be an http(s) URL without credentials, query parameters, or a fragment");
   }
   return parsed.toString().replace(/\/+$/, "");
+}
+
+function normalizeAiBaseUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (!(parsed.protocol === "http:" || parsed.protocol === "https:")
+      || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error("must be an http(s) URL without credentials, query parameters, or a fragment");
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  } catch (error) {
+    throw configurationError("ai.baseURL", error instanceof Error ? error.message : "must be a valid http(s) URL");
+  }
+}
+
+function validateAiBaseUrl(value: string): void {
+  normalizeAiBaseUrl(value);
 }
 
 function optionalSection(value: unknown, name: string): Record<string, unknown> | undefined {

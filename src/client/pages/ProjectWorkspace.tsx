@@ -27,6 +27,9 @@ import { loadPdfPreview, type WorkspacePreload } from "../workspacePreload";
 import { hasDocumentClass as hasDocumentClassInSource } from "../latexRoot";
 import { findLatexSourceIncludes } from "../../shared/latexDependencies";
 import { WorkspaceTopbar } from "../workspace/WorkspaceTopbar";
+import { cancelAiTask, confirmAiTask, streamAiTask, AiClientError } from "../ai";
+import type { WorkspaceAiAction } from "../workspace/WorkspaceAiMenu";
+import { WorkspaceAiMenu } from "../workspace/WorkspaceAiMenu";
 import { WorkspaceFilePanel } from "../workspace/WorkspaceFilePanel";
 import { WorkspaceEditorPanel } from "../workspace/WorkspaceEditorPanel";
 import { WorkspacePreviewPanel } from "../workspace/WorkspacePreviewPanel";
@@ -59,6 +62,13 @@ type FormatterRecoveryAction = "file" | "selection";
 interface FormatterRecovery { action: FormatterRecoveryAction; kind: TexFmtFailureKind; detail: string }
 interface FormattedSource { formatted: string }
 interface LoadOptions { signal?: AbortSignal; isCurrent?: () => boolean }
+interface AiPreviewState {
+  filePath: string;
+  from: number;
+  to: number;
+  operation: "insert" | "replace";
+  text: string;
+}
 // Main-document detection and the main-file fallback outline scan source text
 // only after it has settled. They do not need to run on every keystroke.
 const SOURCE_ANALYSIS_DEBOUNCE_MS = 300;
@@ -144,6 +154,11 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const [wordCountError, setWordCountError] = useState("");
   const [wordCountResult, setWordCountResult] = useState<WordCountResult | null>(null);
   const [formatting, setFormatting] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiPhase, setAiPhase] = useState<"preparing" | "generating" | "review" | "applying" | null>(null);
+  const [aiPreview, setAiPreview] = useState<AiPreviewState | null>(null);
+  const [aiReady, setAiReady] = useState(false);
+  const [aiComposerOpen, setAiComposerOpen] = useState(false);
   const [formatterRecovery, setFormatterRecovery] = useState<FormatterRecovery | null>(null);
   const [permissionDowngradeBusy, setPermissionDowngradeBusy] = useState(false);
   const [editorPreferences, setEditorPreferences] = useState<EditorPreferences>(() => loadEditorPreferences(user.id, projectId));
@@ -173,6 +188,9 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
   const dictionaryRequest = useRef<AbortController | null>(null);
   const refreshRequest = useRef<AbortController | null>(null);
   const wordCountRequest = useRef<AbortController | null>(null);
+  const aiRequest = useRef<AbortController | null>(null);
+  const aiConfirmRequest = useRef<AbortController | null>(null);
+  const aiRequestId = useRef<string | null>(null);
   const mentionTargetRequest = useRef<AbortController | null>(null);
   const referenceNavigationRequest = useRef<AbortController | null>(null);
   const handledMentionTargetId = useRef<string | null>(null);
@@ -233,7 +251,25 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     setWordCountBusy(false);
     setWordCountError("");
     setWordCountResult(null);
+    aiRequest.current?.abort();
+    aiRequest.current = null;
+    aiConfirmRequest.current?.abort();
+    aiConfirmRequest.current = null;
+    aiRequestId.current = null;
+    setAiBusy(false);
+    setAiPhase(null);
+    setAiPreview(null);
+    setAiReady(false);
+    setAiComposerOpen(false);
   }, [projectId]);
+
+  useEffect(() => () => {
+    aiRequest.current?.abort();
+    aiConfirmRequest.current?.abort();
+    aiRequest.current = null;
+    aiConfirmRequest.current = null;
+    aiRequestId.current = null;
+  }, []);
 
   const closeTab = (tabPath: string) => {
     const current = openTabsRef.current;
@@ -633,6 +669,104 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       setError(errorMessage(saveError) || t("errors.collaborationUnavailable"));
       return false;
     }
+  };
+  const resetAiState = (): void => {
+    aiRequest.current = null;
+    aiConfirmRequest.current?.abort();
+    aiConfirmRequest.current = null;
+    aiRequestId.current = null;
+    setAiBusy(false);
+    setAiPhase(null);
+    setAiPreview(null);
+    setAiReady(false);
+    setAiComposerOpen(false);
+  };
+  const cancelAi = (): void => {
+    const requestId = aiRequestId.current;
+    aiRequest.current?.abort();
+    aiConfirmRequest.current?.abort();
+    if (requestId) void cancelAiTask(projectId, requestId).catch(() => undefined);
+    resetAiState();
+  };
+  const confirmAi = (): void => {
+    const requestId = aiRequestId.current;
+    if (!requestId || !aiReady || aiConfirmRequest.current) return;
+    const controller = new AbortController();
+    aiConfirmRequest.current = controller;
+    setAiReady(false);
+    setAiPhase("applying");
+    void confirmAiTask(projectId, requestId, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      if (result.applied) setNotice(t("ai.applied"));
+      resetAiState();
+    }).catch((taskError) => {
+      if (controller.signal.aborted || isAbortError(taskError)) return;
+      setError(taskError instanceof AiClientError ? taskError.message : errorMessage(taskError));
+      resetAiState();
+    }).finally(() => {
+      if (aiConfirmRequest.current === controller) aiConfirmRequest.current = null;
+    });
+  };
+  const runAi = (action: WorkspaceAiAction): void => {
+    if (!project || !site.aiAvailable || project.permission === "read" || !collaborationSynced || aiBusy) return;
+    const filePath = activeFileRef.current;
+    if (!filePath) return;
+    const currentSelection = selectionRef.current;
+    const sharedText = collaboration.getText(filePath);
+    const source = sharedText.toString();
+    const cursorOffset = Math.max(0, Math.min(source.length, sourceCursorStore.getCursor().offset));
+    const startOffset = action.operation === "replace" ? currentSelection.startOffset : cursorOffset;
+    const endOffset = action.operation === "replace" ? currentSelection.endOffset : cursorOffset;
+    if (action.operation === "replace") {
+      if (!currentSelection.selectedText.trim()) {
+        setNotice(t("ai.selectionRequired"));
+        return;
+      }
+      if (source.slice(startOffset, endOffset) !== currentSelection.selectedText) {
+        setError(t("ai.targetChanged"));
+        return;
+      }
+    }
+    aiRequest.current?.abort();
+    aiConfirmRequest.current?.abort();
+    const controller = new AbortController();
+    aiRequest.current = controller;
+    const requestId = typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : String(Date.now()) + "-" + String(Math.random());
+    aiRequestId.current = requestId;
+    setAiBusy(true);
+    setAiPhase("preparing");
+    setAiPreview({ filePath, from: startOffset, to: endOffset, operation: action.operation, text: "" });
+    setAiReady(false);
+    setAiComposerOpen(true);
+    setError("");
+    void streamAiTask({
+      projectId,
+      requestId,
+      targetFilePath: filePath,
+      operation: action.operation,
+      startOffset,
+      endOffset,
+      contextFiles: action.contextFiles,
+      promptId: action.promptId,
+      taskDescription: action.taskDescription,
+      signal: controller.signal
+    }, (event) => {
+      if (controller.signal.aborted) return;
+      if (event.type === "status") setAiPhase(event.phase);
+      else if (event.type === "delta") setAiPreview((current) => current ? { ...current, text: current.text + event.text } : current);
+      else if (event.type === "done") setAiPreview((current) => current ? { ...current, text: event.resultText } : current);
+    }).then(() => {
+      if (!controller.signal.aborted) {
+        setAiReady(true);
+        setAiPhase("review");
+      }
+    }).catch((taskError) => {
+      if (controller.signal.aborted || isAbortError(taskError)) return;
+      setError(taskError instanceof AiClientError ? taskError.message : errorMessage(taskError));
+      if (aiRequest.current === controller) resetAiState();
+    });
   };
   const requestWordCount = async (mode: WordCountMode): Promise<void> => {
     if (!project || wordCountBusy) return;
@@ -1204,6 +1338,14 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
     : [];
   if (!project) return <div className="center-card"><p>{error || t("common.loading")}</p>{error && <button className="primary" onClick={onBack}>{t("editor.backToProjects")}</button>}</div>;
   const readOnly = project.permission === "read" || !collaborationSynced;
+  // The requesting user pauses editing for the whole workspace while the AI
+  // task is running or waiting for confirmation. Other collaborators still
+  // use their own Yjs connections and can continue editing normally.
+  const activeEditorReadOnly = readOnly || aiBusy;
+  const openAiComposer = (): void => {
+    if (!project || !site.aiAvailable || project.permission === "read" || !collaborationSynced || aiBusy || !activeFile || !isEditableTextFile(activeFile)) return;
+    setAiComposerOpen(true);
+  };
   const activeFormatLease = formatLeaseStates.find((lease) => lease.path === activeFile);
   // The lease state deliberately has no durable user/session identity. Show
   // it whenever this browser is not the formatter currently holding it; this
@@ -1282,14 +1424,30 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       onBack={onBack} onShare={() => setShareOpen(true)} showCitationLibrary={showEditor && /\.bib$/i.test(activeFile)}
       citationLibraryOpen={citationLibraryOpen} onCitationLibrary={() => setCitationLibraryOpen(true)}
       onSelectionHistory={() => setSelectionHistoryOpen(true)} onHistory={() => setHistoryOpen(true)}
-      formatting={formatting} readOnly={readOnly} collaborationSynced={collaborationSynced}
+      formatting={formatting} readOnly={readOnly || aiBusy} collaborationSynced={collaborationSynced}
       hasSelection={Boolean(selection.selectedText.trim())}
       onToggleComments={() => setSidePanel(sidePanel === "comments" ? null : "comments")}
       commentsOpen={sidePanel === "comments"} unresolvedCommentCount={comments.filter((item) => !item.resolved).length}
-      hasActiveFile={Boolean(activeFile)} onToggleSettings={() => setSidePanel(sidePanel === "settings" ? null : "settings")}
+      hasActiveFile={Boolean(activeFile && isEditableTextFile(activeFile))} onToggleSettings={() => setSidePanel(sidePanel === "settings" ? null : "settings")}
       settingsOpen={sidePanel === "settings"} compileBusy={compileBusy} sharedCompiling={sharedCompiling}
       localCompiling={localCompiling} cancelling={cancelling} compileState={compileState} onCompile={compile} onCancelCompile={() => void cancelCompile()}
     />
+    {site.aiAvailable && <WorkspaceAiMenu
+      open={aiComposerOpen}
+      onClose={() => setAiComposerOpen(false)}
+      available={site.aiAvailable}
+      readOnly={readOnly || !collaborationSynced}
+      hasSelection={Boolean(selection.selectedText.trim())}
+      hasActiveFile={Boolean(activeFile && isEditableTextFile(activeFile))}
+      activeFile={activeFile}
+      files={files}
+      busy={aiBusy}
+      ready={aiReady}
+      phase={aiPhase}
+      onRun={runAi}
+      onCancel={cancelAi}
+      onConfirm={confirmAi}
+    />}
     {protocolUpgradeRequired && <div className="workspace-update-banner" role="alert">
       <AlertTriangle size={15} />
       <span>{t("workspaceUpdates.protocolUpgrade")}</span>
@@ -1309,7 +1467,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
         project={project} filesPanel={filesPanel} files={files} visibleEntries={visibleEntries}
         activeFile={activeFile} activeMainFile={activeMainFile} selectedFile={selectedFile}
         selectedFolder={selectedFolder} expandedFolders={expandedFolders} fileDragActive={fileDragActive}
-        uploadingFiles={uploadingFiles} readOnly={readOnly} formatting={formatting}
+        uploadingFiles={uploadingFiles} readOnly={activeEditorReadOnly} formatting={formatting || aiBusy}
         canFormat={isFormattableLatexFile(activeFile)} activeFormatLease={Boolean(activeFormatLease)} collaborationSynced={collaborationSynced}
         editorFontSize={editorPreferences.fontSize}
         outline={outline} sourceCursorStore={sourceCursorStore} wordCountBusy={wordCountBusy}
@@ -1330,12 +1488,12 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       {showEditor && <PanelResizeHandle className="resize-handle"><GripVertical size={12} /></PanelResizeHandle>}
       {showEditor && <WorkspaceEditorPanel
         project={project} activeFile={activeFile} openTabs={openTabs}
-        content={content} loadedFile={loadedFile} readOnly={readOnly} comments={comments}
+        content={content} loadedFile={loadedFile} readOnly={activeEditorReadOnly} comments={comments}
         focusComment={focusComment} editorPreferences={editorPreferences} completionIndex={completionIndex}
         nativeSpellCheck={spellCheck.nativeFallback} spellCheckIssues={spellCheck.issues}
         spellCheckJump={spellCheck.jump} sourceJump={sourceJump} collaborativeText={collaborativeText}
         collaborationAwareness={collaboration.awareness} undoManager={activeFile ? collaboration.getUndoManager(activeFile) : undefined}
-        editorNotice={editorNotice} activateTab={activateTab} closeTab={closeTab}
+        editorNotice={editorNotice} aiPreview={aiPreview?.filePath === activeFile ? aiPreview : null} aiAvailable={site.aiAvailable} onAiWrite={openAiComposer} activateTab={activateTab} closeTab={closeTab}
         handleTabKeyDown={handleTabKeyDown} updateEditorContent={updateEditorContent}
         setSelection={(selectedText, startOffset, endOffset) => setSelection({ selectedText, startOffset, endOffset })}
         onAddComment={(selectedText, startOffset, endOffset, source) => openComment({ selectedText, startOffset, endOffset }, source)}
@@ -1350,7 +1508,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
         compileBusy={compileBusy} compileLog={compileLog} compileDiagnostics={compileDiagnostics}
         compileMessages={compileMessages} artifacts={artifacts}
         artifactPreview={artifactPreview} artifactLoading={artifactLoading} cleaning={cleaning}
-        readOnly={readOnly} collaborationSynced={collaborationSynced} workspaceLayout={workspaceLayout} showSyncResize={showEditor && showPreview}
+        readOnly={readOnly || aiBusy} collaborationSynced={collaborationSynced} workspaceLayout={workspaceLayout} showSyncResize={showEditor && showPreview}
         diagnosticCount={diagnosticCount} selectPreviewTab={selectPreviewTab}
         changeWorkspaceLayout={changeWorkspaceLayout} onSetNotice={setNotice} onSetPdfViewport={setPdfViewport}
         syncVisiblePdfToSource={syncVisiblePdfToSource}
@@ -1386,7 +1544,7 @@ export function ProjectWorkspace({ site, user, projectId, preload, mentionId = n
       error={wordCountError} result={wordCountResult} onOpenChange={setWordCountOpen} /></LazyModal>}
     <WorkspaceDialogs
       user={user} project={project} projectId={projectId} activeFile={activeFile}
-      content={content} maxCitationBibtexBytes={site.maxCitationBibtexBytes} files={files} directoryEntries={directoryEntries} readOnly={readOnly}
+      content={content} maxCitationBibtexBytes={site.maxCitationBibtexBytes} files={files} directoryEntries={directoryEntries} readOnly={activeEditorReadOnly}
       workspaceLayout={workspaceLayout} changeWorkspaceLayout={changeWorkspaceLayout}
       resourcePreview={resourcePreview} resourcePreviewLoading={resourcePreviewLoading}
       setResourcePreview={setResourcePreview} setResourcePreviewLoading={setResourcePreviewLoading}

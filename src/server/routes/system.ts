@@ -36,7 +36,9 @@ export function registerSystemRoutes(app: FastifyInstance, context: SystemRouteC
     maxUploadSizeMB: Math.floor(config.maxUploadBytes / 1024 / 1024),
     maxCollaborativeFileSizeMB: Math.floor(maxCollaborativeFileBytes(config) / 1024 / 1024),
     allowedEngines: config.allowedEngines,
-    nuwaxOAuthEnabled: Boolean(config.oauth)
+    nuwaxOAuthEnabled: Boolean(config.oauth),
+    // Never expose the AI base URL or bearer key to the browser.
+    aiAvailable: Boolean(config.ai)
   }));
 
   app.get("/api/health", async () => ({ ok: true, pid: process.pid, latexmk: config.latexmk }));

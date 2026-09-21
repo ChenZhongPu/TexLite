@@ -18,6 +18,10 @@
   "invitations": {
     "title": "项目邀请", "description": "有人邀请你协作。接受邀请后，项目才会加入你的工作区。", "project": "项目", "from": "来自 {{owner}}", "accept": "接受", "decline": "拒绝", "pending": "待处理邀请"
   },
+  "ai": {
+    "title": "AI 写作", "menuHint": "使用 AI 辅助当前文件", "cancel": "取消 AI 任务", "cancelHint": "取消当前 AI 任务", "preparing": "正在准备上下文…", "generating": "正在生成内容…", "review": "请确认 AI 预览", "applying": "正在写入文档…", "instructionLabel": "输入指令", "instructionPlaceholderSelection": "例如：润色这段文字，保持原意并使用更正式的表达。", "instructionPlaceholderCursor": "例如：从当前位置继续写一段关于实验结果的文字。", "quickInstructions": "常用指令", "contextFiles": "上下文文件（仅 .tex/.bib，可选）", "noContextFiles": "项目中没有其他可作为上下文的 .tex 或 .bib 文件；当前目标文件不能重复选择。", "targetFile": "当前目标文件", "noAdditionalContextFiles": "没有其他可作为上下文的 .tex 或 .bib 文件。", "contextSlowWarning": "已添加上下文文件。读取内容越多，推理通常越慢。", "generate": "AI写作", "confirm": "确认写入", "discard": "放弃预览", "replaceSelection": "替换选中文本", "insertAtCursor": "从光标处续写", "polish": "润色", "academic": "改为学术表达", "simplify": "简化表达", "continueWriting": "继续写作", "selectionHint": "AI 预览会替换当前选区。", "cursorHint": "AI 预览会插入当前光标位置。", "selectionRequired": "请先选择要交给 AI 处理的文字。", "targetChanged": "文档已发生变化，请重新选择位置后重试。", "applied": "AI 内容已写入文档。", "failed": "AI 任务未能完成。", "timeout": "AI 服务响应超时，请稍后重试。", "unavailable": "暂时无法连接 AI 服务，请稍后重试。", "requestInvalid": "AI 请求无效，请重新选择内容后重试。", "contextFilesInvalid": "所选上下文文件无效或已不可用。", "contextTooLarge": "所选上下文过大，请减少文件或内容后重试。", "previewExpired": "AI 预览已过期，请重新生成。", "permissionRevoked": "当前已没有该项目的编辑权限。", "authRevoked": "当前登录会话已失效。", "sourceSaveFailed": "AI 结果已生成，但文档保存失败。", "unauthorized": "AI 服务配置的凭证未通过认证。", "cancelled": "AI 任务已取消。", "invalidResponse": "AI 服务返回了无效响应。", "incomplete": "AI 服务未完成此次请求。",
+    "tasks": { "polish": "润色选中的文字，保持原意并输出可以直接替换的文本。", "academic": "将选中的文字改写为清晰、严谨的学术表达，保持原意并输出可以直接替换的文本。", "simplify": "简化选中的文字，保留关键信息并输出可以直接替换的文本。", "continueWriting": "根据当前文档上下文，从光标处自然地继续写作。" }
+  },
   "projects": {
     "title": "项目", "subtitle": "创建、编辑和分享 LaTeX 文档", "restricted": "你可以访问别人共享给你的项目；创建权限由管理员授予",
     "new": "新建项目", "newDescription": "项目会使用配置文件中的默认 LaTeX 引擎。", "name": "项目名称",
@@ -280,7 +284,8 @@
     "writingCheckDescription": "TexLite 使用内置的 Harper.js 进行服务端写作检查。若其不可用，将自动改用浏览器内置拼写检查。拼写问题使用红色波浪线，语法问题使用黄色波浪线；右键问题可以查看修改建议。",
     "projectConfiguration": "项目配置", "fontFamily": "英文字体", "fontSize": "字体大小", "lineHeight": "行间距",
     "dictionary": "项目词典", "dictionaryDescription": "添加到这里的词会在 Harper 返回本项目诊断后被忽略；具有编辑权限的用户可以维护此列表。", "dictionaryPlaceholder": "添加自定义词", "addWord": "添加词", "dictionaryEmpty": "暂未添加自定义词。",
-    "showTooltips": "显示界面悬停提示", "showTooltipsDescription": "显示项目工作区控件的悬停提示；不影响右键写作建议。",
+  "showTooltips": "显示界面悬停提示", "showTooltipsDescription": "显示项目工作区控件的悬停提示；不影响右键写作建议。",
+  "aiWritingButton": "AI写作", "aiWritingButtonDescription": "在当前光标所在行的行号栏显示 AI 写作按钮；默认开启。",
     "lineWrapping": "自动换行", "mathPreviewOnHover": "悬停预览数学公式", "mathPreviewOnHoverDescription": "在编辑器中悬停常见 LaTeX 公式时显示渲染预览。", "spellCheck": "拼写和语法检查", "vimMode": "Vim 键位", "vimModeDescription": "在当前编辑器中使用 Vim 的普通、插入和可视模式。", "vimHelp": "查看帮助", "formatOnCompile": "编译前自动格式化 LaTeX", "formatOnCompileDescription": "默认关闭；格式化会在编译前执行。", "formatRequiresWrite": "需要项目编辑权限才能使用格式化。", "formatterDescription": "tex、cls、sty 使用内置的浏览器 tex-fmt WASM 格式化器；BibTeX 使用浏览器中的 bibtex-tidy。", "formatterInstall": "查看 tex-fmt", "bibtexTidyInstall": "查看 bibtex-tidy", "texFmtOptions": "tex-fmt 参数（TOML）", "texFmtOptionsPlaceholder": "wrap = false", "texFmtOptionsDescription": "这些参数仅保存在当前浏览器中，并按当前用户和项目隔离；它们会直接传递给 tex-fmt。", "openFilesInTabs": "使用新 Tab 打开 LaTeX 文件", "openFilesInTabsDescription": "在编辑器顶部通过标签页管理打开的 .tex、.bib、.bst、.sty 等源码文件。", "writingIssues": "发现 {{count}} 个写作问题（去重后 {{uniqueCount}} 个）", "noWritingIssues": "未发现拼写或语法问题。", "spellCheckFirst": "第一个写作问题", "spellCheckPrevious": "上一个写作问题", "spellCheckNext": "下一个写作问题", "spellCheckLast": "最后一个写作问题", "spellCheckPosition": "第 {{current}}/{{total}} 个",
     "fontJetBrains": "JetBrains Mono", "fontSourceCode": "Source Code Pro",
     "fontIbmPlex": "IBM Plex Mono", "fontFiraCode": "Fira Code", "fontIosevka": "Iosevka", "lineHeightCompact": "紧凑",

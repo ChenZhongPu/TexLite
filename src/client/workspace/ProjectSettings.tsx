@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertCircle, AlignLeft, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, LoaderCircle, MessageCircleQuestion, PanelsTopLeft, RefreshCw, Save, Settings, Sigma, SpellCheck2, Type, WrapText, X } from "lucide-react";
+import { AlertCircle, AlignLeft, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, LoaderCircle, MessageCircleQuestion, PanelsTopLeft, RefreshCw, Save, Settings, Sigma, SpellCheck2, Sparkles, Type, WrapText, X } from "lucide-react";
 import { api } from "../api";
 import { texFmtToolStatus, type ClientToolRuntimeState } from "../clientToolStatus";
 import { editorFonts, type EditorPreferences } from "../editorPreferences";
@@ -128,6 +128,10 @@ export function ProjectSettings({ onClose, project, projectId, site, files, dict
       <div className="editor-preference">
         <label className="editor-checkbox"><input type="checkbox" checked={appearancePreferences.showTooltips} onChange={(event) => setAppearancePreferences({ ...appearancePreferences, showTooltips: event.target.checked })} /><MessageCircleQuestion size={15} /><span>{t("projectSettings.showTooltips")}</span></label>
         <p className="field-hint">{t("projectSettings.showTooltipsDescription")}</p>
+      </div>
+      <div className="editor-preference">
+        <label className="editor-checkbox"><input type="checkbox" checked={appearancePreferences.aiWritingButton} onChange={(event) => setAppearancePreferences({ ...appearancePreferences, aiWritingButton: event.target.checked })} /><Sparkles size={15} /><span>{t("projectSettings.aiWritingButton")}</span></label>
+        <p className="field-hint">{t("projectSettings.aiWritingButtonDescription")}</p>
       </div>
       <div className="editor-preference">
         <label className="editor-checkbox"><input type="checkbox" checked={appearancePreferences.mathPreviewOnHover} onChange={(event) => setAppearancePreferences({ ...appearancePreferences, mathPreviewOnHover: event.target.checked })} /><Sigma size={15} /><span>{t("projectSettings.mathPreviewOnHover")}</span></label>

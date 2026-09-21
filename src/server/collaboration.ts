@@ -33,6 +33,7 @@ import {
   type SharedCompileState,
   type SharedCompileStates
 } from "../shared/collaborationProtocol.js";
+import { isAiContextFilePath, type AiOperation } from "../shared/aiProtocol.js";
 
 export { COLLABORATION_PROTOCOL_VERSION } from "../shared/collaborationProtocol.js";
 export type { CollaborationSaveReceipt, SharedCompileState, SharedCompileStates } from "../shared/collaborationProtocol.js";
@@ -97,6 +98,65 @@ interface Connection {
   protocolTimer: NodeJS.Timeout | null;
 }
 
+interface AiEditOrigin {
+  kind: "ai";
+  userId: string;
+}
+
+export interface AiTargetSnapshot {
+  projectId: string;
+  filePath: string;
+  roomInstanceId: string;
+  roomEpoch: string;
+  operation: AiOperation;
+  startPosition: Uint8Array;
+  endPosition: Uint8Array;
+  selectedText: string;
+  /** Small guards make a cursor insertion fail closed after nearby edits. */
+  guardBefore: string;
+  guardAfter: string;
+  contextBefore: string;
+  contextAfter: string;
+}
+
+export interface AiContextFileSnapshot {
+  filePath: string;
+  content: string;
+}
+
+export interface AiApplyResult {
+  status: "applied" | "noop";
+  receipt: CollaborationSaveReceipt;
+}
+
+export class AiTargetConflictError extends Error {
+  constructor(message = "The collaborative target changed before the AI result was applied") {
+    super(message);
+    this.name = "AiTargetConflictError";
+  }
+}
+
+export class AiPermissionError extends Error {
+  constructor() {
+    super("The user no longer has edit permission for this project");
+    this.name = "AiPermissionError";
+  }
+}
+
+export class AiAuthenticationError extends Error {
+  constructor() {
+    super("The user's sign-in session is no longer active");
+    this.name = "AiAuthenticationError";
+  }
+}
+
+export class AiApplyAbortedError extends Error {
+  constructor() {
+    super("The AI result was cancelled before it was applied");
+    this.name = "AiApplyAbortedError";
+  }
+}
+
 interface FormatLease {
   path: string;
   token: string;
@@ -114,6 +174,8 @@ interface FormatLeaseWaiter {
 
 interface Room {
   projectId: string;
+  /** Ephemeral room lifetime marker; unlike the persisted epoch it changes on every room instance. */
+  instanceId: string;
   doc: Y.Doc;
   awareness: Awareness;
   meta: Y.Map<unknown>;
@@ -467,6 +529,139 @@ export class CollaborationService {
   }
 
   /**
+   * Capture a live Yjs target for an AI task.  The room and its epoch are
+   * intentionally required: an AI task is ephemeral and must never fall back
+   * to a stale source-file snapshot after a room is rebuilt.
+   */
+  captureAiTarget(
+    projectId: string,
+    filePathInput: string,
+    startOffset: number,
+    endOffset: number,
+    operation: AiOperation
+  ): AiTargetSnapshot {
+    const room = this.rooms.get(projectId);
+    if (!room) throw new AiTargetConflictError("The collaborative document is not connected");
+    const filePath = safeRelativePath(filePathInput);
+    if (!isCollaborativeTextFile(filePath) || !room.allowedPaths.has(filePath)) {
+      throw new AiTargetConflictError("The selected source file is no longer available");
+    }
+    const text = this.trackedText(room, filePath);
+    const source = text.toString();
+    if (!Number.isInteger(startOffset) || !Number.isInteger(endOffset)
+      || startOffset < 0 || endOffset < startOffset || endOffset > source.length) {
+      throw new AiTargetConflictError("The selected source range is invalid");
+    }
+    if (operation === "insert" && startOffset !== endOffset) {
+      throw new AiTargetConflictError("An insertion target cannot contain a selection");
+    }
+    if (operation === "replace" && startOffset === endOffset) {
+      throw new AiTargetConflictError("A replacement target must contain selected text");
+    }
+    const selectedText = source.slice(startOffset, endOffset);
+    const guardLength = 256;
+    const guardBefore = source.slice(Math.max(0, startOffset - guardLength), startOffset);
+    const guardAfter = source.slice(endOffset, Math.min(source.length, endOffset + guardLength));
+    return {
+      projectId,
+      filePath,
+      roomInstanceId: room.instanceId,
+      roomEpoch: room.epoch,
+      operation,
+      startPosition: Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(text, startOffset, 0)),
+      endPosition: Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(text, endOffset, 0)),
+      selectedText,
+      guardBefore,
+      guardAfter,
+      contextBefore: source.slice(0, startOffset),
+      contextAfter: source.slice(endOffset)
+    };
+  }
+
+  /** Capture additional read-only AI context from the same live room. */
+  captureAiContextFiles(projectId: string, filePaths: readonly string[]): AiContextFileSnapshot[] {
+    const room = this.rooms.get(projectId);
+    if (!room) throw new AiTargetConflictError("The collaborative document is not connected");
+    const seen = new Set<string>();
+    return filePaths.map((filePathInput) => {
+      const filePath = safeRelativePath(filePathInput);
+      if (!isAiContextFilePath(filePath) || seen.has(filePath) || !room.allowedPaths.has(filePath)) {
+        throw new AiTargetConflictError("One of the selected AI context files is no longer available");
+      }
+      seen.add(filePath);
+      return { filePath, content: this.trackedText(room, filePath).toString() };
+    });
+  }
+
+  /** Apply an AI result only if the live Yjs target still matches its guard. */
+  async applyAiResult(
+    snapshot: AiTargetSnapshot,
+    resultText: string,
+    userId: string,
+    signal?: AbortSignal,
+    sessionId?: string | null
+  ): Promise<AiApplyResult> {
+    const room = this.rooms.get(snapshot.projectId);
+    if (!room || room.instanceId !== snapshot.roomInstanceId || room.epoch !== snapshot.roomEpoch || !room.allowedPaths.has(snapshot.filePath)) {
+      throw new AiTargetConflictError();
+    }
+    const currentUser = await this.db.identity.findUserById(userId);
+    if (!currentUser || currentUser.disabled) throw new AiPermissionError();
+    if (sessionId && !(await this.db.identity.sessionIsActive(sessionId, userId, new Date().toISOString()))) {
+      throw new AiAuthenticationError();
+    }
+    const currentProject = await this.lookupProjectAccess(snapshot.projectId, currentUser);
+    if (!currentProject || !canEdit(currentProject)) throw new AiPermissionError();
+    // Permission checks above are asynchronous. The room may have been
+    // destroyed and recreated while they were running, so never apply to the
+    // stale Y.Doc captured before the await.
+    if (this.rooms.get(snapshot.projectId) !== room
+      || room.instanceId !== snapshot.roomInstanceId
+      || room.epoch !== snapshot.roomEpoch
+      || !room.allowedPaths.has(snapshot.filePath)) {
+      throw new AiTargetConflictError();
+    }
+    if (signal?.aborted) throw new AiApplyAbortedError();
+    const text = this.trackedText(room, snapshot.filePath);
+    const start = Y.createAbsolutePositionFromRelativePosition(
+      Y.decodeRelativePosition(snapshot.startPosition), room.doc
+    );
+    const end = Y.createAbsolutePositionFromRelativePosition(
+      Y.decodeRelativePosition(snapshot.endPosition), room.doc
+    );
+    if (!start || !end || start.type !== text || end.type !== text || start.index > end.index) {
+      throw new AiTargetConflictError();
+    }
+    const current = text.toString();
+    const currentSelected = current.slice(start.index, end.index);
+    if (snapshot.operation === "replace") {
+      if (currentSelected !== snapshot.selectedText) throw new AiTargetConflictError();
+    } else {
+      if (start.index !== end.index) throw new AiTargetConflictError();
+      const before = current.slice(Math.max(0, start.index - snapshot.guardBefore.length), start.index);
+      const after = current.slice(end.index, Math.min(current.length, end.index + snapshot.guardAfter.length));
+      if (before !== snapshot.guardBefore || after !== snapshot.guardAfter) throw new AiTargetConflictError();
+    }
+    if (snapshot.operation === "insert" && resultText.length === 0) {
+      const receipt = await this.flushProject(snapshot.projectId);
+      if (!receipt?.ok) throw new Error("The project source could not be saved");
+      return { status: "noop", receipt };
+    }
+    if (snapshot.operation === "replace" && resultText === snapshot.selectedText) {
+      const receipt = await this.flushProject(snapshot.projectId);
+      if (!receipt?.ok) throw new Error("The project source could not be saved");
+      return { status: "noop", receipt };
+    }
+    room.doc.transact(() => {
+      if (snapshot.operation === "replace") text.delete(start.index, end.index - start.index);
+      text.insert(start.index, resultText);
+    }, { kind: "ai", userId } satisfies AiEditOrigin);
+    const receipt = await this.flushProject(snapshot.projectId);
+    if (!receipt?.ok) throw new Error("The project source could not be saved");
+    return { status: "applied", receipt };
+  }
+
+  /**
    * Returns the current source-tree epoch.  Exclusive filesystem operations
    * increment this value, allowing callers to cheaply distinguish a request
    * admitted before and after a project replacement without reading files.
@@ -815,6 +1010,7 @@ export class CollaborationService {
     }
     const room: Room = {
       projectId,
+      instanceId: randomUUID(),
       doc: bootstrap.doc,
       awareness: new Awareness(bootstrap.doc),
       meta: bootstrap.doc.getMap("texlite:meta"),
@@ -903,9 +1099,8 @@ export class CollaborationService {
         void this.sanitizeCompileStates(room).catch(() => undefined);
       }
       if (origin !== DISK_ORIGIN && origin !== HTTP_ORIGIN && origin !== META_ORIGIN) {
-        if (origin && typeof origin === "object" && "user" in origin) {
-          room.lastModifiedUserId = (origin as Connection).user.id;
-        }
+        const authorId = editAuthorId(origin);
+        if (authorId) room.lastModifiedUserId = authorId;
         this.scheduleSave(room);
       }
     });
@@ -1036,9 +1231,10 @@ export class CollaborationService {
         room.doc.transact(() => replaceText(text, ""), DISK_ORIGIN);
         return;
       }
-      if (isConnectionOrigin(transaction.origin) && before !== after) {
-        const connection = transaction.origin;
-        this.recordEditStep(room, filePath, connection, event, before, after);
+      const authorId = editAuthorId(transaction.origin);
+      if (authorId && before !== after) {
+        const connection = isConnectionOrigin(transaction.origin) ? transaction.origin : null;
+        this.recordEditStep(room, filePath, authorId, connection, event, before, after);
       }
       room.observedContent.set(filePath, after);
       room.dirtyPaths.add(filePath);
@@ -1056,7 +1252,8 @@ export class CollaborationService {
   private recordEditStep(
     room: Room,
     filePath: string,
-    connection: Connection,
+    authorId: string,
+    connection: Connection | null,
     event: Y.YTextEvent,
     before: string,
     after: string
@@ -1065,7 +1262,7 @@ export class CollaborationService {
     if (!spans.length) return;
     const createdAt = new Date().toISOString();
     const activeLease = this.activeFormatLease(room, filePath);
-    const kind: EditHistorySegmentInput["kind"] = activeLease?.connection === connection ? "format" : "edit";
+    const kind: EditHistorySegmentInput["kind"] = connection && activeLease?.connection === connection ? "format" : "edit";
     const step: EditHistoryStep = {
       beforeHash: hashText(before),
       afterHash: hashText(after),
@@ -1076,7 +1273,7 @@ export class CollaborationService {
     const previousTime = previous ? Date.parse(previous.updatedAt) : Number.NaN;
     if (previous
       && previous.filePath === filePath
-      && previous.authorId === connection.user.id
+      && previous.authorId === authorId
       && previous.kind === kind
       && previous.afterHash === step.beforeHash
       && Number.isFinite(previousTime)
@@ -1088,7 +1285,7 @@ export class CollaborationService {
     }
     room.pendingEditSegments.push({
       filePath,
-      authorId: connection.user.id,
+      authorId,
       kind,
       beforeHash: step.beforeHash,
       afterHash: step.afterHash,
@@ -1967,6 +2164,15 @@ function protocolMessage(epoch: string): Uint8Array {
 
 function isConnectionOrigin(origin: unknown): origin is Connection {
   return Boolean(origin && typeof origin === "object" && "socket" in origin);
+}
+
+function editAuthorId(origin: unknown): string | null {
+  if (isConnectionOrigin(origin)) return origin.user.id;
+  if (origin && typeof origin === "object") {
+    const candidate = origin as Partial<AiEditOrigin>;
+    if (candidate.kind === "ai" && typeof candidate.userId === "string" && candidate.userId) return candidate.userId;
+  }
+  return null;
 }
 
 function isSharedCompileState(mainFile: string, value: unknown): value is SharedCompileState {

@@ -15,7 +15,8 @@ describe("configuration", () => {
     "TEXLITE_EDIT_HISTORY_MAX_STORAGE_MB",
     "TEXLITE_MAX_PROJECTS_PER_USER", "TEXLITE_MAX_PROJECT_SOURCE_STORAGE_MB",
     "TEXLITE_NUWAX_CLIENT_ID", "TEXLITE_NUWAX_CLIENT_SECRET", "TEXLITE_NUWAX_REDIRECT_URI", "TEXLITE_NUWAX_BASE_URL",
-    "TEXLITE_OAUTH_CLIENT_ID", "TEXLITE_OAUTH_CLIENT_SECRET", "TEXLITE_OAUTH_REDIRECT_URI", "TEXLITE_OAUTH_BASE_URL"
+    "TEXLITE_OAUTH_CLIENT_ID", "TEXLITE_OAUTH_CLIENT_SECRET", "TEXLITE_OAUTH_REDIRECT_URI", "TEXLITE_OAUTH_BASE_URL",
+    "TEXLITE_AI_BASE_URL", "TEXLITE_AI_API_KEY"
   ] as const;
   const originalEnvironment = new Map(envKeys.map((key) => [key, process.env[key]]));
   let root = "";
@@ -134,6 +135,29 @@ describe("configuration", () => {
     delete process.env.TEXLITE_NUWAX_CLIENT_SECRET;
     delete process.env.TEXLITE_NUWAX_REDIRECT_URI;
     expect(() => loadConfig()).toThrow(/OAuth\.redirectUri.*configured/);
+  });
+
+  it("loads the AI server URL and key without exposing an enabled flag", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-ai-"));
+    const configPath = path.join(root, "texlite.config.json");
+    fs.writeFileSync(configPath, JSON.stringify({
+      storage: { dataDir: path.join(root, "data") },
+      ai: { baseURL: "http://127.0.0.1:4010/", apiKey: "test-key-from-local" }
+    }));
+    process.env.TEXLITE_CONFIG = configPath;
+    delete process.env.TEXLITE_AI_BASE_URL;
+    delete process.env.TEXLITE_AI_API_KEY;
+    expect(loadConfig().ai).toEqual({ baseUrl: "http://127.0.0.1:4010", apiKey: "test-key-from-local" });
+  });
+
+  it("requires both AI settings and rejects credential-bearing AI URLs", () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "texlite-config-ai-invalid-"));
+    const configPath = path.join(root, "texlite.config.json");
+    process.env.TEXLITE_CONFIG = configPath;
+    fs.writeFileSync(configPath, JSON.stringify({ ai: { apiKey: "only-key" } }));
+    expect(() => loadConfig()).toThrow(/ai.*baseURL and apiKey/);
+    fs.writeFileSync(configPath, JSON.stringify({ ai: { baseURL: "http://user:pass@127.0.0.1:4010", apiKey: "key" } }));
+    expect(() => loadConfig()).toThrow(/ai\.baseURL/);
   });
 
   it("allows an empty redirect URI placeholder while Nuwax OAuth is disabled", () => {

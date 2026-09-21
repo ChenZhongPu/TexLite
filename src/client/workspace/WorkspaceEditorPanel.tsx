@@ -32,6 +32,8 @@ export interface WorkspaceEditorPanelProps {
   collaborationAwareness: Awareness;
   undoManager?: Y.UndoManager;
   editorNotice: string;
+  aiPreview: { from: number; to: number; text: string } | null;
+  aiAvailable: boolean;
   activateTab: (path: string) => void;
   closeTab: (path: string) => void;
   handleTabKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => void;
@@ -42,13 +44,14 @@ export interface WorkspaceEditorPanelProps {
   onSpellCheckReplace: (issue: SpellCheckIssue, replacement: string) => void;
   onReferenceNavigate: (reference: LatexReference) => void;
   onCursor: (line: number, column: number, offset: number) => void;
+  onAiWrite: () => void;
 }
 
 export function WorkspaceEditorPanel({
   project, activeFile, openTabs, content, loadedFile, readOnly, comments, focusComment,
   editorPreferences, completionIndex, nativeSpellCheck, spellCheckIssues, spellCheckJump, sourceJump,
   collaborativeText, collaborationAwareness, undoManager, editorNotice, activateTab, closeTab,
-  handleTabKeyDown, updateEditorContent, setSelection, onAddComment, onCommentClick, onSpellCheckReplace, onReferenceNavigate, onCursor
+  handleTabKeyDown, updateEditorContent, setSelection, onAddComment, onCommentClick, onSpellCheckReplace, onReferenceNavigate, onCursor, onAiWrite, aiPreview, aiAvailable
 }: WorkspaceEditorPanelProps) {
   const { t } = useTranslation();
   // Comment offsets are meaningful only for the source document which
@@ -83,7 +86,7 @@ export function WorkspaceEditorPanel({
       )}
       <div id="editor-source-content" className="editor-content-container">
         <Suspense fallback={<div className="preview-empty"><LoaderCircle className="spin" size={22} /><span>{t("common.loading")}</span></div>}>
-          <LatexEditor key={activeFile} value={content} filePath={activeFile} readOnly={readOnly} comments={editorComments} focusComment={editorFocusComment} preferences={editorPreferences} nativeSpellCheck={nativeSpellCheck} completionIndex={completionIndex} spellCheckIssues={spellCheckIssues} spellCheckJump={spellCheckJump} jumpTo={loadedFile === activeFile && sourceJump?.path === activeFile ? sourceJump : null} searchRequest={0} collaboration={collaborativeText ? { text: collaborativeText, awareness: collaborationAwareness, undoManager: readOnly ? undefined : undoManager } : undefined} onChange={updateEditorContent} onSelection={setSelection} onAddComment={onAddComment} onCommentClick={onCommentClick} onSpellCheckReplace={onSpellCheckReplace} onReferenceNavigate={onReferenceNavigate} onCursor={onCursor} />
+          <LatexEditor key={activeFile} value={content} filePath={activeFile} readOnly={readOnly} comments={editorComments} focusComment={editorFocusComment} preferences={editorPreferences} nativeSpellCheck={nativeSpellCheck} completionIndex={completionIndex} spellCheckIssues={spellCheckIssues} spellCheckJump={spellCheckJump} jumpTo={loadedFile === activeFile && sourceJump?.path === activeFile ? sourceJump : null} searchRequest={0} aiPreview={aiPreview} aiAvailable={aiAvailable} collaboration={collaborativeText ? { text: collaborativeText, awareness: collaborationAwareness, undoManager: readOnly ? undefined : undoManager } : undefined} onChange={updateEditorContent} onSelection={setSelection} onAddComment={onAddComment} onCommentClick={onCommentClick} onSpellCheckReplace={onSpellCheckReplace} onReferenceNavigate={onReferenceNavigate} onCursor={onCursor} onAiWrite={onAiWrite} />
         </Suspense>
         {editorNotice && <div className="editor-centered-notice" role="status" aria-live="polite">{editorNotice}</div>}
       </div>

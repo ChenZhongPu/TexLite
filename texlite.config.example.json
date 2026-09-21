@@ -34,6 +34,10 @@
     "maxProjectsPerUser": 100,
     "maxSourceStorageMBPerUser": 2048
   },
+  "ai": {
+    "baseURL": "http://127.0.0.1:4010",
+    "apiKey": "replace-with-ai-server-api-key"
+  },
   "OAuth": {
     "baseURL": "https://testagent.xspaceagi.com",
     "clientId": "",

@@ -48,6 +48,8 @@ interface Props {
   completionIndex: LatexCompletionIndex | null;
   spellCheckIssues: SpellCheckIssue[];
   spellCheckJump: SpellCheckJump | null;
+  aiPreview: { from: number; to: number; text: string } | null;
+  aiAvailable: boolean;
   jumpTo: { line: number; column: number; nonce: number } | null;
   searchRequest: number;
   collaboration?: { text: Y.Text; awareness: Awareness; undoManager?: Y.UndoManager };
@@ -58,6 +60,7 @@ interface Props {
   onSpellCheckReplace: (issue: SpellCheckIssue, replacement: string) => void;
   onReferenceNavigate: (reference: LatexReference) => void;
   onCursor: (line: number, column: number, offset: number) => void;
+  onAiWrite: () => void;
 }
 
 interface SpellSuggestionMenu {
@@ -83,50 +86,113 @@ interface CommentMark {
 const setCommentMarks = StateEffect.define<CommentMark[]>();
 const externalDocumentUpdate = Annotation.define<boolean>();
 
-/**
- * The selection action intentionally replaces just the selected line's number
- * instead of adding a second gutter. This keeps the editor from shifting when
- * a selection appears, while putting the action exactly where a reader
- * expects to find source-level annotations.
- */
-class AddCommentLineMarker extends GutterMarker {
-  constructor(private readonly label: string) { super(); }
+interface AiPreview {
+  from: number;
+  to: number;
+  text: string;
+}
+
+const setAiPreview = StateEffect.define<AiPreview | null>();
+
+class AiPreviewWidget extends WidgetType {
+  constructor(private readonly text: string) { super(); }
+
+  eq(other: WidgetType): boolean {
+    return other instanceof AiPreviewWidget && other.text === this.text;
+  }
 
   toDOM(): HTMLElement {
+    const element = document.createElement("span");
+    element.className = "cm-ai-preview";
+    element.textContent = this.text;
+    element.setAttribute("aria-label", "AI preview");
+    return element;
+  }
+
+  ignoreEvent(): boolean { return true; }
+}
+
+const aiPreviewMarks = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    let mapped = value.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(setAiPreview)) mapped = buildAiPreviewDecorations(effect.value, transaction.state.doc.length);
+    }
+    return mapped;
+  },
+  provide: (field) => EditorView.decorations.from(field)
+});
+
+function buildAiPreviewDecorations(preview: AiPreview | null, documentLength: number): DecorationSet {
+  if (!preview || !preview.text) return Decoration.none;
+  const from = Math.max(0, Math.min(preview.from, documentLength));
+  const to = Math.max(from, Math.min(preview.to, documentLength));
+  return Decoration.set([
+    Decoration.replace({ widget: new AiPreviewWidget(preview.text), inclusive: true }).range(from, to)
+  ], true);
+}
+
+/**
+ * Line actions intentionally replace the relevant line's number instead of
+ * adding a second gutter. This keeps the editor from shifting while putting
+ * source-level actions next to the current cursor or selection.
+ */
+class LineActionsMarker extends GutterMarker {
+  constructor(private readonly labels: { ai?: string; comment?: string }) { super(); }
+
+  private createButton(className: string, dataAttribute: "aiWrite" | "commentAdd", label: string, pathData: string): HTMLButtonElement {
     const button = document.createElement("button");
     button.type = "button";
     button.tabIndex = -1;
-    button.className = "cm-comment-add-button";
-    button.dataset.commentAdd = "true";
+    button.className = className;
+    button.dataset[dataAttribute] = "true";
     button.dataset.texliteTooltipAlways = "true";
-    button.title = this.label;
-    button.setAttribute("aria-label", this.label);
+    button.title = label;
+    button.setAttribute("aria-label", label);
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M20 3H4a2 2 0 0 0-2 2v14l4-4h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-3 7h-4v4h-2v-4H7V8h4V4h2v4h4v2Z");
+    path.setAttribute("d", pathData);
     svg.append(path);
     button.append(svg);
     return button;
   }
+
+  toDOM(): HTMLElement {
+    const actions = document.createElement("span");
+    actions.className = "cm-line-actions";
+    if (this.labels.ai) actions.append(this.createButton(
+      "cm-ai-write-button", "aiWrite", this.labels.ai,
+      "M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2Zm7 13 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15ZM5 15l.7 1.8L7.5 17l-1.8.7L5 19.5l-.7-1.8L2.5 17l1.8-.7L5 15Z"
+    ));
+    if (this.labels.comment) actions.append(this.createButton(
+      "cm-comment-add-button", "commentAdd", this.labels.comment,
+      "M20 3H4a2 2 0 0 0-2 2v14l4-4h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-3 7h-4v4h-2v-4H7V8h4V4h2v4h4v2Z"
+    ));
+    return actions;
+  }
 }
 
-function commentSelectionLineMarkers(state: EditorState, marker: GutterMarker): RangeSet<GutterMarker> {
+function lineActionMarkers(state: EditorState, marker: GutterMarker, aiEnabled: boolean): RangeSet<GutterMarker> {
   const selection = state.selection.main;
-  if (selection.empty) return RangeSet.empty;
-  return RangeSet.of([marker.range(state.doc.lineAt(selection.from).from)]);
+  if (!aiEnabled && selection.empty) return RangeSet.empty;
+  return RangeSet.of([marker.range(state.doc.lineAt(selection.empty ? selection.head : selection.from).from)]);
 }
 
 function commentAddLineNumberExtension(
-  label: string,
-  onAddComment: (selectedText: string, startOffset: number, endOffset: number, source: string) => void
+  commentLabel: string,
+  onAddComment: (selectedText: string, startOffset: number, endOffset: number, source: string) => void,
+  aiLabel: string,
+  aiEnabled: boolean,
+  onAiWrite: () => void
 ) {
-  const marker = new AddCommentLineMarker(label);
+  const marker = new LineActionsMarker({ ai: aiEnabled ? aiLabel : undefined, comment: commentLabel });
   const field = StateField.define<RangeSet<GutterMarker>>({
-    create: (state) => commentSelectionLineMarkers(state, marker),
+    create: (state) => lineActionMarkers(state, marker, aiEnabled),
     update: (value, transaction) => transaction.selection || transaction.docChanged
-      ? commentSelectionLineMarkers(transaction.state, marker)
+      ? lineActionMarkers(transaction.state, marker, aiEnabled)
       : value,
     provide: (field) => lineNumberMarkers.from(field)
   });
@@ -136,7 +202,12 @@ function commentAddLineNumberExtension(
       domEventHandlers: {
         mousedown(view, _line, event) {
           const target = event.target;
-          if (!(target instanceof Element) || !target.closest("[data-comment-add]")) return false;
+          if (!(target instanceof Element)) return false;
+          if (target.closest("[data-ai-write]")) {
+            onAiWrite();
+            return true;
+          }
+          if (!target.closest("[data-comment-add]")) return false;
           const selection = view.state.selection.main;
           if (selection.empty) return false;
           onAddComment(view.state.sliceDoc(selection.from, selection.to), selection.from, selection.to, view.state.doc.toString());
@@ -339,7 +410,7 @@ function referenceFromElement(element: EventTarget | null): LatexReference | nul
 
 export function LatexEditor({
   value, filePath, readOnly, comments, focusComment, preferences, completionIndex, jumpTo, searchRequest,
-  nativeSpellCheck, spellCheckIssues, spellCheckJump, collaboration, onChange, onSelection, onAddComment, onCommentClick, onSpellCheckReplace, onReferenceNavigate, onCursor
+  nativeSpellCheck, spellCheckIssues, spellCheckJump, aiPreview, aiAvailable, collaboration, onChange, onSelection, onAddComment, onCommentClick, onSpellCheckReplace, onReferenceNavigate, onCursor, onAiWrite
 }: Props) {
   const { t, i18n } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
@@ -351,6 +422,7 @@ export function LatexEditor({
   const onSpellCheckReplaceRef = useRef(onSpellCheckReplace);
   const onReferenceNavigateRef = useRef(onReferenceNavigate);
   const onCursorRef = useRef(onCursor);
+  const onAiWriteRef = useRef(onAiWrite);
   const spellCheckIssuesRef = useRef(spellCheckIssues);
   const handledSearchRequest = useRef(searchRequest);
   const completionIndexRef = useRef(completionIndex);
@@ -368,6 +440,7 @@ export function LatexEditor({
   onSpellCheckReplaceRef.current = onSpellCheckReplace;
   onReferenceNavigateRef.current = onReferenceNavigate;
   onCursorRef.current = onCursor;
+  onAiWriteRef.current = onAiWrite;
   spellCheckIssuesRef.current = spellCheckIssues;
   completionIndexRef.current = completionIndex;
 
@@ -400,12 +473,18 @@ export function LatexEditor({
     const state = EditorState.create({
       doc: collaboration?.text.toString() ?? value,
       extensions: [
-        commentAddLineNumberExtension(t("editor.addComment"), (...args) => onAddCommentRef.current(...args)),
+        commentAddLineNumberExtension(
+          t("editor.addComment"),
+          (...args) => onAddCommentRef.current(...args),
+          t("ai.title"),
+          aiAvailable && preferences.aiWritingButton && !readOnly,
+          () => onAiWriteRef.current()
+        ),
         foldGutter(), ...(collaboration ? [] : [history()]), drawSelection(), highlightActiveLine(), highlightSpecialChars(),
         isBibtexFile ? [bibtexLanguage, ...createBibtexEditorExtensions(localizedBibtexMessages(t))] : isBstFile ? bstLanguage : latexLanguage, syntaxHighlighting(defaultHighlightStyle),
         ...(isBibtexFile ? [syntaxHighlighting(bibtexHighlightStyle)] : []),
         ...(isBibtexFile ? [] : [bracketMatching(), ...(isBstFile ? [] : [Prec.high(EditorView.inputHandler.of(latexAutoPairInput)), latexSkippedBracePair, latexFold])]),
-        closeBrackets(), indentOnInput(), commentMarks, spellCheckIssueMarks, activeSpellCheckIssueMarks,
+        closeBrackets(), indentOnInput(), commentMarks, aiPreviewMarks, spellCheckIssueMarks, activeSpellCheckIssueMarks,
         referenceNavigation.current.of(isBstFile ? [] : referenceNavigationSettings.of(referenceNavigationOptions(filePath, t))),
         ...(isBstFile ? [] : [latexReferenceMarks]),
         mathHover.current.of(preferences.mathPreviewOnHover && supportsLatexMathHover(filePath) ? latexMathHover({
@@ -502,7 +581,11 @@ export function LatexEditor({
       view.current?.destroy();
       view.current = null;
     };
-  }, [filePath, readOnly, i18n.resolvedLanguage, collaboration?.text]);
+  }, [filePath, readOnly, i18n.resolvedLanguage, collaboration?.text, aiAvailable, preferences.aiWritingButton]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: setAiPreview.of(aiPreview) });
+  }, [aiPreview]);
 
   useEffect(() => {
     const editor = view.current;

@@ -9,6 +9,8 @@ export interface EditorPreferences {
   lineWrapping: boolean;
   /** Show ordinary workspace control hover hints. */
   showTooltips: boolean;
+  /** Show the AI writing action in the editor line-number gutter. */
+  aiWritingButton: boolean;
   spellCheck: boolean;
   mathPreviewOnHover: boolean;
   vimMode: boolean;
@@ -39,6 +41,7 @@ export const defaultEditorPreferences: EditorPreferences = {
   lineHeight: 1.65,
   lineWrapping: true,
   showTooltips: false,
+  aiWritingButton: true,
   spellCheck: true,
   mathPreviewOnHover: false,
   vimMode: false,
@@ -78,6 +81,7 @@ export function loadEditorPreferences(userId: string, projectId: string): Editor
       lineHeight: [1.45, 1.65, 1.85].includes(Number(stored.lineHeight)) ? Number(stored.lineHeight) : defaultEditorPreferences.lineHeight,
       lineWrapping: typeof stored.lineWrapping === "boolean" ? stored.lineWrapping : defaultEditorPreferences.lineWrapping,
       showTooltips: typeof stored.showTooltips === "boolean" ? stored.showTooltips : defaultEditorPreferences.showTooltips,
+      aiWritingButton: typeof stored.aiWritingButton === "boolean" ? stored.aiWritingButton : defaultEditorPreferences.aiWritingButton,
       spellCheck: typeof stored.spellCheck === "boolean" ? stored.spellCheck : defaultEditorPreferences.spellCheck,
       mathPreviewOnHover: typeof stored.mathPreviewOnHover === "boolean" ? stored.mathPreviewOnHover : defaultEditorPreferences.mathPreviewOnHover,
       vimMode: typeof stored.vimMode === "boolean" ? stored.vimMode : defaultEditorPreferences.vimMode,
