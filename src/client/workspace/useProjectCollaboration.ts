@@ -58,7 +58,7 @@ export function useProjectCollaboration(
 
   useEffect(() => {
     const refreshSessions = () => setActiveSessions(collaboration.sessions());
-    const clearDisconnectedState = () => {
+    const clearConnectionState = () => {
       setSynced(false);
       setActiveSessions([]);
       setCompileState(null);
@@ -67,19 +67,23 @@ export function useProjectCollaboration(
       setHistoryWarning(false);
       setDictionaryRevision("");
       setFormatLeaseStates([]);
+    };
+    const handleDisconnected = () => {
+      clearConnectionState();
       onDisconnectedRef.current();
     };
     const handleStatus = ({ status: nextStatus }: { status: CollaborationStatus }) => {
       setStatus(nextStatus);
-      if (nextStatus !== "connected") clearDisconnectedState();
+      if (nextStatus === "disconnected") handleDisconnected();
+      else if (nextStatus === "connecting") clearConnectionState();
     };
     const handleSync = (nextSynced: boolean) => {
       setSynced(nextSynced);
-      if (!nextSynced) clearDisconnectedState();
+      if (!nextSynced) clearConnectionState();
     };
     const handleConnectionFailure = () => {
       setStatus("disconnected");
-      clearDisconnectedState();
+      handleDisconnected();
     };
     const handleMeta = () => {
       setHistoryWarning(collaboration.meta.get("historyWarning") === true);
@@ -106,7 +110,7 @@ export function useProjectCollaboration(
     const stopProtocolUpgradeListener = collaboration.onProtocolUpgrade(() => {
       setProtocolUpgradeRequired(true);
       setStatus("disconnected");
-      clearDisconnectedState();
+      handleDisconnected();
     });
     const refreshFormatLeases = () => setFormatLeaseStates(collaboration.formatLeaseStates());
     const stopFormatLeaseListener = collaboration.onFormatLeaseState(refreshFormatLeases);

@@ -96,6 +96,8 @@ interface Connection {
   awarenessClientId: number | null;
   protocolVerified: boolean;
   protocolTimer: NodeJS.Timeout | null;
+  /** Process protocol messages in socket arrival order. */
+  messageQueue: Promise<void>;
 }
 
 interface AiEditOrigin {
@@ -1177,7 +1179,8 @@ export class CollaborationService {
     const connection: Connection = {
       socket, user, sessionId: user.session_id ?? null,
       sessionExpiresAt: user.session_expires_at ?? null, sessionExpiryTimer: null,
-      awarenessClientId: null, protocolVerified: false, protocolTimer: null
+      awarenessClientId: null, protocolVerified: false, protocolTimer: null,
+      messageQueue: Promise.resolve()
     };
     room.connections.add(connection);
     this.scheduleSessionExpiry(room, connection);
@@ -1185,8 +1188,13 @@ export class CollaborationService {
     socket.binaryType = "arraybuffer";
     socket.on("message", (data) => {
       try {
-        void this.handleMessage(room, connection, rawData(data)).catch(() => {
-          socket.close(1003, "Invalid collaboration message");
+        const bytes = rawData(data);
+        connection.messageQueue = connection.messageQueue.then(async () => {
+          try {
+            await this.handleMessage(room, connection, bytes);
+          } catch {
+            socket.close(1003, "Invalid collaboration message");
+          }
         });
       } catch {
         socket.close(1003, "Invalid collaboration message");
